@@ -30,14 +30,14 @@ y: 1200
 | kind | `provider`（persona 白名单参与） |
 | 名称 / 路由 | 「LLM Provider」/ `llm` |
 | 来源 / 运行形态 | 编译内置 / 进程内 |
-| crate | `source/modules/echo-module-provider-llm`（10 文件，约 3400 行） |
+| crate | `source/modules/agent-module-provider-llm`（10 文件，约 3400 行） |
 
 | 贡献 | 内容 |
 |---|---|
 | 命令域 × 13 | `SwitchModel` / `SwitchProvider` / `SetSystemPrompt` / `RequestSystemPrompt` / `UpdateApiConfig` / `SwitchApi` / `SetSessionApi` / `ClearSessionApi` / `RequestRemoteApiProfiles` / `TestApi` / `QueryApiBalance` / `QueryApiMetrics` / `DeleteApi` |
 | 服务依赖 | `echo-agent.host.provider`（`PROVIDER_HOST`） |
 | 服务提供 | **无**——`mount` 不 provide 任何键 |
-| re-export | `LlmProvider` / `ChatMessage` / `ChatRequest` / `Usage` / `ToolDefinition` / `ReasoningEffort` / token 估算与截断——调用方只需 `use echo_module_provider_llm::…` |
+| re-export | `LlmProvider` / `ChatMessage` / `ChatRequest` / `Usage` / `ToolDefinition` / `ReasoningEffort` / token 估算与截断——调用方只需 `use agent_module_provider_llm::…` |
 
 **`mount` 不注册运行期资源**，只把宿主适配器绑到 `PROVIDER_HOST`。所以「启用这个模块」的真实含义是**「13 条命令可被派发」**，而不是「多了一个 provider」——provider 实例本身由宿主在配置变更时按需构建。
 
@@ -68,7 +68,7 @@ y: 1200
 | `echo-llm-anthropic` | 本模块 —— 仓外 0 |
 | `echo-llm-ollama` | 本模块 —— 仓外 0 |
 
-「中间层」的定义是**被多方复用的底座**（如 `echo-module-tools` 被 7 个 crate 用）。这三个各自只有一个真消费者，crate 边界换来的不是"可替换点"而是目录层级——协议差异靠的是 `LlmProvider` trait（在 `echo-defs`），不是 crate 之间的抽象。
+「中间层」的定义是**被多方复用的底座**（如 `agent-module-tools` 被 7 个 crate 用）。这三个各自只有一个真消费者，crate 边界换来的不是"可替换点"而是目录层级——协议差异靠的是 `LlmProvider` trait（在 `echo-defs`），不是 crate 之间的抽象。
 
 可用判据：**消费者 = 1 → 是那个消费者的实现细节，合并；消费者 > 1 → 是共用底座，独立**。合并后 `providers` 是**私有模块**：外部只认 `create_provider(&ProviderConfig)`，换实现不需要外部改任何代码——这正是把 `LlmProvider` 放在 `echo-defs` 的意义。
 

@@ -30,7 +30,7 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 3. **启动 `modules.toml` 的子进程模块**（含实例模块进程）——这一步在宿主装配之前，宿主服务（如 `sanitizer`）在启动前先注册好供 `HostCall` 回呼
 4. 装配进程级模块宿主：`ModuleRegistry::apply_disabled`（禁用模块只注册不挂载）先于挂载
 5. 一次 `mount_plan` 按 `modules.toml` 的 `kind = "builtin"` 行序挂载内置模块（无该行 = 目录顺序全启用）——**工具集 / 技能目录 / 工作区 / subagent / 模块实例 / 管理面 / 循环 / provider 全是 mount 的副作用**，management WS 随管理面模块的 mount 起停；同时注册远程模块门控壳与外部条目
-6. 挂载完成后解析 `loop` 服务（由 `echo-module-loop` `provide` 的那一个 `TurnRunner`）——**解析失败即启动失败**，不静默降级：没有驱动的 agent 只会收消息不干活，比崩溃更难查
+6. 挂载完成后解析 `loop` 服务（由 `agent-module-loop` `provide` 的那一个 `TurnRunner`）——**解析失败即启动失败**，不静默降级：没有驱动的 agent 只会收消息不干活，比崩溃更难查
 7. 创建多 agent 监督器，把同一个 `TurnRunner` 注入每个 Agent（`set_loop_runner`；循环只有单会话串行一种准入，没有模式可切）
 
 > `modules.toml` 与 core.toml 同目录，不存在 = 不报错（外部模块特性休眠、内置模块按目录默认全启用）。`echo-agent-core dump-config` 只打印它的分层合成结果（profile / bundle / patch / 内联层 + 每行来源），用来排查"这行配置从哪来"——不需要真启动。
@@ -54,7 +54,7 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 ## 进程结构
 
 - Cargo 二进制名 `echo-agent-core`（`source/modules/core/Cargo.toml`），由 systemd 用户服务运行；`install.sh` 安装后落盘为 `$LIBEXEC_DIR/echo-agent-core-bin`（libexec 文件名，非 Cargo bin 名）
-- 库结构：框架机制在 `source/modules/echo-agent`（`agent/`）；模块机制在 `source/modules/`（host 领域中立、adapter 做领域适配），**内置模块实现各自成 crate**（`echo-module-tools` / `-shell` / `-skills` / `-subagent` / `-workspace` / `-management` / `-loop` / `-provider-llm` / `-federation` / `-self-update`），宿主侧 `packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面）；Shell 机制在 `source/modules/echo-module-shell`。契约层 crate（`echo-defs` / `echo-context` / `echo-session` / `echo-module-loop` / `echo-module-management` 等）见 [架构总览](../overview/architecture.md) 的 crate 地图
+- 库结构：框架机制在 `source/modules/echo-agent`（`agent/`）；模块机制在 `source/modules/`（host 领域中立、adapter 做领域适配），**内置模块实现各自成 crate**（`agent-module-tools` / `-shell` / `-skills` / `-subagent` / `-workspace` / `-management` / `-loop` / `-provider-llm` / `-federation` / `-self-update`），宿主侧 `packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面）；Shell 机制在 `source/modules/agent-module-shell`。契约层 crate（`echo-defs` / `echo-context` / `echo-session` / `agent-module-loop` / `agent-module-management` 等）见 [架构总览](../overview/architecture.md) 的 crate 地图
 - 运维命令与部署布局见 [部署与自更新](../ops/deploy.md)
 
 ---

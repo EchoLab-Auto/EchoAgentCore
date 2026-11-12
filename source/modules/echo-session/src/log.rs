@@ -1,4 +1,4 @@
-//! The append-only, in-memory event log（落盘在 `echo-module-session` 的
+//! The append-only, in-memory event log（落盘在 `agent-module-session` 的
 //! `store::persist`：本类型只提供日志语义与取锁，不碰文件系统）。
 
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,7 @@ use crate::event::SessionEvent;
 /// by mutating or deleting earlier events. The log is the single source of
 /// truth — the model context is derived from it, never stored alongside it.
 ///
-/// 本类型不碰文件系统：落盘是 `echo-module-session` 的 `store::persist`
+/// 本类型不碰文件系统：落盘是 `agent-module-session` 的 `store::persist`
 /// （整份 trunk 文档 + 原子 tmp+rename），版本号归那边所有。
 #[derive(Debug, Clone, Default)]
 pub struct EventLog {

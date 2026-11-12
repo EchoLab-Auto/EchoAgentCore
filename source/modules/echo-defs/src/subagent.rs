@@ -8,9 +8,9 @@
 //!
 //! ## 为什么在定义层
 //!
-//! 声明方是 `echo-module-subagent`（受理委派的一方），实现方是
-//! `echo-module-federation`（聚合表的所有者）。此前 trait 住在 subagent 模块
-//! 里，于是联邦模块要 `impl echo_module_subagent::RemoteDelegationSink` 才能
+//! 声明方是 `agent-module-subagent`（受理委派的一方），实现方是
+//! `agent-module-federation`（聚合表的所有者）。此前 trait 住在 subagent 模块
+//! 里，于是联邦模块要 `impl agent_module_subagent::RemoteDelegationSink` 才能
 //! 接上——聚合功能因此**把两个模块绑成了 Cargo 依赖**。
 //!
 //! 不注入时是**降级而非错误**：远程委派照常发出、`<subagent_event>` 逐个

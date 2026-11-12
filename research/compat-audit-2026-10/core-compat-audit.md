@@ -5,18 +5,18 @@
 
 ## source/federation（Core↔Core 线协议）
 
-source/federation/echo-module-federation/src/frame.rs:8 — 帧协议约定「新增字段一律 serde(default)，新旧节点混部时旧端点可解码新帧」 — [DOC]
-source/federation/echo-module-federation/src/frame.rs:85 — NodeHello.node_name 的 serde(default)+skip（旧 Hello 缺字段容忍；当前 None 也会省略） — [GRAY]?
-source/federation/echo-module-federation/src/frame.rs:89 — NodeHello.version 的 serde(default)：当前发送方恒写该字段，default 仅服务旧端点 — [REMOVE]
-source/federation/echo-module-federation/src/frame.rs:91 — NodeHello.caps 的 serde(default)：当前发送方恒写该字段，default 仅服务旧端点 — [REMOVE]
-source/federation/echo-module-federation/src/frame.rs:98 — NodeHello.advertise 的 serde(default)+skip（当前 None 省略 + 旧对端缺字段容忍） — [GRAY]?
-source/federation/echo-module-federation/src/frame.rs:202-205 — QueryRequest.team_id serde(default)，空值=旧行为（逐 persona 取首个命中，歧义） — [REMOVE]
-source/federation/echo-module-federation/src/frame.rs:348 — 测试注释「旧大脑缺 team_id 的查询可解码」 — [REMOVE]
-source/federation/echo-module-federation/src/frame.rs:385 — 测试注释「旧端点（缺字段的 JSON）可解码」 — [REMOVE]
-source/federation/echo-module-federation/src/frame.rs:387-395 — 测试 invoke_request_decodes_without_new_fields（旧端点缺 args/workdir/timeout 可解码） — [REMOVE]
-source/federation/echo-module-federation/src/frame.rs:396-404 — 测试 query_request_decodes_without_team_id — [REMOVE]
-source/federation/echo-module-federation/src/frame.rs:427-429 — 测试用例「老端点缺 caps/version/node_name/advertise 也可解码」 — [REMOVE]
-source/federation/echo-module-federation/src/frame.rs:221-223 — QueryKind::WorkspaceGitStatus 注释：旧对端不认识该变体时整帧丢弃、降级为不可采集 — [GRAY]?
+source/federation/agent-module-federation/src/frame.rs:8 — 帧协议约定「新增字段一律 serde(default)，新旧节点混部时旧端点可解码新帧」 — [DOC]
+source/federation/agent-module-federation/src/frame.rs:85 — NodeHello.node_name 的 serde(default)+skip（旧 Hello 缺字段容忍；当前 None 也会省略） — [GRAY]?
+source/federation/agent-module-federation/src/frame.rs:89 — NodeHello.version 的 serde(default)：当前发送方恒写该字段，default 仅服务旧端点 — [REMOVE]
+source/federation/agent-module-federation/src/frame.rs:91 — NodeHello.caps 的 serde(default)：当前发送方恒写该字段，default 仅服务旧端点 — [REMOVE]
+source/federation/agent-module-federation/src/frame.rs:98 — NodeHello.advertise 的 serde(default)+skip（当前 None 省略 + 旧对端缺字段容忍） — [GRAY]?
+source/federation/agent-module-federation/src/frame.rs:202-205 — QueryRequest.team_id serde(default)，空值=旧行为（逐 persona 取首个命中，歧义） — [REMOVE]
+source/federation/agent-module-federation/src/frame.rs:348 — 测试注释「旧大脑缺 team_id 的查询可解码」 — [REMOVE]
+source/federation/agent-module-federation/src/frame.rs:385 — 测试注释「旧端点（缺字段的 JSON）可解码」 — [REMOVE]
+source/federation/agent-module-federation/src/frame.rs:387-395 — 测试 invoke_request_decodes_without_new_fields（旧端点缺 args/workdir/timeout 可解码） — [REMOVE]
+source/federation/agent-module-federation/src/frame.rs:396-404 — 测试 query_request_decodes_without_team_id — [REMOVE]
+source/federation/agent-module-federation/src/frame.rs:427-429 — 测试用例「老端点缺 caps/version/node_name/advertise 也可解码」 — [REMOVE]
+source/federation/agent-module-federation/src/frame.rs:221-223 — QueryKind::WorkspaceGitStatus 注释：旧对端不认识该变体时整帧丢弃、降级为不可采集 — [GRAY]?
 
 ## source/core（Core 组合根）
 
@@ -126,31 +126,31 @@ source/session/echo-session/src/event.rs:401-407 — 测试 pre-2026-09 文件�
 source/session/echo-session/src/derive.rs:135 — 注释：session=None 保留未归因事件（旧版日志按此投影） — [DATA]
 source/session/echo-session/src/derive.rs:577 — 测试 legacy summaries 单 marker — [DATA]
 
-## source/protocol/echo-module-management
+## source/protocol/agent-module-management
 
-source/protocol/echo-module-management/src/lib.rs:19 — 文档：新增字段 serde(default) 让旧对端可解码 — [DOC]
-source/protocol/echo-module-management/src/lib.rs:35 — 导出已退役的 OrchestrationMode（仅旧前端兼容） — [REMOVE]
-source/protocol/echo-module-management/src/event.rs:71 — SessionInfo.node_id 注释「单节点/旧 Core 缺省 None」 — [GRAY]?
-source/protocol/echo-module-management/src/event.rs:153 — TimelineTool.tool_call_id「empty = legacy entry」 — [DATA]
-source/protocol/echo-module-management/src/event.rs:177 — TimelineMessage.session_id「Empty = legacy entries」 — [DATA]
-source/protocol/echo-module-management/src/event.rs:191 — TimelineMessage.seq「0 = 旧版/重启前条目」 — [DATA]
-source/protocol/echo-module-management/src/event.rs:380-404 — BackgroundTask{Started,Completed,Integrated} 保留事件（Core 侧体系已移除、当前无发射方，因旧消费者仍消费而保留枚举） — [GRAY]?
-source/protocol/echo-module-management/src/event.rs:412 — ToolCall.tool_call_id「empty = legacy peer (pre-id protocol)」 — [GRAY]?
-source/protocol/echo-module-management/src/event.rs:416 — ToolCall.branch_id「empty for pre-branch legacy paths」 — [GRAY]?
-source/protocol/echo-module-management/src/event.rs:430 — ToolResult.tool_call_id「empty = legacy peer」 — [GRAY]?
-source/protocol/echo-module-management/src/event.rs:437 — ToolResult.branch_id「empty for pre-branch legacy paths」 — [GRAY]?
-source/protocol/echo-module-management/src/event.rs:542 — ContextSnapshot.session_id「None = 旧 Core 的全局口径」 — [GRAY]?
-source/protocol/echo-module-management/src/event.rs:559 — ShellSessionsList.team_id「旧 core 无此字段时前端不过滤」 — [GRAY]?
-source/protocol/echo-module-management/src/command.rs:42 — SwitchApi 全局激活已被 persona 级 api_profile 取代，协议字段保留兼容、UI 不再暴露 — [GRAY]?
-source/protocol/echo-module-management/src/event.rs:873-891 — OrchestrationMode 已退役枚举 + From<LoopMode>（旧前端兼容；当前无消费者） — [REMOVE]
-source/protocol/echo-module-management/src/event.rs:908-909 — TeamInfo.is_default 过渡期字段（恒 false，下个协议版本删除） — [REMOVE]
-source/protocol/echo-module-management/src/event.rs:923-927 — 注释引用已删除的旧三布尔（reply_branches_enabled 等，2026-09 协议变更） — [DOC]
-source/protocol/echo-module-management/src/event.rs:1047-1052 — WorkspaceDirectory untagged：旧格式纯字符串可反序列化，读旧写新 — [DATA]
-source/protocol/echo-module-management/src/event.rs:1259-1270 — 测试 directories_accept_legacy_strings_and_qualified_tables — [DATA]
-source/protocol/echo-module-management/src/command.rs:321 — UpdateQqAllowlist.adapter「None = 唯一实例/legacy qq」 — [GRAY]?
-source/protocol/echo-module-management/src/command.rs:391 — MigrateSession.team_id None = 逐 persona 查找「兼容旧前端」 — [REMOVE]
-source/protocol/echo-module-management/src/bridge.rs:252-270 — 测试 legacy_agent_output_without_branch_id_still_decodes（旧 Core 序列化缺 branch_id） — [REMOVE]
-source/protocol/echo-module-management/src/bridge.rs:363-377 — 测试 session_info_without_node_id_deserializes（旧 Core SessionInfo 无 node_id） — [REMOVE]
+source/protocol/agent-module-management/src/lib.rs:19 — 文档：新增字段 serde(default) 让旧对端可解码 — [DOC]
+source/protocol/agent-module-management/src/lib.rs:35 — 导出已退役的 OrchestrationMode（仅旧前端兼容） — [REMOVE]
+source/protocol/agent-module-management/src/event.rs:71 — SessionInfo.node_id 注释「单节点/旧 Core 缺省 None」 — [GRAY]?
+source/protocol/agent-module-management/src/event.rs:153 — TimelineTool.tool_call_id「empty = legacy entry」 — [DATA]
+source/protocol/agent-module-management/src/event.rs:177 — TimelineMessage.session_id「Empty = legacy entries」 — [DATA]
+source/protocol/agent-module-management/src/event.rs:191 — TimelineMessage.seq「0 = 旧版/重启前条目」 — [DATA]
+source/protocol/agent-module-management/src/event.rs:380-404 — BackgroundTask{Started,Completed,Integrated} 保留事件（Core 侧体系已移除、当前无发射方，因旧消费者仍消费而保留枚举） — [GRAY]?
+source/protocol/agent-module-management/src/event.rs:412 — ToolCall.tool_call_id「empty = legacy peer (pre-id protocol)」 — [GRAY]?
+source/protocol/agent-module-management/src/event.rs:416 — ToolCall.branch_id「empty for pre-branch legacy paths」 — [GRAY]?
+source/protocol/agent-module-management/src/event.rs:430 — ToolResult.tool_call_id「empty = legacy peer」 — [GRAY]?
+source/protocol/agent-module-management/src/event.rs:437 — ToolResult.branch_id「empty for pre-branch legacy paths」 — [GRAY]?
+source/protocol/agent-module-management/src/event.rs:542 — ContextSnapshot.session_id「None = 旧 Core 的全局口径」 — [GRAY]?
+source/protocol/agent-module-management/src/event.rs:559 — ShellSessionsList.team_id「旧 core 无此字段时前端不过滤」 — [GRAY]?
+source/protocol/agent-module-management/src/command.rs:42 — SwitchApi 全局激活已被 persona 级 api_profile 取代，协议字段保留兼容、UI 不再暴露 — [GRAY]?
+source/protocol/agent-module-management/src/event.rs:873-891 — OrchestrationMode 已退役枚举 + From<LoopMode>（旧前端兼容；当前无消费者） — [REMOVE]
+source/protocol/agent-module-management/src/event.rs:908-909 — TeamInfo.is_default 过渡期字段（恒 false，下个协议版本删除） — [REMOVE]
+source/protocol/agent-module-management/src/event.rs:923-927 — 注释引用已删除的旧三布尔（reply_branches_enabled 等，2026-09 协议变更） — [DOC]
+source/protocol/agent-module-management/src/event.rs:1047-1052 — WorkspaceDirectory untagged：旧格式纯字符串可反序列化，读旧写新 — [DATA]
+source/protocol/agent-module-management/src/event.rs:1259-1270 — 测试 directories_accept_legacy_strings_and_qualified_tables — [DATA]
+source/protocol/agent-module-management/src/command.rs:321 — UpdateQqAllowlist.adapter「None = 唯一实例/legacy qq」 — [GRAY]?
+source/protocol/agent-module-management/src/command.rs:391 — MigrateSession.team_id None = 逐 persona 查找「兼容旧前端」 — [REMOVE]
+source/protocol/agent-module-management/src/bridge.rs:252-270 — 测试 legacy_agent_output_without_branch_id_still_decodes（旧 Core 序列化缺 branch_id） — [REMOVE]
+source/protocol/agent-module-management/src/bridge.rs:363-377 — 测试 session_info_without_node_id_deserializes（旧 Core SessionInfo 无 node_id） — [REMOVE]
 
 ## source/backend/echo-adapter-qq
 
@@ -215,6 +215,6 @@ document/dev/dev-testing.md:41 — 测试覆盖 qq_instances legacy 端口/共�
 
 ## 核验备注（非清单项）
 
-- `echo-module-federation/src/link.rs:632-644` 的 protocol_version 校验为**严格相等**（当前行为，未见旧版本容忍分支）；`echo-module-api/src/protocol.rs:17-19` 的 `compatible()` 在 v1 为严格相等——均为当前协商/拒绝逻辑，不属旧版兼容债。相关「版本不兼容拒绝」测试（conformance/tests）同为当前行为守护。
+- `agent-module-federation/src/link.rs:632-644` 的 protocol_version 校验为**严格相等**（当前行为，未见旧版本容忍分支）；`echo-module-api/src/protocol.rs:17-19` 的 `compatible()` 在 v1 为严格相等——均为当前协商/拒绝逻辑，不属旧版兼容债。相关「版本不兼容拒绝」测试（conformance/tests）同为当前行为守护。
 - 第三方端点类「兼容」措辞（DeepSeek/Anthropic/OpenAI 兼容端点、Kimi、`echo-sanitize` 网关、`echo-llm-*` 实现）与「provider 容错解析」不属本类债务，未列入。
 - `config/modules.example.toml` 无命中；`document` 中「已移除/已取消」多为已完成的能力下线或状态文案，未列入。

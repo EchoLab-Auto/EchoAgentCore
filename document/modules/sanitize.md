@@ -19,7 +19,7 @@ link: []
 | `kind` | `security` |
 | 来源 / 运行形态 | 内置（`builtin = true`）/ 进程内 |
 | 作用域 | **`Process`**（`KIND_SCOPE`）——人格白名单碰不到它 |
-| 实现 crate | `source/modules/echo-module-sanitize` |
+| 实现 crate | `source/modules/agent-module-sanitize` |
 | 默认 provider | 本模块内的 `RegistryRedactor`（`src/registry.rs`） |
 
 ## 贡献
@@ -30,7 +30,7 @@ link: []
 
 | 消费方 | 怎么拿 |
 | --- | --- |
-| 进程内模块 | `MountContext.ctx` → `echo_module_sanitize::service_key()` |
+| 进程内模块 | `MountContext.ctx` → `agent_module_sanitize::service_key()` |
 | 子进程模块 | `HostCall { service = "sanitizer", method = "redact" \| "scan" \| "register_secret" }` → 宿主 `SanitizerHostService` 转调 |
 | 宿主自身（卡口） | 组合根持有的 `Arc<dyn Redactor>`（LLM 出口 / 工具出口 / 出站 / 入站） |
 
@@ -41,7 +41,7 @@ link: []
 ```text
 core/src/security.rs::redactor_spec(&cfg)   →  RedactorSpec { secrets, patterns }
                                                   ▲   只有宿主知道"哪些值是秘密"
-echo-module-sanitize::build(&spec)          →  Arc<dyn Redactor>
+agent-module-sanitize::build(&spec)          →  Arc<dyn Redactor>
                                                   ▲   只有模块知道"怎么脱敏"
 ```
 
@@ -52,7 +52,7 @@ echo-module-sanitize::build(&spec)          →  Arc<dyn Redactor>
 | 能力 | 就绪时点 | 理由 |
 | --- | --- | --- |
 | `loop` / `tools.builtin` / `shell` | `mount` 期 | 消费者发生在挂载之后 |
-| **脱敏** | **挂载之前** | 它是 LLM 出口的**装饰器**：`llm` 服务必须以「已脱敏」形态注册进 `Ctx`，而 `echo-module-loop` 声明 `llm` 为硬依赖、在挂载期解析。若脱敏器在 `mount` 里构造，`llm` 早已注册了未脱敏的那份，装饰永远追不上 |
+| **脱敏** | **挂载之前** | 它是 LLM 出口的**装饰器**：`llm` 服务必须以「已脱敏」形态注册进 `Ctx`，而 `agent-module-loop` 声明 `llm` 为硬依赖、在挂载期解析。若脱敏器在 `mount` 里构造，`llm` 早已注册了未脱敏的那份，装饰永远追不上 |
 
 于是分工是**实现归模块、时机归宿主**：组合根在启动早期调 `build(&spec)`，模块在 `mount` 里只做**存在性声明**（空 disposer，与 `echo-agent.subagent` 的纯身份模块同款），服务键在 `host_services::provided_keys()` 里静态登记。
 

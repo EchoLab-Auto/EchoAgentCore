@@ -1,7 +1,7 @@
 //! 敏感信息隔离 seam（service definition 层）。
 //!
 //! [`Redactor`] 是"扫描 / 脱敏 / 登记"能力的可替换契约：默认实现
-//! `RegistryRedactor`（字面值注册表 + 保守模式集）住在 `echo-module-sanitize`
+//! `RegistryRedactor`（字面值注册表 + 保守模式集）住在 `agent-module-sanitize`
 //! 模块内，经 `Ctx` 服务定位器以 `"sanitizer"` 键注册（与 `"llm"` / `"loop"`
 //! 同款机制；该模块另提供强类型 `echo_context::ServiceKey` 供消费方解析）。
 //! # 定位

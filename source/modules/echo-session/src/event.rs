@@ -131,7 +131,7 @@ pub struct AssistantMessage {
 /// 出现，旧日志不会解析它；将来加字段也不破坏已落盘数据。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelStepEvent {
-    /// 本 turn 内的第几步（0 起；与 echo-module-loop `StepStart.step_index` 同口径，
+    /// 本 turn 内的第几步（0 起；与 agent-module-loop `StepStart.step_index` 同口径，
     /// 但由 harness 自增——`StepStart` 没有 turn_id，并发分支无法归因）。
     #[serde(default)]
     pub step_index: usize,

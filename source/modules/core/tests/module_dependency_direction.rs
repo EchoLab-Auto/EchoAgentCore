@@ -209,7 +209,7 @@ fn policy_shape_matches_the_layering_contract() {
 
 /// 某条命令的**实现**不得留在组合根（否则"命令域归模块"只是声明）。
 ///
-/// 背景：`echo-module-federation::commands` 一直声明处理那 5 条命令，但
+/// 背景：`agent-module-federation::commands` 一直声明处理那 5 条命令，但
 /// 真正的处理在 `core/federation_rt.rs::handle_federation_command`（300 行）。
 /// 于是"哪条命令归谁"读模块读得出来、读宿主读不出来——归属是假的。
 ///
@@ -252,7 +252,7 @@ fn module_command_implementations_do_not_live_in_the_composition_root() {
             }
         }
     });
-    // 这 5 条由 `echo-module-federation` 处理；组合根只允许**分发**（
+    // 这 5 条由 `agent-module-federation` 处理；组合根只允许**分发**（
     // `apply_command` 里的兜底 match 不再提及它们，因为模块已认领）。
     // FederationCommand 是联邦模块的领域命令；组合根与协议层的 BackendCommand
     // 仅作外部线协议分发，不能据此判定实现是否留在组合根。
@@ -273,17 +273,17 @@ fn module_command_implementations_do_not_live_in_the_composition_root() {
         .collect();
     assert!(
         leaked.is_empty(),
-        "这些联邦命令的实现仍在组合根里（应搬进 echo-module-federation::admin，\
+        "这些联邦命令的实现仍在组合根里（应搬进 agent-module-federation::admin，\
          宿主只实现 FederationAdminHost 的原子动作）：{leaked:#?}"
     );
 
     // 反方向：模块必须**真的**认得它们（只删不搬 = 命令没人处理）。
-    let fed_root = root.join("modules/echo-module-federation/src");
+    let fed_root = root.join("modules/agent-module-federation/src");
     let fed_text = walk_text(&fed_root);
     for command in federation_commands {
         assert!(
             fed_text.contains(&format!("FederationCommand::{command}")),
-            "echo-module-federation 未处理 FederationCommand::{command}"
+            "agent-module-federation 未处理 FederationCommand::{command}"
         );
     }
 
@@ -298,7 +298,7 @@ fn module_command_implementations_do_not_live_in_the_composition_root() {
 
     #[allow(unreachable_code)]
     let module = owners
-        .get("echo-module-federation")
+        .get("agent-module-federation")
         .cloned()
         .unwrap_or_default();
     let owned: BTreeSet<&str> = module
@@ -361,17 +361,17 @@ fn walk_rs(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
 /// 模块层**不得依赖别的模块**：只允许机制 crate。
 ///
 /// 背景（2026-11 实测）：曾有 4 处模块互依赖，全部是"一个 trait/struct 长在了
-/// 错的一边"——federation 要 `impl echo_module_subagent::RemoteDelegationSink`、
-/// `use echo_module_workspace::{QueryFuture, RemoteWorkspaceQuery}`、
-/// `type RemoteInvoker = echo_module_tools::…`；tools 要
-/// `use echo_module_provider_llm::api_pool::PoolSnapshot`。
+/// 错的一边"——federation 要 `impl agent_module_subagent::RemoteDelegationSink`、
+/// `use agent_module_workspace::{QueryFuture, RemoteWorkspaceQuery}`、
+/// `type RemoteInvoker = agent_module_tools::…`；tools 要
+/// `use agent_module_provider_llm::api_pool::PoolSnapshot`。
 ///
 /// 后果不是"多一条边"，而是**替换不可能**：想换掉 federation 就必须先接受
 /// subagent 的词汇。它们一直能编译、一直没人拦。
 ///
 /// 例外只有机制 crate（"模块怎么装"，不是"某个模块"）：
 /// `echo-module` / `echo-module-api` / `echo-module-host` / `echo-module-sdk`
-/// / `echo-module-loader`。`echo-module-federation` 的通用连接与 Panel 端口合并
+/// / `echo-module-loader`。`agent-module-federation` 的通用连接与 Panel 端口合并
 /// 共用同一监听/认证接缝，因此它是管理面允许直接依赖的基础设施例外。
 ///
 /// 本条与 `scripts/deps-policy.txt` 的白名单**互为冗余**：policy 是人读的
@@ -384,10 +384,10 @@ fn modules_do_not_depend_on_other_modules() {
         "echo-module-host",
         "echo-module-sdk",
         "echo-module-loader",
-        "echo-module-federation",
-        "echo-module-tools",
-        "echo-module-loop",
-        "echo-module-management",
+        "agent-module-federation",
+        "agent-module-tools",
+        "agent-module-loop",
+        "agent-module-management",
     ];
     let root = repo_root().join("source/modules");
     let mut violations = Vec::new();
@@ -405,7 +405,7 @@ fn modules_do_not_depend_on_other_modules() {
             .to_string();
         if matches!(
             name.as_str(),
-            "echo-agent" | "echo-module-loop" | "echo-test-utils" | "core"
+            "echo-agent" | "agent-module-loop" | "echo-test-utils" | "core"
         ) {
             continue;
         }

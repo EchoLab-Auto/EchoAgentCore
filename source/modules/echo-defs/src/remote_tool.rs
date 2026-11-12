@@ -87,9 +87,9 @@ mod tests {
 ///
 /// ## 为什么在定义层（2026-11 S12）
 ///
-/// 声明方是 `echo-module-tools`（`node://` 前缀的**消费方**），实现方是联邦
+/// 声明方是 `agent-module-tools`（`node://` 前缀的**消费方**），实现方是联邦
 /// 子系统（组合根装配）。此前它住在 tools 模块里，于是联邦模块不得不
-/// `use echo_module_tools::RemoteInvoker` —— **两个互不相干的模块因为一个字面量
+/// `use agent_module_tools::RemoteInvoker` —— **两个互不相干的模块因为一个字面量
 /// 结了依赖**。类型本身是"一次跨机调用"这个动作的形状，不含任何一方的实现，
 /// 所以它的家在定义层。
 pub type RemoteInvoker = std::sync::Arc<

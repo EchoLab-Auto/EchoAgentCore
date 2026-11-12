@@ -3,24 +3,24 @@ resolver = "2"
 members = [
     "source/modules/echo-defs",
     "source/modules/echo-session",
-    "source/modules/echo-module-tools",
-    "source/modules/echo-module-shell",
+    "source/modules/agent-module-tools",
+    "source/modules/agent-module-shell",
     "source/modules/echo-config",
     "source/test/utils",
     "source/modules/core",
-    "source/modules/echo-module-provider-llm",
-    "source/modules/echo-module-skills",
-    "source/modules/echo-module-federation",
-    "source/modules/echo-module-loop",
-    "source/modules/echo-module-self-update",
-    "source/modules/echo-module-sanitize",
-    "source/modules/echo-module-shell",
-    "source/modules/echo-module-session",
-    "source/modules/echo-module-prodoc",
-    "source/modules/echo-module-transcript",
-    "source/modules/echo-module-management",
+    "source/modules/agent-module-provider-llm",
+    "source/modules/agent-module-skills",
+    "source/modules/agent-module-federation",
+    "source/modules/agent-module-loop",
+    "source/modules/agent-module-self-update",
+    "source/modules/agent-module-sanitize",
+    "source/modules/agent-module-shell",
+    "source/modules/agent-module-session",
+    "source/modules/agent-module-prodoc",
+    "source/modules/agent-module-transcript",
+    "source/modules/agent-module-management",
     "source/modules/echo-protocol",
-    "source/modules/echo-module-tools",
+    "source/modules/agent-module-tools",
 ]
 
 [workspace.package]
@@ -67,29 +67,29 @@ echo-config = { path = "source/modules/echo-config" }
 echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
 echo-session = { path = "source/modules/echo-session" }
 
-echo-protocol = { package = "echo-module-management", path = "source/modules/echo-module-management" }
+echo-protocol = { package = "agent-module-management", path = "source/modules/agent-module-management" }
 echo-test-utils = { path = "source/test/utils" }
 echo-module = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
 echo-module-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
 echo-module-host = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
 echo-module-loader = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
-echo-module-provider-llm = { path = "source/modules/echo-module-provider-llm" }
-echo-module-skills = { path = "source/modules/echo-module-skills" }
-echo-module-federation = { path = "source/modules/echo-module-federation" }
-echo-module-loop = { path = "source/modules/echo-module-loop" }
-echo-module-self-update = { path = "source/modules/echo-module-self-update" }
-echo-module-sanitize = { path = "source/modules/echo-module-sanitize" }
-echo-module-shell = { path = "source/modules/echo-module-shell" }
-echo-module-subagent = { git = "https://github.com/EchoLab-Auto/agent-module-subagent", branch = "main" }
+agent-module-provider-llm = { path = "source/modules/agent-module-provider-llm" }
+agent-module-skills = { path = "source/modules/agent-module-skills" }
+agent-module-federation = { path = "source/modules/agent-module-federation" }
+agent-module-loop = { path = "source/modules/agent-module-loop" }
+agent-module-self-update = { path = "source/modules/agent-module-self-update" }
+agent-module-sanitize = { path = "source/modules/agent-module-sanitize" }
+agent-module-shell = { path = "source/modules/agent-module-shell" }
+agent-module-subagent = { git = "https://github.com/EchoLab-Auto/agent-module-subagent", branch = "main" }
 # 工作区会话模块已迁出为独立仓库 agent-module-workspace（业务逻辑全在那边，
-# Core 只做通用接线）；crate 名保持 echo-module-workspace 不变。
-echo-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", branch = "main" }
-echo-module-management = { package = "echo-module-management", path = "source/modules/echo-module-management" }
-echo-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", branch = "main" }
-echo-module-session = { path = "source/modules/echo-module-session" }
-echo-module-prodoc = { path = "source/modules/echo-module-prodoc" }
-echo-module-transcript = { path = "source/modules/echo-module-transcript" }
-echo-module-tools = { path = "source/modules/echo-module-tools" }
+# Core 只做通用接线）；crate 名保持 agent-module-workspace 不变。
+agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", branch = "main" }
+agent-module-management = { package = "agent-module-management", path = "source/modules/agent-module-management" }
+agent-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", branch = "main" }
+agent-module-session = { path = "source/modules/agent-module-session" }
+agent-module-prodoc = { path = "source/modules/agent-module-prodoc" }
+agent-module-transcript = { path = "source/modules/agent-module-transcript" }
+agent-module-tools = { path = "source/modules/agent-module-tools" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }
@@ -133,7 +133,7 @@ aho-corasick = "1"
 # 重定向至当前工作区，避免 path 与 git 各生成一份 trait 类型。
 [patch."https://github.com/EchoLab-Auto/EchoAgentCore"]
 echo-protocol = { path = "source/modules/echo-protocol" }
-echo-module-tools = { path = "source/modules/echo-module-tools" }
-echo-module-shell = { path = "source/modules/echo-module-shell" }
-echo-module-federation = { path = "source/modules/echo-module-federation" }
+agent-module-tools = { path = "source/modules/agent-module-tools" }
+agent-module-shell = { path = "source/modules/agent-module-shell" }
+agent-module-federation = { path = "source/modules/agent-module-federation" }
 echo-defs = { path = "source/modules/echo-defs" }

@@ -1,0 +1,56 @@
+[package]
+name = "agent-module-loop"
+description = "EchoAgentCore unified Agent and model-tool loop module"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+echo-defs = { path = "../echo-defs" }
+echo-config = { workspace = true }
+echo-context = { workspace = true }
+echo-session = { path = "../echo-session" }
+agent-module-management = { path = "../agent-module-management" }
+echo-module = { workspace = true }
+echo-module-host = { workspace = true }
+base64 = { workspace = true }
+agent-module-provider-llm = { workspace = true }
+agent-module-self-update = { workspace = true }
+agent-module-shell = { workspace = true }
+agent-module-federation = { workspace = true }
+agent-module-session = { workspace = true }
+agent-module-prodoc = { workspace = true }
+agent-module-transcript = { workspace = true }
+agent-module-skills = { workspace = true }
+agent-module-tools = { workspace = true }
+agent-module-subagent = { workspace = true }
+agent-module-sanitize = { workspace = true }
+agent-module-workspace = { workspace = true }
+tokio.workspace = true
+parking_lot = "0.12"
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+dashmap.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+walkdir.workspace = true
+regex.workspace = true
+toml.workspace = true
+tokio-util.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# bash 进程组清理（ChildGroupGuard 向进程组发 SIGKILL）。
+libc = "0.2"
+
+[dev-dependencies]
+filetime = "0.2"
+echo-test-utils = { path = "../../test/utils" }
+proptest = "1"

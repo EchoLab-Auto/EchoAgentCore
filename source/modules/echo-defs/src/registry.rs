@@ -1,4 +1,4 @@
-//! # echo-module-tools — 工具子系统机制（解耦计划 Phase 3 前置）
+//! # agent-module-tools — 工具子系统机制（解耦计划 Phase 3 前置）
 //!
 //! `Tool` 词汇与接缝在定义层 [`crate::tool`]；本 crate 只持有**运行期
 //! 机制** [`ToolRegistry`]——原 `echo-agent::packages::tool` 的独立 crate 化，

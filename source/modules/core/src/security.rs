@@ -1,7 +1,7 @@
 //! 敏感信息防护的组合根辅助（2026-10 脱敏服务装配）。
 //!
 //! - [`redactor_spec`]：从 `[security.sanitize]` 与配置中的凭证字段收集
-//!   「要脱敏哪些值」（**构造本身在 `echo-module-sanitize`**——实现归模块，
+//!   「要脱敏哪些值」（**构造本身在 `agent-module-sanitize`**——实现归模块，
 //!   宿主只提供秘密表）；
 //! - [`OutboundPolicy`]：QQ 外发命中策略（`block` / `redact`）；
 //! - [`sensitive_dirs`]：外发文件需要保护的敏感目录列表（配置目录、
@@ -105,7 +105,7 @@ impl echo_module_host::HostService for SanitizerHostService {
 
 /// 收集"要脱敏哪些值"——**只有宿主知道的那一半**。
 ///
-/// 构造本身在 `echo-module-sanitize`（`build(&spec)`）：本函数不认识任何
+/// 构造本身在 `agent-module-sanitize`（`build(&spec)`）：本函数不认识任何
 /// 脱敏实现，只回答"这台部署上哪些字符串是秘密"。这份切分让换脱敏实现
 /// 等于换模块，而不用改组合根。
 ///
@@ -117,8 +117,8 @@ impl echo_module_host::HostService for SanitizerHostService {
 ///   的字符串值——**不点名任何平台**，新增平台自动纳入）；
 /// - `[security.sanitize]` 的 `extra_secrets`（label `extra:<序号>`）与
 ///   `extra_patterns`（名字 → regex）。
-pub fn redactor_spec(cfg: &CoreConfig) -> echo_module_sanitize::RedactorSpec {
-    let mut spec = echo_module_sanitize::RedactorSpec::default();
+pub fn redactor_spec(cfg: &CoreConfig) -> agent_module_sanitize::RedactorSpec {
+    let mut spec = agent_module_sanitize::RedactorSpec::default();
     let agent = &cfg.agent;
     if !agent.api_key.trim().is_empty() {
         spec.secrets.push((agent.api_key.clone(), "api_key".into()));
@@ -234,7 +234,7 @@ fn collect_credential_values(table: &toml::Table) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use echo_module_sanitize::RegistryRedactor;
+    use agent_module_sanitize::RegistryRedactor;
 
     use echo_defs::sanitize::sensitive_local_path;
 
@@ -310,7 +310,7 @@ mod tests {
             .sanitize
             .extra_patterns
             .insert("corp_id".into(), r"corp2-[A-Z0-9]{8}".into());
-        let redactor = echo_module_sanitize::build(&redactor_spec(&cfg));
+        let redactor = agent_module_sanitize::build(&redactor_spec(&cfg));
         let report = redactor.redact(
             "key=sk-configsecretsk-configsecret extra=corp-extra-secret-1 id=corp2-ABCDEFGH",
         );

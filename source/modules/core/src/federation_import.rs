@@ -21,13 +21,13 @@ use crate::FederationRuntime;
 
 pub(crate) async fn deliver_aggregate_summary(
     rt: &crate::federation_rt::FederationRuntime,
-    summary: echo_module_loop::federation::aggregator::AggregateSummary,
+    summary: agent_module_loop::federation::aggregator::AggregateSummary,
 ) {
     for (_id, agent) in rt.live_personas().await {
         if agent.trunk.get(&summary.session_id).is_some() {
             agent
                 .trunk
-                .push_timeline(echo_module_management::protocol::TimelineMessage {
+                .push_timeline(agent_module_management::protocol::TimelineMessage {
                     seq: 0, // push_timeline 内部分配
                     kind: "system".into(),
                     content: summary.text.clone(),
@@ -99,9 +99,9 @@ pub(crate) fn session_import_result(
     success: bool,
     imported_events: usize,
     message: String,
-) -> echo_module_federation::FedFrame {
-    echo_module_federation::FedFrame::SessionImportResult(
-        echo_module_federation::SessionImportResultFrame {
+) -> agent_module_federation::FedFrame {
+    agent_module_federation::FedFrame::SessionImportResult(
+        agent_module_federation::SessionImportResultFrame {
             transfer_id: transfer_id.to_string(),
             session_id: session_id.to_string(),
             target_peer: target_peer.to_string(),
@@ -123,7 +123,7 @@ pub(crate) struct ImportBuffer {
 
 /// 凑齐后的导入任务：由泵 spawn 到阻塞线程执行（大日志投影不阻塞联邦泵）。
 pub(crate) struct ImportReady {
-    trunk: echo_module_loop::TrunkStore,
+    trunk: agent_module_loop::TrunkStore,
     session_id: String,
     transfer_id: String,
     target_peer: String,
@@ -169,7 +169,7 @@ pub(crate) fn contiguous_acked(chunks: &[Option<String>]) -> u32 {
 /// `acked_upto` 是连续收到的块数（回 ack 推进源窗口 / 触发重发）。
 pub(crate) fn handle_session_import(
     rt: &crate::federation_rt::FederationRuntime,
-    frame: &echo_module_federation::SessionImportFrame,
+    frame: &agent_module_federation::SessionImportFrame,
     imports: &mut std::collections::HashMap<String, ImportBuffer>,
 ) -> (u32, ImportOutcome) {
     let total = frame.chunk_total as usize;
@@ -296,7 +296,7 @@ pub(crate) fn note_session_import_ack(
 /// 会话迁移（P3-2b）：源侧导出会话事件日志 → 按块经联邦送到目标节点 →
 /// 目标导入到同名 persona 的事实来源日志 → 回执驱动结果事件。
 pub(crate) async fn handle_migrate_session(
-    emit: std::sync::Arc<dyn Fn(echo_module_management::protocol::BackendEvent) + Send + Sync>,
+    emit: std::sync::Arc<dyn Fn(agent_module_management::protocol::BackendEvent) + Send + Sync>,
     rt: &FederationRuntime,
     session_id: String,
     team_id: Option<String>,
@@ -307,7 +307,7 @@ pub(crate) async fn handle_migrate_session(
     let tp = target_peer.clone();
     let fail = move |message: String| {
         emit_fail(
-            echo_module_management::protocol::BackendEvent::SessionMigrated {
+            agent_module_management::protocol::BackendEvent::SessionMigrated {
                 session_id: sid.clone(),
                 target_peer: tp.clone(),
                 new_session_id: None,
@@ -368,7 +368,7 @@ pub(crate) async fn handle_migrate_session(
         ));
         return;
     }
-    let transfer_id = echo_module_federation::new_call_id(rt.federation.local_node_id());
+    let transfer_id = agent_module_federation::new_call_id(rt.federation.local_node_id());
     let total = chunks.len() as u32;
     let source_team = persona_id.clone();
     // 注册 ack 通道（泵收到目标 SessionImportAck 时推进）。
@@ -391,8 +391,8 @@ pub(crate) async fn handle_migrate_session(
                 break Ok(());
             }
             if next < total && next < acked.saturating_add(SESSION_IMPORT_WINDOW) {
-                let frame = echo_module_federation::FedFrame::SessionImport(
-                    echo_module_federation::SessionImportFrame {
+                let frame = agent_module_federation::FedFrame::SessionImport(
+                    agent_module_federation::SessionImportFrame {
                         transfer_id: transfer_id.clone(),
                         session_id: session_id.clone(),
                         team_id: source_team.clone(),
@@ -432,7 +432,7 @@ pub(crate) async fn handle_migrate_session(
         events.len()
     );
     emit(
-        echo_module_management::protocol::BackendEvent::SessionMigrated {
+        agent_module_management::protocol::BackendEvent::SessionMigrated {
             session_id,
             target_peer,
             new_session_id: None, // 待目标 SessionImportResult 回执确认

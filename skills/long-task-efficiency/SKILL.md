@@ -1,7 +1,7 @@
 ---
 name: long-task-efficiency
-description: 长任务执行效率 — 每次响应打包 2-4 条独立调用（跨轮等待中位 2.4s，懒得分轮代价最大）；同一文件同段内最多读 2 次，第 2 次必须放大范围；**等待等条件不等时间**（无条件 sleep 占过一次会话 61% 工具耗时的 2989s；改用 `until <cond>; do sleep 2; done`，>30s 命令后台化 + 期间并行推进）；>20K 字符输出落盘分页，禁整读；每 50 步一次检查点与拆分判断 (常驻)
-keywords: [长任务, 效率, 批处理, 并行, 往返, 轮次, 轮询, 重试, 重试失败, 超时, 上下文, bash, 检查点, checkpoint, 读文件, 分页, 落盘, 后台, bash-exec]
+description: 长任务执行效率 — **编译/测试/安装/下载/克隆/训练/数据处理/全盘扫描/常驻进程一律后台化**（优先 `bash-start` + `bash-exec` 会话；判据是任务类别不是秒数，`timeout_secs` 只把窗口抬到 300s 上限，不是长任务开关）；每次响应打包 2-4 条独立调用（跨轮等待中位 2.4s，懒得分轮代价最大）；同一文件同段内最多读 2 次，第 2 次必须放大范围；等待等条件不等时间（无条件 sleep 占过一次会话 61% 工具耗时的 2989s）；>20K 字符输出落盘分页，禁整读；每 50 步一次检查点与拆分判断 (常驻)
+keywords: [长任务, 效率, 批处理, 并行, 往返, 轮次, 轮询, 重试, 重试失败, 超时, timeout, timeout_secs, 上下文, bash, 后台, 后台化, 后台shell, bash-start, bash-exec, shell会话, 构建, 测试, 训练, 检查点, checkpoint, 读文件, 分页, 落盘]
 ---
 
 # 长任务执行效率
@@ -70,9 +70,99 @@ keywords: [长任务, 效率, 批处理, 并行, 往返, 轮次, 轮询, 重试,
 - 需要重读第 3 次时，改为：`sed -n '1,<文件末尾>p'` 一次读全 / 或直接
   `search_code` 拿全部命中行号再按行号并读。
 
-## 3. 长等待：等条件，不等时间（**最贵的习惯**）
+## 3. 长任务：先切后台会话，再谈超时（**最贵的习惯**）
 
-### 硬规矩
+### 3.1 判据是「任务类别」，不是秒数
+
+**不要用「预计多少秒」来分诊——模型估不准耗时。判据是「这条命令属于哪一类」。**
+
+**默认后台化**（`&` + 重定向 + 哨兵，或有 `bash-start`/`bash-exec` 时用会话）：
+
+| 类别 | 典型命令 |
+| --- | --- |
+| 编译 / 构建 | `cargo build`、`cargo check --workspace`、`make`、`cmake --build`、`npm run build`、`vite build`、`docker build`、`docker compose build` |
+| 测试 | `cargo test`、`cargo nextest`、`pytest`、`vitest run`、`playwright test` |
+| 依赖安装 | `npm/pnpm/yarn install`、`pip install`、`uv sync`、`cargo install`、`apt install`、`conda create` |
+| 训练 / 推理 / 数据处理 | `python train.py`、`torchrun`、`accelerate launch`、`deepspeed`、大规模 pkl/joblib 加载、数据集格式转换 |
+| 下载 / 克隆 / 打包 | `git clone`、大仓库 `git fetch/pull`、`wget`/`curl` 大文件、`huggingface-cli download`、数据集解压、`tar` 打包、`rsync` |
+| 大范围扫描 | `rg`/`find` 扫整个盘或整个家目录、`du`、`grep -r` 全仓 |
+| 常驻 / 持续输出 | dev server、watch 构建、`tail -f`、训练日志监控 |
+
+**可以直接前台跑**（这些不会久，一轮拿结果最省）：
+
+| 类别 | 典型命令 |
+| --- | --- |
+| 状态查询 | `git status`、`git diff`、`git log`、`ls`、`pwd`、`ss -ltn`、`systemctl --user is-active` |
+| 小范围读 | `sed -n 'A,Bp'`、`head`/`tail` 单文件、`cat` 小文件、`jq` 单文件、`stat` |
+| 单文件 / 单模块检索 | `grep -n <pattern> <file>`、`grep -rn … 单个模块目录`、`search_code` |
+| 带短超时的探测 | `curl -m 5`、`timeout 5 ping`、`nc -z -w 2` |
+| 小改动后验证 | `cargo check -p <单包>`（增量、已完成首次编译）、`python -c` 单行脚本 |
+
+**判不准时一律后台化**：代价不对称——后台化只多一轮 poll（约 2 秒），
+前台卡住则白等满 120s、拿不到任何输出、还得重跑。
+
+### 3.2 `timeout_secs` 的定位：最后一个选项，不是第一个
+
+它仍可用（默认 120s），但作用只是把单次调用的等待窗口抬到**最多 300s**——
+300s 是硬天花板，它不是「长任务开关」。它解决不了上表里那些真实的长任务：
+
+- 全量 `cargo build`、`npm install`、克隆大仓库填 `timeout_secs: 300`，只是把
+  失败从 120s 推迟到 300s，最后拿到一个**既无输出也无进度**的超时错误；
+- 这 300s 整轮阻塞：没有中间输出、不能并行、拿不到部分结果；
+- 写成习惯后，连 `ls` / `grep` 也会顺手带上它（纯冗余，只是把卡死时的
+  暴露时间从 120s 拖到 300s）。
+
+**只有一种情况该用它**：命令确实要跑 2–5 分钟，且**无法后台化**——例如它
+必须前台读交互输入、或必须一条命令内完成（`a && b && c` 的中间态不能用）。
+上表里的编译 / 测试 / 安装 / 下载 / 训练一律后台化，不看秒数。
+
+超时之后也不要用「加大 `timeout_secs`」重跑同一个命令——那是把同一个坑
+挖深；改为后台化。
+
+### 3.3 后台会话怎么写（`echo-agent.shell` 已启用时首选）
+
+```text
+# 轮 1：起会话 + 后台起任务，立刻返回
+bash-start(workdir="/path/to/repo")                        → session_id
+bash-exec(session_id,
+  "cargo test --workspace > /tmp/t.log 2>&1; echo EXIT=$? >> /tmp/t.log &")
+
+# 轮 2..N：每轮短轮询，立刻返回（不阻塞、不撞墙）
+bash-exec(session_id,
+  "grep -q '^EXIT=' /tmp/t.log && tail -30 /tmp/t.log || echo RUNNING")
+```
+
+要点：
+
+- **`&` + 重定向 + `EXIT=` 哨兵三者缺一不可**；缺哨兵永远判不出完成。
+- `bash-exec` 单条 120s 到点**不销毁会话**，直接再 poll 一次——这是它相对
+  `bash` 的核心优势：长任务不必「一轮跑完」。
+- 同一会话保持 cwd / export / 后台作业，多步流程可分多轮推进。
+- 会话里的常驻进程在 Shell 视图可见；任务结束记得 `bash-stop(session_id)`。
+
+### 3.4 没有 shell 模块时：`bash` 的后台化写法
+
+重定向 + 哨兵同样必需——裸 `&` 仍会阻塞到子进程结束（`wait_with_output()`
+等 stdout 到 EOF，实测 `(sleep 8; echo A) &` 阻塞满 8 秒）：
+
+```bash
+# 同一轮就要结果：等到哨兵出现立刻返回
+(cargo test --workspace > /tmp/t.log 2>&1; echo "EXIT=$?" >> /tmp/t.log) &
+until grep -q '^EXIT=' /tmp/t.log 2>/dev/null; do sleep 2; done; tail -20 /tmp/t.log
+```
+
+```bash
+# 这一轮先返回、去干别的（推荐）：只起任务，不等待
+(cargo build --release > /tmp/b.log 2>&1; echo "EXIT=$?" >> /tmp/b.log) &
+# 同一响应里继续发别的独立调用
+grep -n "TODO" src/**/*.rs | head -20
+git status --short
+```
+
+下一轮再 `until grep -q '^EXIT=' /tmp/b.log 2>/dev/null; do sleep 2; done; tail -20 /tmp/b.log`。
+**没有 `EXIT=` 哨兵时 `until` 会永远等下去**——哨兵和重定向必须成对出现。
+
+### 3.5 等条件，不等时间
 
 **不用无条件 `sleep` 等结果。** 要等就等条件——`until <条件>; do sleep 1-2; done`。
 
@@ -99,7 +189,7 @@ until grep -q '^EXIT=' /tmp/t.log 2>/dev/null; do sleep 2; done; cat /tmp/t.log
 轮询**严格更快**：`sleep 200` 只能等满 200 秒，`until` 在 130 秒就返回。
 而且 `sleep` 撞上工具 120s 上限时只拿到一个超时错误，什么信息都没有。
 
-### 四种场景的写法
+### 3.6 四种场景的写法
 
 | 场景 | ❌ 不要 | ✅ 这样写 |
 | --- | --- | --- |
@@ -110,45 +200,15 @@ until grep -q '^EXIT=' /tmp/t.log 2>/dev/null; do sleep 2; done; cat /tmp/t.log
 
 轮询间隔 **1–2 秒**：短到条件一满足就返回，长到不刷爆日志和 CPU。
 
-### 例外（这些不是浪费）
+### 3.7 期间并行 + 例外
 
-- **几秒内的短 `sleep`**：等文件落盘、等子进程起头；
-- **`bash-exec` 里的等待**：本来就是跑常驻进程的会话，等待属于命令本身；
-- **测试夹具**：为构造"超时"场景写长 `sleep` 是正当用法。
-
-### 等待期间仍然要并行
-
-- 构建、安装、长测试：`cmd > /tmp/x.log 2>&1 &` 起后台后，**同一轮里继续
-  干别的**；下一次需要结果时再 `tail`/`grep`。
-- 单条命令 >30s 的有 243 次（>120s 大量）：期间不要空转，同轮发别的独立
-  任务；预计超工具 timeout（默认 120s，max 300s）就显式传 `timeout_secs`，
-  别让命令被砍掉再重跑。
-
-**启动即并行（模板）**：
-
-```bash
-# 一条 bash 调用：后台起长任务，立刻返回（重定向 + 哨兵缺一不可）
-(cargo build --release > /tmp/b.log 2>&1; echo "EXIT=$?" >> /tmp/b.log) &
-# 同一响应里继续发别的独立调用
-grep -n "TODO" src/**/*.rs | head -20
-git status --short
-```
-
-有 `bash-start` / `bash-exec`（`echo-agent.shell` 已启用）时，改用会话：
-`bash-start(workdir=...)` 拿 session_id，再 `bash-exec(session_id, "<同一条命令>")`——
-输出实时进面板，超时**不销毁会话**，可以直接再 poll 一次。
-
-必须在**一条命令内**等（拿不到后台句柄时）：
-
-```bash
-for i in $(seq 1 20); do
-  grep -q "EXIT=" /tmp/b.log && break
-  sleep 2
-done; tail -20 /tmp/b.log
-```
-
-**等待期三件事清单**（挑 1–2 件立刻做）：① 写文档/报告骨架；② 准备测试或
-回归命令；③ 读下一个模块的代码。禁止的动作：`sleep` 后再 `sleep`。
+- 构建、安装、长测试起后台后，**同一轮继续干别的**；需要结果时再 `tail`/`grep`。
+- 实测 >30s 的命令 243 次（其中 >120s 大量）：它们几乎都落在上表的「默认后台化」
+  类别里——这些是最该后台化的样本，不是最该调 `timeout_secs` 的样本。
+- **等待期三件事清单**（挑 1–2 件立刻做）：① 写文档/报告骨架；② 准备测试或
+  回归命令；③ 读下一个模块的代码。禁止的动作：`sleep` 后再 `sleep`。
+- 例外（不是浪费）：几秒内的短 `sleep`（等落盘/起进程）、`bash-exec` 里的
+  等待（属于常驻会话本身）、测试夹具为构造超时场景写长 `sleep`。
 
 ## 4. 大输出：分页 / 落盘（>20K 字符别整读）
 
@@ -174,7 +234,8 @@ prompt 涨到 30 万 token（p90 往返 14.4s 的长尾主要来自这里）。
   保持住）：先判定原因再动手。
   - `file not found` → 先 `ls` 确认路径（一次），再决定改路径还是新建；
   - `工具参数无效`（如 `start_line and end_line required`）→ 补齐参数重发是对的；
-  - `timeout after Ns` → 拆小命令或加大 `timeout_secs`，**不要原样重来**；
+  - `timeout after Ns` → **先改后台化**（`bash-start` + `&` + 哨兵），别再靠加大
+    `timeout_secs` 重跑同一条命令；确实不可拆才显式调到需要的窗口；
   - `远程节点「X」响应超时` → 换本机执行或稍后重试 1 次，连续 2 次失败改本机；
   - `blocked command` → 改写命令规避，不要第三次试同一条。
 - 错误构成（3 天 54 次）：超时 12、远程节点 9、参数校验 7、路径 5、会话中断 6
@@ -210,4 +271,6 @@ prompt 涨到 30 万 token（p90 往返 14.4s 的长尾主要来自这里）。
 3. 有没有无条件 `sleep`？（有 → 改 `until 条件` 轮询，或 `&` 后台化，期间干别的）
 4. 有没有刚 `error:` 过就原样重发？（有 → 停下改策略）
 5. 有没有 >20K 字符的输出被整读进上下文？（有 → 落盘 + tail/grep）
-6. 步数过 50 了吗？（过了 → 做检查点三问，含"该不该委派"）
+6. 有没有把编译 / 测试 / 安装 / 下载 / 克隆 / 训练 / 全盘扫描当前台跑，或者
+   给它们填 `timeout_secs: 300` 然后同步干等？（有 → 改 `bash-start` + `bash-exec`）
+7. 步数过 50 了吗？（过了 → 做检查点三问，含"该不该委派"）

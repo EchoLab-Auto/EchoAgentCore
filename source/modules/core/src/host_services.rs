@@ -7,7 +7,7 @@
 //! ```ignore
 //! let shell_host = AgentShellCommandHost::new(agent.clone());
 //! let skills_host = AgentSkillsCommandHost::new(agent.clone());
-//! push(catalog, echo_module_skills::module(version, skills_host, gate))?;
+//! push(catalog, agent_module_skills::module(version, skills_host, gate))?;
 //! ```
 //!
 //! 于���"哪个模块需要宿主的什么"这件事，**住在组合根里**——新增一个模块要改
@@ -37,28 +37,28 @@ use std::sync::Arc;
 
 use echo_context::{Ctx, Disposer};
 use echo_defs::module_instance::ModuleInstance;
-use echo_module_federation::Federation;
-use echo_module_management::host_keys::{ManagementHost, MANAGEMENT_HOST};
-use echo_module_management::protocol::BackendBridge;
-use echo_module_provider_llm::host_keys::PROVIDER_HOST;
-use echo_module_self_update::host_keys::EVENTS as SELF_UPDATE_EVENTS;
-use echo_module_transcript::SESSION_VIEW_HOST_KEY;
+use agent_module_federation::Federation;
+use agent_module_management::host_keys::{ManagementHost, MANAGEMENT_HOST};
+use agent_module_management::protocol::BackendBridge;
+use agent_module_provider_llm::host_keys::PROVIDER_HOST;
+use agent_module_self_update::host_keys::EVENTS as SELF_UPDATE_EVENTS;
+use agent_module_transcript::SESSION_VIEW_HOST_KEY;
 use tracing::warn;
 
-use echo_module_loop::agent::provider_host::AgentProviderCommandHost;
-use echo_module_loop::agent::session_commands_host::AgentSessionCommandHost;
-use echo_module_loop::agent::session_view_host::AgentSessionViewHost;
-use echo_module_loop::agent::shell_host::{AgentInstanceCommandHost, AgentShellCommandHost};
-use echo_module_loop::agent::skills_host::AgentSkillsCommandHost;
-use echo_module_loop::agent::tools_host::AgentToolsCommandHost;
-use echo_module_loop::agent_manager::AgentManager;
-use echo_module_loop::federation::FederationPorts;
-use echo_module_loop::{Agent, EventSink};
+use agent_module_loop::agent::provider_host::AgentProviderCommandHost;
+use agent_module_loop::agent::session_commands_host::AgentSessionCommandHost;
+use agent_module_loop::agent::session_view_host::AgentSessionViewHost;
+use agent_module_loop::agent::shell_host::{AgentInstanceCommandHost, AgentShellCommandHost};
+use agent_module_loop::agent::skills_host::AgentSkillsCommandHost;
+use agent_module_loop::agent::tools_host::AgentToolsCommandHost;
+use agent_module_loop::agent_manager::AgentManager;
+use agent_module_loop::federation::FederationPorts;
+use agent_module_loop::{Agent, EventSink};
 
-use echo_module_federation::host_keys::{EVENTS as FEDERATION_EVENTS, PORTS};
-use echo_module_shell::host_keys::SHELL_HOST;
-use echo_module_skills::host_keys::SKILLS_HOST;
-use echo_module_tools::host_keys::{INSTANCE_HOST, TOOLS_HOST};
+use agent_module_federation::host_keys::{EVENTS as FEDERATION_EVENTS, PORTS};
+use agent_module_shell::host_keys::SHELL_HOST;
+use agent_module_skills::host_keys::SKILLS_HOST;
+use agent_module_tools::host_keys::{INSTANCE_HOST, TOOLS_HOST};
 
 /// 组合根手里那些"配置表达不了、只有装配期知道"的句柄。
 ///
@@ -93,7 +93,7 @@ pub(crate) struct HostWiring {
 ///
 /// ## 为什么由组合根实现
 ///
-/// 契约声明方是**消费方**（`echo-module-workspace`），但网络那一半（发
+/// 契约声明方是**消费方**（`agent-module-workspace`），但网络那一半（发
 /// `FedFrame::Query`、吃 `allow_queries` 授权、按 peer 路由）属联邦子系统。
 /// 组合根同时依赖两侧，是唯一能同时看见"语义"与"传输"的地方——所以它在
 /// 这里，而不是在任何一个模块里。
@@ -104,7 +104,7 @@ pub(crate) struct HostWiring {
 /// 显示「不可采集」占位。**不是** panic，也不该静默返回空结果——空结果会被
 /// 人误读成"对端目录是空的"。
 struct HostRemoteWorkspaceQuery {
-    querier: Option<echo_module_federation::RemoteQuerier>,
+    querier: Option<agent_module_federation::RemoteQuerier>,
 }
 
 impl HostRemoteWorkspaceQuery {
@@ -112,9 +112,9 @@ impl HostRemoteWorkspaceQuery {
     fn query(
         &self,
         peer: String,
-        kind: echo_module_federation::QueryKind,
+        kind: agent_module_federation::QueryKind,
         subject: String,
-    ) -> echo_module_workspace::QueryFuture {
+    ) -> agent_module_workspace::QueryFuture {
         match &self.querier {
             Some(querier) => querier(peer, kind, subject),
             None => Box::pin(async { Err("联邦未接线：远程工作区查询不可用".to_string()) }),
@@ -122,17 +122,17 @@ impl HostRemoteWorkspaceQuery {
     }
 }
 
-impl echo_module_workspace::RemoteWorkspaceQuery for HostRemoteWorkspaceQuery {
-    fn git_status(&self, peer: String, path: String) -> echo_module_workspace::QueryFuture {
-        self.query(peer, echo_module_federation::QueryKind::WorkspaceGitStatus, path)
+impl agent_module_workspace::RemoteWorkspaceQuery for HostRemoteWorkspaceQuery {
+    fn git_status(&self, peer: String, path: String) -> agent_module_workspace::QueryFuture {
+        self.query(peer, agent_module_federation::QueryKind::WorkspaceGitStatus, path)
     }
 
-    fn list_files(&self, peer: String, path: String) -> echo_module_workspace::QueryFuture {
-        self.query(peer, echo_module_federation::QueryKind::WorkspaceFiles, path)
+    fn list_files(&self, peer: String, path: String) -> agent_module_workspace::QueryFuture {
+        self.query(peer, agent_module_federation::QueryKind::WorkspaceFiles, path)
     }
 
-    fn browse(&self, peer: String, path: String) -> echo_module_workspace::QueryFuture {
-        self.query(peer, echo_module_federation::QueryKind::BrowseDirectories, path)
+    fn browse(&self, peer: String, path: String) -> agent_module_workspace::QueryFuture {
+        self.query(peer, agent_module_federation::QueryKind::BrowseDirectories, path)
     }
 }
 
@@ -159,30 +159,30 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         ctx,
         &SHELL_HOST,
         Arc::new(AgentShellCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_module_loop::tool::builtin::ShellCommandHostAlias>,
+            as Arc<dyn agent_module_loop::tool::builtin::ShellCommandHostAlias>,
     );
     put(
         &mut keep,
         ctx,
         &INSTANCE_HOST,
         Arc::new(AgentInstanceCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_module_loop::tool::builtin::InstanceCommandHostAlias>,
+            as Arc<dyn agent_module_loop::tool::builtin::InstanceCommandHostAlias>,
     );
     put(
         &mut keep,
         ctx,
         &TOOLS_HOST,
         Arc::new(AgentToolsCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_module_loop::tool::builtin::ToolsCommandHostAlias>,
+            as Arc<dyn agent_module_loop::tool::builtin::ToolsCommandHostAlias>,
     );
 
     // ── 工具状态 → 线上事件（**绑定方声明**，2026-11 S7）──
     //
     // 执行链不再有 `match state_key { "checklist" => … }` 表，这里也不该有
     // 工具名：谁装了这个工具，谁声明"它的状态长什么线上事件"。绑定本体在
-    // `echo-module-tools`（见 `checklist::state_event_binding`），本层只把
+    // `agent-module-tools`（见 `checklist::state_event_binding`），本层只把
     // 声明装进 agent——新增一个有状态工具时这里一行都不用改。
-    for (key, build) in echo_module_tools::checklist::all_state_event_bindings() {
+    for (key, build) in agent_module_tools::checklist::all_state_event_bindings() {
         wiring.agent.register_tool_state_event(key, build);
     }
 
@@ -190,7 +190,7 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
     put(
         &mut keep,
         ctx,
-        &echo_module_skills::host_keys::PROMPT_STORE,
+        &agent_module_skills::host_keys::PROMPT_STORE,
         wiring.agent.prompt_store(),
     );
 
@@ -200,7 +200,7 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         ctx,
         &SKILLS_HOST,
         Arc::new(AgentSkillsCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_module_loop::skill::commands::SkillsCommandHost>,
+            as Arc<dyn agent_module_loop::skill::commands::SkillsCommandHost>,
     );
 
     // ── 工作区 ──
@@ -219,19 +219,19 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
     put(
         &mut keep,
         ctx,
-        &echo_module_workspace::REMOTE_QUERY,
+        &agent_module_workspace::REMOTE_QUERY,
         Arc::new(HostRemoteWorkspaceQuery {
             querier: wiring.federation.querier.clone(),
-        }) as echo_module_workspace::RemoteQueryHandle,
+        }) as agent_module_workspace::RemoteQueryHandle,
     );
     // ── 联邦：出口集合 + 事件出口 ──
     put(&mut keep, ctx, &PORTS, wiring.federation.clone());
     let fed_sink = wiring.event_sink.clone();
-    let fed_events: std::sync::Arc<dyn Fn(echo_module_federation::FederationEvent) + Send + Sync> =
+    let fed_events: std::sync::Arc<dyn Fn(agent_module_federation::FederationEvent) + Send + Sync> =
         std::sync::Arc::new(move |ev| {
             if let Ok(json) = serde_json::to_string(&ev) {
                 if let Ok(be) =
-                    serde_json::from_str::<echo_module_management::protocol::BackendEvent>(&json)
+                    serde_json::from_str::<agent_module_management::protocol::BackendEvent>(&json)
                 {
                     fed_sink(be);
                 }
@@ -257,16 +257,16 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         ctx,
         &SESSION_VIEW_HOST_KEY,
         Arc::new(AgentSessionViewHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_module_transcript::session_view::SessionViewHost>,
+            as Arc<dyn agent_module_transcript::session_view::SessionViewHost>,
     );
 
     // ── 会话写命令域（清理 / 归档 / 压缩）──
     put(
         &mut keep,
         ctx,
-        &echo_module_session::SESSION_COMMAND_HOST_KEY,
+        &agent_module_session::SESSION_COMMAND_HOST_KEY,
         Arc::new(AgentSessionCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_module_session::SessionCommandHost>,
+            as Arc<dyn agent_module_session::SessionCommandHost>,
     );
 
     // ── 供应商 / API 命令域 ──
@@ -275,7 +275,7 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         ctx,
         &PROVIDER_HOST,
         Arc::new(AgentProviderCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_module_provider_llm::commands::ProviderCommandHost>,
+            as Arc<dyn agent_module_provider_llm::commands::ProviderCommandHost>,
     );
 
     // ── 自更新：只要事件出口 ──
@@ -406,17 +406,17 @@ pub(crate) fn provided_keys() -> Vec<String> {
         INSTANCE_HOST.name().to_string(),
         TOOLS_HOST.name().to_string(),
         SKILLS_HOST.name().to_string(),
-        echo_module_skills::host_keys::PROMPT_STORE
+        agent_module_skills::host_keys::PROMPT_STORE
             .name()
             .to_string(),
         PORTS.name().to_string(),
         FEDERATION_EVENTS.name().to_string(),
         MANAGEMENT_HOST.name().to_string(),
-        echo_module_transcript::SESSION_VIEW_HOST_KEY
+        agent_module_transcript::SESSION_VIEW_HOST_KEY
             .name()
             .to_string(),
         // 会话写命令域（清理 / 归档 / 压缩）：2026-11 S6 从宿主迁进会话模块。
-        echo_module_session::SESSION_COMMAND_HOST_KEY
+        agent_module_session::SESSION_COMMAND_HOST_KEY
             .name()
             .to_string(),
         PROVIDER_HOST.name().to_string(),
@@ -426,11 +426,11 @@ pub(crate) fn provided_keys() -> Vec<String> {
         // provider 实例：键由 provider 模块声明（`PROVIDER_KEY`），值由组合根
         // 按配置构建——两侧同源，见该常量的文档。
         echo_defs::llm::LLM_PROVIDER_SERVICE_KEY.to_string(),
-        echo_module_sanitize::SERVICE_KEY.to_string(),
+        agent_module_sanitize::SERVICE_KEY.to_string(),
         // ── 3. 模块自 provide ──
-        echo_module_loop::SERVICE_KEY.to_string(),
-        echo_module_tools::module::SERVICE_KEY.to_string(),
-        echo_module_shell::SERVICE_KEY.to_string(),
+        agent_module_loop::SERVICE_KEY.to_string(),
+        agent_module_tools::module::SERVICE_KEY.to_string(),
+        agent_module_shell::SERVICE_KEY.to_string(),
     ];
     keys.sort();
     keys.dedup();
@@ -471,7 +471,7 @@ pub(crate) fn gating_from_module_event(
 /// 工作区模块事件 → 宿主动作（返回 `true` = 本事件已被工作区桥消费，
 /// 不再作为 `ModuleEvent` 透传给面板）。
 ///
-/// 三类事件（协议见模块仓 `echo-module-workspace` 的模块文档）：
+/// 三类事件（协议见模块仓 `agent-module-workspace` 的模块文档）：
 ///
 /// - `workspace.backend_event`：载荷是**要发给前端的 `BackendEvent`**（模块
 ///   自己拼好了线形状）——按 `team_id` 找到人格出口，事件原样进面板；
@@ -486,7 +486,7 @@ pub(crate) fn workspace_from_module_event(
     event: &echo_module::ModuleEvent,
 ) -> bool {
     match event.name.as_str() {
-        echo_module_workspace::events::BACKEND_EVENT => {
+        agent_module_workspace::events::BACKEND_EVENT => {
             let team_id = event
                 .payload
                 .as_object()
@@ -495,7 +495,7 @@ pub(crate) fn workspace_from_module_event(
                 .and_then(|value| value.as_str())
                 .filter(|id| !id.is_empty())
                 .map(str::to_string);
-            match serde_json::from_value::<echo_module_management::protocol::BackendEvent>(
+            match serde_json::from_value::<agent_module_management::protocol::BackendEvent>(
                 event.payload.clone(),
             ) {
                 Ok(backend_event) => match team_id.and_then(|id| manager.get(&id)) {
@@ -514,9 +514,9 @@ pub(crate) fn workspace_from_module_event(
             }
             true
         }
-        echo_module_workspace::events::CHANGED => {
+        agent_module_workspace::events::CHANGED => {
             let snapshot =
-                echo_module_loop::agent::workspace_mirror::WorkspaceSnapshot::from_event_payload(
+                agent_module_loop::agent::workspace_mirror::WorkspaceSnapshot::from_event_payload(
                     &event.payload,
                 );
             let team_id = event
@@ -533,7 +533,7 @@ pub(crate) fn workspace_from_module_event(
             }
             true
         }
-        echo_module_workspace::events::CONVERSATION_DELETED => {
+        agent_module_workspace::events::CONVERSATION_DELETED => {
             let team_id = event
                 .payload
                 .get("team_id")
@@ -550,7 +550,7 @@ pub(crate) fn workspace_from_module_event(
                 .cloned()
                 .and_then(|value| {
                     serde_json::from_value::<
-                            echo_module_workspace::wire::WorkspaceConversationInfo,
+                            agent_module_workspace::wire::WorkspaceConversationInfo,
                         >(value)
                         .ok()
                 })
@@ -579,12 +579,12 @@ mod tests {
     /// git，回一个空清单，面板显示成"目录是空的"而不是报错。
     #[tokio::test]
     async fn remote_query_maps_semantic_methods_to_query_kinds() {
-        use echo_module_workspace::RemoteWorkspaceQuery;
+        use agent_module_workspace::RemoteWorkspaceQuery;
 
         let seen: Arc<std::sync::Mutex<Vec<(String, String, String)>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorder = seen.clone();
-        let querier: echo_module_federation::RemoteQuerier = Arc::new(move |peer, kind, subject| {
+        let querier: agent_module_federation::RemoteQuerier = Arc::new(move |peer, kind, subject| {
             recorder
                 .lock()
                 .unwrap()
@@ -625,7 +625,7 @@ mod tests {
     /// 不静默返回空载荷（空载荷会被读成"对端目录是空的"）。
     #[tokio::test]
     async fn remote_query_without_federation_fails_readably() {
-        use echo_module_workspace::RemoteWorkspaceQuery;
+        use agent_module_workspace::RemoteWorkspaceQuery;
         let host = HostRemoteWorkspaceQuery { querier: None };
         assert!(host
             .git_status("gpu-box".into(), "/srv/repo".into())

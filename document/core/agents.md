@@ -71,7 +71,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 系统提示词注入该通道自己的项目信息（**按会话解析**，见下「提示词解析粒度」）；
 - `workspace` 工具默认操作该工作区；`use` 支持可选 `conversation` 直接激活某对话。
 
-**提示词解析粒度**（多窗口语义）。每轮 turn 组装系统提示词时，工作区块按**本次 turn 的 `session_id`** 解析（`echo-module-workspace` 的 `WorkspaceStore::prompt_text_for`），不再无条件读 per-persona 全局 `active`。
+**提示词解析粒度**（多窗口语义）。每轮 turn 组装系统提示词时，工作区块按**本次 turn 的 `session_id`** 解析（`agent-module-workspace` 的 `WorkspaceStore::prompt_text_for`），不再无条件读 per-persona 全局 `active`。
 
 这个块**不是**装配函数的位置参数：它以 `Contribution::Text` 的形式由 `ModuleHost::collect_text_blocks` 收集后交给 `agent/prompt.rs`，块 `kind` 取模块的 `key`（`workspace`）——装配与"有几个模块要注入内容"解耦，新增这类模块不用改装配签名。
 

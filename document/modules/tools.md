@@ -19,9 +19,9 @@ link: ["tool-catalog | 内置工具目录"]
 > 更新会在门禁红：`source/modules/core/tests/doc_catalog.rs` 的 `tool_catalog_is_fresh`）。
 > 本文只讲机制与门控，不复述清单，避免两处漂移。
 
-- `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（`echo-module-tools` crate；`echo-agent` 保留 `echo_agent::tool::…` 兼容路径）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
+- `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（`agent-module-tools` crate；`echo-agent` 保留 `echo_agent::tool::…` 兼容路径）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，模块卸载即撤销
-- 分派入口有两条：turn 内走 echo-module-loop 的工具管线（`spawn_subagent` 经其异步 hook 通道，见 [Subagent 模块](./subagent.md)）；集成测试与直接调用走 `run_tool`（对 `spawn_subagent` 同样特判）。其余工具一律走注册表
+- 分派入口有两条：turn 内走 agent-module-loop 的工具管线（`spawn_subagent` 经其异步 hook 通道，见 [Subagent 模块](./subagent.md)）；集成测试与直接调用走 `run_tool`（对 `spawn_subagent` 同样特判）。其余工具一律走注册表
 
 ### 工具从哪来（三个来源）
 
@@ -29,7 +29,7 @@ link: ["tool-catalog | 内置工具目录"]
 
 | 来源 | 声明方式 | 归属包 | 例子 |
 | --- | --- | --- | --- |
-| 内置工具 | 模块 `BuiltinToolProvider::registry(&ToolsHostCtx)` 声明（`echo-module-tools`）；组合根只**递端口**（实例表 / 工作区根 / 联邦出口 / 配置存储 / 会话查询） | `echo-agent.tools.builtin` | `bash` / `read_file` / `write_file` / `calculator` / `web_search` |
+| 内置工具 | 模块 `BuiltinToolProvider::registry(&ToolsHostCtx)` 声明（`agent-module-tools`）；组合根只**递端口**（实例表 / 工作区根 / 联邦出口 / 配置存储 / 会话查询） | `echo-agent.tools.builtin` | `bash` / `read_file` / `write_file` / `calculator` / `web_search` |
 | 子进程模块工具 | 模块 `Contribution::Custom`（`custom_kind = "echo-agent.tool"`，payload 为工具声明）→ 宿主 `RemoteTool` 转 `Tool` | 模块自报 `package` | 任意外部模块声明的工具（如 `hpc` 包的 18 个） |
 | **模块实例声明的工具** | 实例模块 `InstanceContribution.tools` → `ModuleInstance::tool_specs()` → 宿主通用桥 | `ToolContribution.package` | QQ 的 11 个工具（见下） |
 
@@ -67,12 +67,12 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 直接读 `echo-sessions-*.json` 会拿到滞后快照，还要自己复刻文件格式与人格路由。
 查询走 `EventLog::events_for_session`（只克隆本会话事件），不触发全量深拷。
 
-**为什么它不在 `echo-module-session` 里直接注册工具**：模块之间不得互相依赖
+**为什么它不在 `agent-module-session` 里直接注册工具**：模块之间不得互相依赖
 （`scripts/deps-policy.txt` 第 4 条）。分工是——
 
-- `echo-module-session`：拥有数据与查询语义（`store::query`，`SessionQueryView` 两视图）；
+- `agent-module-session`：拥有数据与查询语义（`store::query`，`SessionQueryView` 两视图）；
 - `echo-defs::session_query`：存储中立的 `SessionQuery` 只读端口（定义层）；
-- `echo-module-tools`：只做工具适配（schema / 参数 / 错误文案），端口未接线即不注册；
+- `agent-module-tools`：只做工具适配（schema / 参数 / 错误文案），端口未接线即不注册；
 - 宿主 `AgentSessionQueryHost`：按调用者 `team_id` 解析目标 persona 的 trunk ——
   **不能跨人格读**，解析不到即报错，不回退到"自己"。
 
@@ -83,7 +83,7 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 ## 文件工具的路径约定
 
 `read_file` / `list_files` / `search_code` / `write_file` / `edit_file` 共用同一
-套路径解析（`echo-module-tools/src/coding.rs::resolve_tool_path`）：
+套路径解析（`agent-module-tools/src/coding.rs::resolve_tool_path`）：
 
 - **相对路径**：相对工作区（Core 进程 cwd）解析，解析结果必须落在工作区内
   （`guard_relative_path`：canonicalize 目标或最近的已存在祖先；`../..` 逃逸、
@@ -108,17 +108,17 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
   `invalid_tool_arguments`（纯函数：比对 schema `required` 与实参，缺失列表 +
   原始参数回显 + schema 一并写入文案——只说"command required" 会让模型原样重试，
   形成空参调用退化循环）
-- 异步编排工具（`spawn_subagent`）经 echo-module-loop 的 hook 通道直入管线、不经注册表
+- 异步编排工具（`spawn_subagent`）经 agent-module-loop 的 hook 通道直入管线、不经注册表
   预检，缺参由工具自身的纠正性文案兜底
 
 ### 危险命令判定
 
-`bash` 工具（`echo-module-tools/src/coding.rs` 的 `RunCommandTool::execute`）
+`bash` 工具（`agent-module-tools/src/coding.rs` 的 `RunCommandTool::execute`）
 执行前过闸，命中即返回执行错误、命令不执行：
 
 | 闸 | 实现 | 拦什么 |
 | --- | --- | --- |
-| 自停拦截 | `echo_module_tools::module::core_self_stop_guard()`（**在工具模块里**，构造 bash 工具时注入）；`bash-exec` 用机制层的默认实现 `echo_module_shell::self_stop_guard()`——两者规则同一套，各构造一份，模块间零依赖 | 从自己的进程里 `systemctl stop/kill echo-agent-core`（含 `bash -c` 包裹）——会让后续清理/启动步骤来不及跑 |
+| 自停拦截 | `agent_module_tools::module::core_self_stop_guard()`（**在工具模块里**，构造 bash 工具时注入）；`bash-exec` 用机制层的默认实现 `agent_module_shell::self_stop_guard()`——两者规则同一套，各构造一份，模块间零依赖 | 从自己的进程里 `systemctl stop/kill echo-agent-core`（含 `bash -c` 包裹）——会让后续清理/启动步骤来不及跑 |
 | rm 目标判定 | `coding.rs::dangerous_rm_root_target` | 递归 + 强制的 `rm` 指向根目录、根级通配 `/*`、或根下一级系统目录 |
 | 危险模式 | `coding.rs` 的模式表（`mkfs.` / `dd if=` / fork bomb / `> /dev/sda`） | 对整条命令串子串匹配 |
 | 提权 | `RunCommandTool::execute` 的行首 `sudo` 检测 | `bash` 无交互 tty、提权工具已废弃——直接拒绝并提示改用无需 root 的方案 |
@@ -158,7 +158,7 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 
 ## 后台 Shell 会话（持久 bash）
 
-进程级 `ShellManager`（机制 crate `echo-module-shell`；`modules/echo-agent/src/shell.rs` 只是兼容 re-export）管理**持久 bash 会话**：
+进程级 `ShellManager`（机制 crate `agent-module-shell`；`modules/echo-agent/src/shell.rs` 只是兼容 re-export）管理**持久 bash 会话**：
 与 Panel Shell 面板共用同一会话，LLM 与用户看到的是同一终端上下文。
 
 - **会话模型**：每个会话 = 一个 `bash --noprofile --norc` 子进程（stdin/stdout/stderr 管道），

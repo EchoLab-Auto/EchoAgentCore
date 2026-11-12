@@ -1,7 +1,7 @@
 //! AgentSupervisor — 多 persona agent 的装配与解析。
 //!
 //! **单一真源（2026-10 修复）**：persona 注册表由
-//! [`echo_module_loop::AgentManager`] 独占持有；本模块只做组合根友好的薄适配
+//! [`agent_module_loop::AgentManager`] 独占持有；本模块只做组合根友好的薄适配
 //! （`get` / `get_exact` / `ids` / `personas`），**不再维护第二份 HashMap**。
 //!
 //! 修复背景：此前 `AgentSupervisor` 与 `AgentManager` 各持一份注册表，
@@ -17,8 +17,8 @@
 
 use std::sync::Arc;
 
-use echo_module_loop::agent_manager::RunningAgent;
-use echo_module_loop::{Agent, AgentConfig, AgentManager, AgentProfile};
+use agent_module_loop::agent_manager::RunningAgent;
+use agent_module_loop::{Agent, AgentConfig, AgentManager, AgentProfile};
 
 /// A persona instance: id + capability profile + the agent itself.
 pub struct Persona {
@@ -83,7 +83,7 @@ impl AgentSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_module_loop::TeamMember;
+    use agent_module_loop::TeamMember;
 
     /// 全部人格被禁用时：不得合成 `default` 兜底人格（否则 supervisor 与
     /// AgentManager 分叉，命令按 team_id=default 路由时 manager 解析不到，

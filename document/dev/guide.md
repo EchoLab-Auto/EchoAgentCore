@@ -37,26 +37,26 @@ EchoAgentCore/
 │   └── modules/                # 本仓全部 Rust crate 的唯一源码根
 │       ├── echo-defs/         # kernel：词汇 + 能力接缝 trait（零 echo-* 依赖）
 │       ├── echo-config/       # kernel：TOML 原子读改写
-│       ├── echo-module-management/     # kernel：管理面协议与事件桥
+│       ├── agent-module-management/     # kernel：管理面协议与事件桥
 │       ├── echo-session/      # kernel：事件溯源会话机制
-│       ├── echo-module-tools/         # kernel：工具注册与执行机制
-│       ├── echo-module-shell/        # kernel：持久 Shell 会话机制
-│       ├── echo-module-loop/         # kernel：TurnRunner + ToolPipeline
-│       ├── echo-module-federation/   # kernel：Core↔Core 链路与帧协议
+│       ├── agent-module-tools/         # kernel：工具注册与执行机制
+│       ├── agent-module-shell/        # kernel：持久 Shell 会话机制
+│       ├── agent-module-loop/         # kernel：TurnRunner + ToolPipeline
+│       ├── agent-module-federation/   # kernel：Core↔Core 链路与帧协议
 │       ├── echo-module-adapter/    # 协议贡献 → 领域 trait
-│       ├── echo-module-tools/      # 内置工具集
-│       ├── echo-module-shell/      # Shell 工具与命令域
-│       ├── echo-module-skills/     # 技能目录
-│       ├── echo-module-subagent/   # spawn_subagent
-#       （echo-module-workspace 已迁出为独立仓库，不在本目录）
-│       ├── echo-module-management/ # Core management WS
-│       ├── echo-module-loop/       # loop.single 策略
-│       ├── echo-module-provider-llm/ # provider 工厂 + 计量/脱敏装饰器
-│       ├── echo-module-session/    # 会话持久化与压缩编排
-│       ├── echo-module-transcript/ # 时间线投影
-│       ├── echo-module-federation/ # 联邦工具路由与命令域
-│       ├── echo-module-sanitize/   # 脱敏：实现（registry.rs）+ 装配 + 身份
-│       ├── echo-module-self-update/# 自更新
+│       ├── agent-module-tools/      # 内置工具集
+│       ├── agent-module-shell/      # Shell 工具与命令域
+│       ├── agent-module-skills/     # 技能目录
+│       ├── agent-module-subagent/   # spawn_subagent
+#       （agent-module-workspace 已迁出为独立仓库，不在本目录）
+│       ├── agent-module-management/ # Core management WS
+│       ├── agent-module-loop/       # loop.single 策略
+│       ├── agent-module-provider-llm/ # provider 工厂 + 计量/脱敏装饰器
+│       ├── agent-module-session/    # 会话持久化与压缩编排
+│       ├── agent-module-transcript/ # 时间线投影
+│       ├── agent-module-federation/ # 联邦工具路由与命令域
+│       ├── agent-module-sanitize/   # 脱敏：实现（registry.rs）+ 装配 + 身份
+│       ├── agent-module-self-update/# 自更新
 │       ├── echo-agent/        # 业务宿主与 Agent 编排（不是可替换能力模块）
 │       ├── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
 │       └── core/              # echo-agent-core 二进制（组合根 + 治理门禁测试）
@@ -79,7 +79,7 @@ EchoAgentCore/
 
 - `LlmProvider`（echo-defs）— LLM 后端接缝；providers：OpenAI/Anthropic/Ollama
 - `Tool`（echo-defs）— LLM 可调用函数；`timeout_hint` 自声明执行超时
-- `Skill` / `SkillMetadata`（echo-defs）— 技能词汇；`SkillRegistry` 在 `echo-module-skills`
+- `Skill` / `SkillMetadata`（echo-defs）— 技能词汇；`SkillRegistry` 在 `agent-module-skills`
 - `ModuleInstance`（echo-defs::module_instance）— **平台接缝的唯一实现路径**：生命周期/收发/状态面；进程外模块经适配层 `echo-module-adapter` 的 `RemoteInstance` 实现它（`echo-module-adapter` 的 `impl ModuleInstance for RemoteInstance`）。`InstanceRegistry` 同在 `echo-defs::module_instance`；`ConfigStore` 在独立的 `echo-config`（不认识任何配置段的语义）。平台专属管理动作不走能力扩展 trait，而是经 **`InvokeInstanceOp{instance, method, payload}`** 透传（模块侧 `custom` op 自行解释）——门控模式、名单、登录等取值因此是**参数字符串**而非共享枚举
 - `ToolSpec`（echo-defs::module_instance，`ModuleInstance::tool_specs` 的返回类型）— 模块实例**向模型暴露的工具声明**（name / description / parameters / package / `visible_reply`）。远程模块实例 = 模块 `InstanceContribution.tools` 原样；组合根的通用桥（`core/instance_tools.rs`）只做跨实例合并、`account` 寻址、出站闸门与 `invoke_custom` 透传，**不认识任何具体工具名**
 - `Tool::produces_visible_output`（echo-defs）— 工具自声明「成功调用即产生平台可见输出」；循环据此置 `visible_reply` 信号，而不是按工具名清单判断
@@ -88,7 +88,7 @@ EchoAgentCore/
 **机制与运行时抽象**：
 
 - `Ctx` / `EventBus` / `Disposer` / `ScopedRegistry`（echo-context）— 服务定位、类型化事件（Observe/Waterfall/Parallel/Serial）、可逆注册、作用域 shadowing
-- `TurnRunner` / `ToolPipeline`（echo-module-loop）— turn/step 状态机与工具执行管道
+- `TurnRunner` / `ToolPipeline`（agent-module-loop）— turn/step 状态机与工具执行管道
 - `EventLog` / `SessionEvent` / `derive_messages`（echo-session）— 事件溯源存储、日志投影
 - `ConfigStore`（`echo-config` crate）— TOML 原子读改写（Agent 与模块实例共享，杜绝并发写覆盖）
 - `InstanceHostConfig`（core::config）— **单平台的宿主配置视图**：`platform` / `shared`（透传表）/ `enabled` / ``instances` / `launch`。`CoreConfig.instances: BTreeMap<String, InstanceHostConfig>`，`load()` 遍历 `[instances.<name>]` 全部平台
@@ -96,11 +96,11 @@ EchoAgentCore/
 - `ModuleManifest` / `ModuleRegistry`（echo-module）— 模块清单与注册表；`echo-module-host` 提供 Transport（inproc/stdio）、监督、子进程限额与频率限额（**领域中立**），`RemoteInstance` / `RemoteTool` 的领域适配在 `echo-module-adapter`
 - `AgentMessageHook`（echo-agent）— 入站消息进入 agent 的落点（`on_incoming_message` 固有方法，**不是 trait 实现**）：组合根把模块 `submit_input` 队列接到它；平台输出必须走工具
 - **平台回复指引**：由平台中立的边界块（`BoundaryKind::PlatformHook`，只说「走该平台的发送工具」）+ 该平台的 transport 技能（如 `qq-transport`，说明具体工具名与参数）承担；循环层不做代码校验/纠偏。框架文案里不出现平台名与平台技能名
-- `FanoutHandle`（echo-module-management::bridge）— 多订阅者事件扇出（自动清理失效订阅者）；进程内 mpsc 路径不带扇出序号，生产 WS 路径带
+- `FanoutHandle`（agent-module-management::bridge）— 多订阅者事件扇出（自动清理失效订阅者）；进程内 mpsc 路径不带扇出序号，生产 WS 路径带
 
 ## 编码约定
 
-- **错误处理**：库 crate 用 `thiserror` 定义具体错误类型（如 `echo_module_federation::FederationError`）；`anyhow` 只用于应用层（`echo-agent` 的 harness 与 `echo-agent-core` 组合根）。库错误经 `?` 自动转为 `anyhow::Error`
+- **错误处理**：库 crate 用 `thiserror` 定义具体错误类型（如 `agent_module_federation::FederationError`）；`anyhow` 只用于应用层（`echo-agent` 的 harness 与 `echo-agent-core` 组合根）。库错误经 `?` 自动转为 `anyhow::Error`
 - **锁**：持锁期间不 `.await` 的同步锁优先用 `parking_lot`（无中毒、`lock()` 直接返回 guard）；必须用 `std::sync` 锁的 crate 一律 `.lock().unwrap_or_else(std::sync::PoisonError::into_inner)`，生产代码不 `unwrap()` / `expect()` 锁（测试代码不限）
 - **异步路径不阻塞**：async 函数及其同步调用链里不 `std::thread::sleep` / 自旋重试；阻塞 IO（git、子进程）经 `tokio::task::spawn_blocking`
 - **文件规模**：单个源文件超过 ~1500 行（测试文件除外）即按职责拆子模块（`impl` 可分布在多个文件）
@@ -140,6 +140,6 @@ cargo test -p echo-agent
 - **无全局态门禁**（`source/modules/core/tests/no_global_state.rs`）：全 source 扫 `static` + `OnceLock`/`LazyLock`，白名单只有 `echo-context/kernel.rs`（相等断言，只减不增）
 - **文档门禁**（`source/modules/core/tests/doc_catalog.rs`）：工具目录新鲜度（`UPDATE_DOCS=1` 重新生成）+ 内置模块 id 不许漏 + `document/` 全树死链检查
 - **config 模板测试**（`source/modules/core/tests/config_template.rs`）：`config/echo-agent-core.toml` 必须是合法 TOML 且含运行时依赖的 section，防模板漂移；并入 `cargo test`
-- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除模块时——Core `BUILTIN_MODULE_IDS`（与 catalog 双向相等，测试守着）、更新器 `expected_ids`、Panel `PACKAGE_DISPLAY_NAMES`（**门控清单已删除**：按 `kind` 派生后由 Core 下发，见 `modules/scope.rs`）；新增**模块类型**（`ModuleKind`）时 Core `as_str` wire 名与 Panel `MODULE_KIND_LABELS` 同改；协议新增命令/事件时 echo-module-management ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`instance_manifests.rs` 的单测（Core `BUILTIN_MODULE_IDS` + 实例前缀 ⇄ 更新器 `expected_ids`；曾因 `orchestration` 移除后清单残留、每次更新误报缺 manifest 而补齐）、`update.sh` 模块感知校验（安装后核对二进制）、`protocol-sync.test.ts`（Panel 协议镜像：事件 reduce⊆union、联邦命令存在性快照、unit 命令字符串形态、禁止 `as unknown as` 双重断言绕过——补齐联邦 4 命令后归零）。详见 [模块化设计](../modules/modules.md)「新增包维度门控模块时的同步清单」
+- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除模块时——Core `BUILTIN_MODULE_IDS`（与 catalog 双向相等，测试守着）、更新器 `expected_ids`、Panel `PACKAGE_DISPLAY_NAMES`（**门控清单已删除**：按 `kind` 派生后由 Core 下发，见 `modules/scope.rs`）；新增**模块类型**（`ModuleKind`）时 Core `as_str` wire 名与 Panel `MODULE_KIND_LABELS` 同改；协议新增命令/事件时 agent-module-management ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`instance_manifests.rs` 的单测（Core `BUILTIN_MODULE_IDS` + 实例前缀 ⇄ 更新器 `expected_ids`；曾因 `orchestration` 移除后清单残留、每次更新误报缺 manifest 而补齐）、`update.sh` 模块感知校验（安装后核对二进制）、`protocol-sync.test.ts`（Panel 协议镜像：事件 reduce⊆union、联邦命令存在性快照、unit 命令字符串形态、禁止 `as unknown as` 双重断言绕过——补齐联邦 4 命令后归零）。详见 [模块化设计](../modules/modules.md)「新增包维度门控模块时的同步清单」
 
 命令与 CI 作业矩阵见 [测试策略](./testing.md)「质量门禁（CI）」。

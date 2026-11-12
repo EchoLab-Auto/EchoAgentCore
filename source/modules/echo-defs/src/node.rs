@@ -100,7 +100,7 @@ fn ulid_now() -> String {
 
 /// 本节点身份（NodeId + 运行区域展示名）——会话线格式的出处标注。
 ///
-/// 2026-11 自 `echo-agent::lib.rs` 下沉：会话模块（`echo-module-session`）
+/// 2026-11 自 `echo-agent::lib.rs` 下沉：会话模块（`agent-module-session`）
 /// 需要它来渲染 `SessionInfo`，而模块不能依赖宿主。字段语义原样保留：
 /// 空串 = 未注入/未命名，线格式上表现为「字段不下发」。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

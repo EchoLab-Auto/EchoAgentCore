@@ -28,7 +28,7 @@ y: 1200
 | kind | `loop`（**进程级**，persona 白名单不参与） |
 | 名称 / 路由 | 「循环」/ 路由 `loop` |
 | 来源 / 运行形态 | 编译内置 / 进程内 |
-| crate | `source/modules/echo-module-loop`（2 文件，约 1150 行，含 compaction 策略） |
+| crate | `source/modules/agent-module-loop`（2 文件，约 1150 行，含 compaction 策略） |
 
 | 贡献 | 内容 |
 |---|---|

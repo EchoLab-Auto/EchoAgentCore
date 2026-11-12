@@ -4,12 +4,12 @@
 //!
 //! ## Why this exists (2026-11)
 //!
-//! `echo-module-tools` / `echo-module-tools` used to instantiate
+//! `agent-module-tools` / `agent-module-tools` used to instantiate
 //! `echo_sanitize::RegistryRedactor` directly in their `#[cfg(test)]` modules.
 //! Two problems with that:
 //!
 //! 1. `echo-sanitize` no longer exists as a crate — its implementation moved
-//!    into `echo-module-sanitize` (its only production consumer was that
+//!    into `agent-module-sanitize` (its only production consumer was that
 //!    module's `build()`).
 //! 2. Even before the move it was a smell: a kernel/module crate's tests
 //!    reaching for **one specific implementation** means the seam
@@ -20,7 +20,7 @@
 //! values winning over pattern hits, idempotence) with ~80 lines and zero
 //! regex/automaton dependencies.
 //!
-//! It is **not** a replacement for [`echo_module_sanitize::RegistryRedactor`]
+//! It is **not** a replacement for [`agent_module_sanitize::RegistryRedactor`]
 //! in production — it only understands the fixtures it is handed plus one
 //! builtin `sk-…` shape.
 

@@ -343,7 +343,7 @@ fn uninstaller_handles_system_scope_units() {
 /// `--scope` 必须是**一等参数**，而不是"user 装法 + 补丁"。
 ///
 /// 背景（2026-10）：自更新链路两端都把 `--user` 写死——
-/// `echo-module-self-update` 启动 updater 单元、`update.sh` 重启 Core。
+/// `agent-module-self-update` 启动 updater 单元、`update.sh` 重启 Core。
 /// 于是 system 作用域的老装法只能靠一个 PATH shim（假 `systemctl` 把 `--user`
 /// 抹掉）硬凑，而 core 自身那次调用连 shim 都看不到（它不在 core 单元的 PATH
 /// 里），**面板上的自更新按钮从来没成功过**。

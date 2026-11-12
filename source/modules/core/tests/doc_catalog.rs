@@ -51,19 +51,19 @@ async fn render_tool_catalog() -> String {
     let dir = std::env::temp_dir().join(format!("echo-doc-catalog-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     let store = echo_config::ConfigStore::new(dir.join("core.toml"));
-    let registry = echo_module_loop::tool::builtin::build_registry(
+    let registry = agent_module_loop::tool::builtin::build_registry(
         std::sync::Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
         dir.clone(),
         store,
         None,
-        echo_module_loop::shell::ShellHandle::new(),
+        agent_module_loop::shell::ShellHandle::new(),
         Some(std::sync::Arc::new(
-            echo_module_loop::agent::session_query::SessionQueryRegistry::new(),
+            agent_module_loop::agent::session_query::SessionQueryRegistry::new(),
         )),
         None,
         // Shell 工具（`bash-start` / `bash-exec` / `bash-stop`）由 shell 模块造
         // （2026-11 拆出）——目录要包含它们，所以这里给它一个 standalone provider。
-        Some(echo_module_shell::standalone_provider()),
+        Some(agent_module_shell::standalone_provider()),
     );
     // `full_definitions` 是**面板同源**的那一份：name / description / category /
     // package 全在里面（`snapshot` 拿的是工具状态快照，不是定义）。
@@ -204,7 +204,7 @@ async fn tool_catalog_is_fresh() {
 fn documented_builtin_module_ids_cover_the_constant() {
     let doc = reading(&repo_root().join("document/modules/modules.md"));
     let mut missing = Vec::new();
-    for id in echo_module_loop::modules::BUILTIN_MODULE_IDS {
+    for id in agent_module_loop::modules::BUILTIN_MODULE_IDS {
         if !doc.contains(id) {
             missing.push(id);
         }
@@ -227,7 +227,7 @@ fn every_module_has_a_reachable_document_link() {
     let doc = reading(&doc_path);
     let base = doc_path.parent().expect("document/modules");
 
-    let mut ids: Vec<&str> = echo_module_loop::modules::BUILTIN_MODULE_IDS.to_vec();
+    let mut ids: Vec<&str> = agent_module_loop::modules::BUILTIN_MODULE_IDS.to_vec();
     ids.push("echo-agent.instance.qq");
 
     let mut missing = Vec::new();
@@ -268,7 +268,7 @@ fn every_module_has_a_reachable_document_link() {
 #[test]
 fn modules_doc_counts_match_the_code() {
     let doc = reading(&repo_root().join("document/modules/modules.md"));
-    let expected = echo_module_loop::modules::BUILTIN_MODULE_IDS.len();
+    let expected = agent_module_loop::modules::BUILTIN_MODULE_IDS.len();
 
     let claimed = doc
         .split("框架内置 ")
@@ -377,21 +377,21 @@ fn bare_document_paths_resolve() {
 fn every_declared_command_is_mentioned_in_docs() {
     let commands: Vec<(&str, &[&str])> = vec![
         (
-            "echo-module-session",
-            &echo_module_session::commands::COMMANDS,
+            "agent-module-session",
+            &agent_module_session::commands::COMMANDS,
         ),
         (
-            "echo-module-transcript",
-            &echo_module_transcript::session_view::COMMANDS,
+            "agent-module-transcript",
+            &agent_module_transcript::session_view::COMMANDS,
         ),
-        ("echo-module-shell", &echo_module_shell::commands::COMMANDS),
+        ("agent-module-shell", &agent_module_shell::commands::COMMANDS),
         (
-            "echo-module-federation",
-            &echo_module_federation::commands::COMMANDS,
+            "agent-module-federation",
+            &agent_module_federation::commands::COMMANDS,
         ),
         (
-            "echo-module-provider-llm",
-            &echo_module_provider_llm::commands::COMMANDS,
+            "agent-module-provider-llm",
+            &agent_module_provider_llm::commands::COMMANDS,
         ),
     ];
     let mut docs = String::new();

@@ -30,7 +30,7 @@ Panel 是独立进程，没有文件系统权限模型，也不该为了"看个�
 | 模块 id | `echo-agent.prodoc` |
 | kind | `tool`（persona 白名单参与） |
 | 名称 / 路由 | 「ProDoc 文档群」/ `prodoc` |
-| 实现位置 | `source/modules/echo-module-prodoc`（Core 仓内，path 依赖） |
+| 实现位置 | `source/modules/agent-module-prodoc`（Core 仓内，path 依赖） |
 
 ## 上限：与 CLI 唯一的刻意差异（扫描侧）
 
@@ -110,7 +110,7 @@ Node 进程去跑 CLI。复刻就有分叉风险，所以：
    需要 `PRODOC_FIXTURE`），文件头记录了 2026-11 的实测结果——10 篇文档 / 6 条
    连线 / 3 个错误 / 7 条警告，两边逐项一致。
 
-模型侧入口是宿主注册的 `prodoc_check` 工具（`echo-module-loop` 的
+模型侧入口是宿主注册的 `prodoc_check` 工具（`agent-module-loop` 的
 `agent/prodoc_tool.rs`，与 `workspace` 工具同一种代理形态）：工具在宿主注册表里，
 检查逻辑在模块，中间只传 `team_id` 与 `root`。面板侧是画布工具栏的「检查」按钮，
 报告按错误 / 警告 / 提示分组展示。

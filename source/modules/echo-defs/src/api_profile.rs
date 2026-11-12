@@ -6,7 +6,7 @@
 //! 是**跨边界词汇**：它写在 `core.toml` 的 `[agent.api_profiles]`、由管理面
 //! 增删改、被 provider 模块消费、被 `list_api_profiles` 工具投影给模型、
 //! 被 subagent 的 `profile` 参数解析。此前它住在 `echo-agent::config`——
-//! 于是 `echo-module-provider-llm`（provider 工厂的实现方）无法独立读它，
+//! 于是 `agent-module-provider-llm`（provider 工厂的实现方）无法独立读它，
 //! API 管理面那一整块（1,208 行）也就搬不出宿主（全模块化 S3 的先决条件）。
 //!
 //! 定义层是这个词汇的正确位置：它不含任何行为（只有字段与一个构造器），
@@ -97,8 +97,8 @@ model = "m"
 /// ## 为什么在定义层（2026-11 S12）
 ///
 /// 它描述的是"用户在配置里写了什么"——与 [`ApiProfile`] 同源。此前它住在
-/// `echo-module-provider-llm::api_pool`，于是 `echo-module-tools` 的
-/// `list_api_profiles` 工具不得不 `use echo_module_provider_llm::...`：
+/// `agent-module-provider-llm::api_pool`，于是 `agent-module-tools` 的
+/// `list_api_profiles` 工具不得不 `use agent_module_provider_llm::...`：
 /// **一个"读配置并投影给模型"的工具，因为一个结构体依赖了 provider 模块**。
 ///
 /// 输出**绝不含明文密钥**：`default_key_set` / `ApiProfile.key_set` 只是

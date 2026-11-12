@@ -2,7 +2,7 @@
 //!
 //! ## 这层为什么存在、为什么这么薄
 //!
-//! 命令域的处理（判定 + 顺序 + 文案）已经搬进 `echo-module-federation::admin`
+//! 命令域的处理（判定 + 顺序 + 文案）已经搬进 `agent-module-federation::admin`
 //! 的纯函数里。留在宿主的是**只有它能做的那部分**：
 //!
 //! | 动作 | 为什么只有组合根能做 |
@@ -18,9 +18,9 @@
 
 use std::sync::Arc;
 
-use echo_module_federation::admin::{Emit, FederationAdminHost, PeerSave, PeerSummary};
-use echo_module_federation::PeerConfig;
-use echo_module_management::protocol::BackendEvent;
+use agent_module_federation::admin::{Emit, FederationAdminHost, PeerSave, PeerSummary};
+use agent_module_federation::PeerConfig;
+use agent_module_management::protocol::BackendEvent;
 
 use crate::federation_rt::FederationRuntime;
 
@@ -72,11 +72,11 @@ impl FederationAdminHost for RuntimeAdminHost {
         self.rt.node_name.clone()
     }
 
-    async fn status_event(&self) -> echo_module_federation::FederationEvent {
+    async fn status_event(&self) -> agent_module_federation::FederationEvent {
         backend_to_fed(self.rt.status_event().await)
     }
 
-    async fn directory_event(&self) -> echo_module_federation::FederationEvent {
+    async fn directory_event(&self) -> agent_module_federation::FederationEvent {
         backend_to_fed(self.rt.directory_event().await)
     }
 
@@ -100,7 +100,7 @@ impl FederationAdminHost for RuntimeAdminHost {
             allow_subagent,
         } = peer;
         // 策略要留一份给运行时表（配置写回会把它们 move 进闭包）。
-        let policy = echo_module_federation::ExecutorPolicy {
+        let policy = agent_module_federation::ExecutorPolicy {
             allow_tools: allow_tools.clone(),
             require_confirm: require_confirm.clone(),
             allow_queries: allow_queries.clone(),
@@ -253,7 +253,7 @@ impl FederationAdminHost for RuntimeAdminHost {
         target_peer: String,
     ) -> serde_json::Value {
         use std::sync::{Arc, Mutex};
-        let last: Arc<Mutex<Option<echo_module_federation::FederationEvent>>> =
+        let last: Arc<Mutex<Option<agent_module_federation::FederationEvent>>> =
             Arc::new(Mutex::new(None));
         let slot = last.clone();
         let emit: Emit = Arc::new(move |ev| {
@@ -278,11 +278,11 @@ impl FederationAdminHost for RuntimeAdminHost {
 }
 
 /// BackendEvent → FederationEvent（字段同形，serde 往返）。
-fn backend_to_fed(be: BackendEvent) -> echo_module_federation::FederationEvent {
+fn backend_to_fed(be: BackendEvent) -> agent_module_federation::FederationEvent {
     serde_json::to_value(&be)
         .ok()
-        .and_then(|v| serde_json::from_value::<echo_module_federation::FederationEvent>(v).ok())
-        .unwrap_or(echo_module_federation::FederationEvent::Error {
+        .and_then(|v| serde_json::from_value::<agent_module_federation::FederationEvent>(v).ok())
+        .unwrap_or(agent_module_federation::FederationEvent::Error {
             session_id: None,
             message: "event 转换失败".into(),
         })

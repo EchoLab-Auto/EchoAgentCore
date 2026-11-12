@@ -12,7 +12,7 @@ y: 1200
 
 ## 为什么从管理面里拆出来
 
-`echo-module-management` 的职责是**连接面**（WS 中继、鉴权、端口合并、心跳）。本模块关心的是**「面板看到什么」**——哪些事件进时间线、字段怎么映射、工具完成态怎么原地合并、推理发往前端怎么瘦身、旧会话历史怎么回填。
+`agent-module-management` 的职责是**连接面**（WS 中继、鉴权、端口合并、心跳）。本模块关心的是**「面板看到什么」**——哪些事件进时间线、字段怎么映射、工具完成态怎么原地合并、推理发往前端怎么瘦身、旧会话历史怎么回填。
 
 两类的变更轴不同：
 
@@ -31,7 +31,7 @@ y: 1200
 | kind | `interaction`（人在环交互面） |
 | 名称 / 路由 | 「显示层」/ `transcript` |
 | 来源 / 运行形态 | 编译内置 / 进程内 |
-| crate | `source/modules/echo-module-transcript`（3 文件，约 1200 行） |
+| crate | `source/modules/agent-module-transcript`（3 文件，约 1200 行） |
 
 | 贡献 | 内容 |
 |---|---|
@@ -62,4 +62,4 @@ y: 1200
 
 - 它**不产生**事件：时间线的数据源是宿主的事件总线，本模块只决定「哪些进、怎么映射」
 - 它**不做**持久化：写窗口落到 `TrunkStore`，持久化归 [会话模块](./session.md)
-- 协议形状归 [协议与数据流](../protocol/protocol.md)：本模块产出的是 `echo-module-management` 的类型，帧编码不在这里
+- 协议形状归 [协议与数据流](../protocol/protocol.md)：本模块产出的是 `agent-module-management` 的类型，帧编码不在这里

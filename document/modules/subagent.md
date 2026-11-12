@@ -12,7 +12,7 @@ y: 1200
 
 > **定位**：本文描述 `echo-agent.subagent` 模块（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新的入站 turn** 回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、事件与观测、包门控与测试守护。读者：Agent 使用者与模块维护者。
 >
-> 实现位置：独立 crate `echo-module-subagent`（解耦计划 Phase 3 ⑥，只依赖定义层 `echo-defs` 与工具机制 `echo-module-tools`）；宿主经 `echo_agent::subagent::…` 兼容路径引用，Agent 侧的接线与执行在 `agent/subagent_runtime.rs`。远程委派的聚合登记经宿主注入的 `RemoteDelegationSink`（组合根实现为 `federation::aggregator::AggregatorDelegationSink`）——模块本身不认识联邦。与 [Agent 循环](../core/agent-loop.md) 的同会话排队 turn（共享主上下文）互为对照；装载与包门控见 [模块化设计](./modules.md)。
+> 实现位置：独立 crate `agent-module-subagent`（解耦计划 Phase 3 ⑥，只依赖定义层 `echo-defs` 与工具机制 `agent-module-tools`）；宿主经 `echo_agent::subagent::…` 兼容路径引用，Agent 侧的接线与执行在 `agent/subagent_runtime.rs`。远程委派的聚合登记经宿主注入的 `RemoteDelegationSink`（组合根实现为 `federation::aggregator::AggregatorDelegationSink`）——模块本身不认识联邦。与 [Agent 循环](../core/agent-loop.md) 的同会话排队 turn（共享主上下文）互为对照；装载与包门控见 [模块化设计](./modules.md)。
 
 ## 动机与边界
 
@@ -37,7 +37,7 @@ y: 1200
    **同步受理**：注册进 `SubagentStore`（携带主 turn 的取消令牌子令牌）并立即返回
    子任务 id 回执；子任务在后台以隔离上下文执行。这次调用与回执按普通工具口径
    落 `ToolCall` / `ToolResult` 事件（见「事件与观测」）
-2. 子 turn 走独立循环（`echo-module-subagent` 的 `run_subagent_turn`：与主循环同源的
+2. 子 turn 走独立循环（`agent-module-subagent` 的 `run_subagent_turn`：与主循环同源的
    迭代/截断续跑/取消语义，但**不回写 trunk**、不发会话级 LLM 事件）
 3. 完成/失败/超时/取消 → 发射 `SubagentCompleted`，并把结论包进
    `<subagent_event>` hook 经 `dispatch_subagent_hook` 注入主会话——
@@ -66,7 +66,7 @@ y: 1200
 - **取消传播**：主 turn 取消 → 子令牌 → 子循环的 select 中止；取消的子任务
   记为 `Cancelled` 并同样发 hook（主 agent 感知"没有结论会来"）
 - **结果截断**：子任务回复超过 8K 字符（`MAX_SUBAGENT_RESULT_CHARS`，
-  `echo-module-subagent` 的 `truncate_result`）时截断并标注总字符数，防单个
+  `agent-module-subagent` 的 `truncate_result`）时截断并标注总字符数，防单个
   结论反过来烧掉主上下文。与 hook 信封 `task` 字段的 4000 字符上限是两回事：
   后者限**任务描述**的可审计长度，前者限**结论**回灌体量
 - **子代理模型覆盖（`profile`）**：执行体按名从供应商池解析并
@@ -91,14 +91,14 @@ y: 1200
 技能 frontmatter 声明 `package: echo-agent.subagent`，随包级门控与工具一起
 启停（见 [模块化设计](./modules.md)「Package」章节）。
 
-## Hook 机制（echo-module-loop 注入接口）
+## Hook 机制（agent-module-loop 注入接口）
 
 子任务完成通知与 QQ 消息/定时器同族：**结构化 hook → 新入站 turn**。
 `<subagent_event>` 包装与解析由 `input_marker` 同族的
-`echo-module-subagent` 的 `wrap_subagent_event` 承担。
+`agent-module-subagent` 的 `wrap_subagent_event` 承担。
 
-异步编排工具接入 echo-module-loop 的接口是 `SubagentToolHooks`
-（`source/modules/echo-module-loop/src/runner.rs`，由 `process_via_echo_module_loop` 装配进
+异步编排工具接入 agent-module-loop 的接口是 `SubagentToolHooks`
+（`source/modules/agent-module-loop/src/runner.rs`，由 `process_via_agent_module_loop` 装配进
 `RunExtras`）：
 
 - `is_async_tool(name)`：认领异步编排工具（当前仅 `spawn_subagent`）
@@ -108,27 +108,27 @@ y: 1200
 - `extra_tool_definitions`：模型可见 schema 追加接口（当前装配为 `None`——`spawn_subagent` 的 schema 由注册表统一提供，避免重复工具名）
 
 `run_tool`（集成测试与直接分派入口）同样特判 `spawn_subagent`，与 hook 路径
-语义一致（turn 只经 echo-module-loop 的 hook 通道）。
+语义一致（turn 只经 agent-module-loop 的 hook 通道）。
 
 ## 事件与观测
 
 委派有三条观测面：**调用面**（一次普通的工具调用）、**任务面**（子任务自身的
 生命周期）与**回灌面**（结论如何进入主会话）。
 
-- **调用面**：`spawn_subagent` 经 echo-module-loop 的异步 hook 通道直入管线、不走
+- **调用面**：`spawn_subagent` 经 agent-module-loop 的异步 hook 通道直入管线、不走
   `run_tool`，调用与回执仍按普通工具口径落账（`agent/turn.rs` 的
   `execute_async_subagent`）：先写 `ToolCall`（`arguments` 出口脱敏，带
   `started_at_ms`）→ 受理或拒绝后写配对的 `ToolResult`（回执文本，带
   `elapsed_ms`）。于是 spawn 时延可算，`task` / `profile` / `node` /
   `timeout_secs` 实参可查，面板委派行与普通工具行同源同账
 - **任务面**：`SubagentStarted { session_id, task }` / `SubagentCompleted { session_id, success }`
-  （`echo-module-management` 事件，Panel 据此渲染子任务状态；`started` 的 `task` 是全文、
+  （`agent-module-management` 事件，Panel 据此渲染子任务状态；`started` 的 `task` 是全文、
   不受下面的 4000 字符上限约束；入口：会话视图入口行「任务」弹层，按当前会话
   过滤展示）
 - **回灌面**：完成 hook 作为 `MessageReceived { instance_name: "subagent" }`
   进入显示时间线与 trunk（会话历史含完整委派轨迹：调用 → 回执 → 结论事件）
 
-`<subagent_event>` 信封字段（`echo-module-subagent` 的 `wrap_subagent_event`
+`<subagent_event>` 信封字段（`agent-module-subagent` 的 `wrap_subagent_event`
 包装，payload 由 `agent/subagent_runtime.rs` 的完成链与受理前拒绝链产出）：
 
 | 字段 | 说明 |
@@ -181,7 +181,7 @@ spawn_subagent 调用的 arguments]」。任务全文始终可从该次调用的
 > 实测：两次 kimi 委派分别撞在 900s / 600s 的墙钟上被中止，任务本身
 > 在推进。默认 600s 对慢供应商过紧，故补上 `subagent_timeout_secs = 0` 的表达。
 
-- 单元（`echo-module-subagent`）：受理注册/回执、空任务纠正性拒绝、超时钳制、
+- 单元（`agent-module-subagent`）：受理注册/回执、空任务纠正性拒绝、超时钳制、
   `truncate_result` 结果截断、cancel_all 幂等、hook 信封结构
 - 单元（`agent/subagent_runtime.rs::subagent_task_field_keeps_long_descriptions_verbatim`）：
   信封 `task` 字段的边界——783 与 4000 字符原样、4001 截断且标注总字符数

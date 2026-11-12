@@ -1,8 +1,8 @@
 //! Compatibility facade: the management module owns the protocol.
-pub use echo_module_management::protocol::*;
-pub use echo_module_management::protocol::{command, event};
+pub use agent_module_management::protocol::*;
+pub use agent_module_management::protocol::{command, event};
 
 /// Compatibility module identity.
 pub mod module {
-    pub const MODULE_ID: &str = echo_module_management::PROTOCOL_MODULE_ID;
+    pub const MODULE_ID: &str = agent_module_management::PROTOCOL_MODULE_ID;
 }

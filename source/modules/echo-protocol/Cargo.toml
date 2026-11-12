@@ -8,4 +8,4 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-echo-module-management = { path = "../echo-module-management" }
+agent-module-management = { path = "../agent-module-management" }

@@ -30,7 +30,7 @@ y: 1200
 | kind | `orchestration` |
 | 名称 / 路由 | 「自更新」/ 路由 `selfupdate` |
 | 来源 / 运行形态 | 编译内置 / 进程内 |
-| crate | `source/modules/echo-module-self-update`（3 文件，约 490 行） |
+| crate | `source/modules/agent-module-self-update`（3 文件，约 490 行） |
 
 | 贡献 | 内容 |
 |---|---|

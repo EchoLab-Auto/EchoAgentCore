@@ -16,24 +16,24 @@ echo-defs.workspace = true
 echo-config.workspace = true
 echo-context.workspace = true
 echo-session.workspace = true
-echo-module-tools = { workspace = true }
-echo-module-shell = { workspace = true }
-echo-module-loop = { workspace = true }
+agent-module-tools = { workspace = true }
+agent-module-shell = { workspace = true }
+agent-module-loop = { workspace = true }
 echo-module = { workspace = true }
 echo-module-host = { workspace = true }
-echo-module-federation = { workspace = true }
+agent-module-federation = { workspace = true }
 echo-module-loader = { workspace = true }
-echo-module-session = { workspace = true }
-echo-module-prodoc = { workspace = true }
-echo-module-transcript = { workspace = true }
-echo-module-management = { workspace = true }
-echo-module-panel = { workspace = true }
-echo-module-skills = { workspace = true }
-echo-module-workspace = { workspace = true }
-echo-module-subagent = { workspace = true }
-echo-module-provider-llm = { workspace = true }
-echo-module-self-update = { workspace = true }
-echo-module-sanitize = { workspace = true }
+agent-module-session = { workspace = true }
+agent-module-prodoc = { workspace = true }
+agent-module-transcript = { workspace = true }
+agent-module-management = { workspace = true }
+agent-module-panel = { workspace = true }
+agent-module-skills = { workspace = true }
+agent-module-workspace = { workspace = true }
+agent-module-subagent = { workspace = true }
+agent-module-provider-llm = { workspace = true }
+agent-module-self-update = { workspace = true }
+agent-module-sanitize = { workspace = true }
 getrandom = "0.2"
 tokio.workspace = true
 serde.workspace = true
@@ -50,6 +50,6 @@ futures-util.workspace = true
 chrono.workspace = true
 flate2.workspace = true
 
-# 脱敏实现已归 `echo-module-sanitize`：组合根只在**测试**里直接构造
+# 脱敏实现已归 `agent-module-sanitize`：组合根只在**测试**里直接构造
 # `RegistryRedactor`（其余路径一律走模块导出的 `build`）。
 [dev-dependencies]

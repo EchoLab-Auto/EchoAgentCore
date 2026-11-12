@@ -20,7 +20,7 @@ y: 1200
 （`EchoLab-Auto/agent-module-workspace`），Core 以 git 依赖引入：
 
 ```toml
-echo-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", branch = "main" }
+agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", branch = "main" }
 ```
 
 | 项 | 值 |
@@ -29,7 +29,7 @@ echo-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-wo
 | kind | `tool`（persona 白名单参与） |
 | 名称 / 路由 | 「工作区会话」/ `workspace` |
 | 来源 / 运行形态 | 独立仓库 / 进程内（`kind = "builtin"` 行，编译进 Core 二进制） |
-| 仓库 | `echo-module-workspace`（`wire` / `store` / `git` / `files` / `prompt` / `commands` / `tool` 七个模块） |
+| 仓库 | `agent-module-workspace`（`wire` / `store` / `git` / `files` / `prompt` / `commands` / `tool` 七个模块） |
 
 **为什么是"独立仓库 + 进程内"而不是进程外模块**：`Contribution::Command` 与
 `Contribution::Text` 目前只有进程内实现（stdio 轨只消费 `Tool` /
@@ -107,7 +107,7 @@ echo-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-wo
 - 文档路径：`$XDG_CONFIG_HOME/echo-agent-core/echo-workspaces-{team_id}.json`
   （模块配置 `[module.config] state_dir` 可覆盖）——**与迁出前同一路径**，旧数据
   直接可读，无需迁移。
-- 线类型：模块仓 `wire` 模块是 `echo-module-management` 的**镜像**（字段名逐字一致）。
+- 线类型：模块仓 `wire` 模块是 `agent-module-management` 的**镜像**（字段名逐字一致）。
   为什么不用同一套类型：Core 以 git 依赖引入模块仓，模块反向依赖 Core 的 crate
   就是包级循环依赖，Cargo 直接拒绝。两侧的边界收在
   `workspace_commands::to_protocol_session`，任一侧加字段都会在编译期报错。

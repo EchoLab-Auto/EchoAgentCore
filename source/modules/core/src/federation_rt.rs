@@ -14,8 +14,8 @@ pub(crate) const CORE_AGENT_ID: &str = "__core";
 
 /// 联邦路由上下文（Phase 2）：路由泵与代理工具注册共用的句柄束。
 pub(crate) struct FederationRuntime {
-    pub(crate) federation: Arc<echo_module_federation::Federation>,
-    pub(crate) router: Arc<echo_module_loop::federation::InvokeRouter>,
+    pub(crate) federation: Arc<agent_module_federation::Federation>,
+    pub(crate) router: Arc<agent_module_loop::federation::InvokeRouter>,
     /// peer 配置名 → node_id（Link Up 时登记；代理工具命名用配置名）。
     pub(crate) peer_names:
         std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
@@ -32,7 +32,7 @@ pub(crate) struct FederationRuntime {
     /// 运行时更新即生效（此前启动期冻结会让白名单静默失效到重启）。
     pub(crate) peer_policies: std::sync::Arc<
         tokio::sync::RwLock<
-            std::collections::HashMap<String, echo_module_loop::federation::ExecutorPolicy>,
+            std::collections::HashMap<String, agent_module_loop::federation::ExecutorPolicy>,
         >,
     >,
     /// 远程代理工具的注册保活句柄：node_id → 该 peer 的全部 Disposer
@@ -87,10 +87,10 @@ pub(crate) struct FederationRuntime {
     ///
     /// 语义与 `supervisor.personas()` 等价：都是"当前活着的、启用的人格"。
     pub(crate) personas:
-        tokio::sync::RwLock<Vec<(String, std::sync::Weak<echo_module_loop::Agent>)>>,
+        tokio::sync::RwLock<Vec<(String, std::sync::Weak<agent_module_loop::Agent>)>>,
     /// 进程级事件兜底出口（`core_agent`）：**没有**任何人格时联邦状态事件
     /// 仍要送到 Panel（否则链路变化静默丢失）。弱引用，理由同上。
-    pub(crate) event_fallback: std::sync::RwLock<Option<std::sync::Weak<echo_module_loop::Agent>>>,
+    pub(crate) event_fallback: std::sync::RwLock<Option<std::sync::Weak<agent_module_loop::Agent>>>,
 }
 
 impl FederationRuntime {
@@ -112,7 +112,7 @@ impl FederationRuntime {
         if let Some(id) = map
             .iter()
             .find(|(name, _)| {
-                echo_module_loop::federation::sanitize_peer_component(name) == requested
+                agent_module_loop::federation::sanitize_peer_component(name) == requested
             })
             .map(|(_, id)| id.clone())
         {
@@ -127,7 +127,7 @@ impl FederationRuntime {
             if let Some(info) = self.federation.peer_info(config_name).await {
                 if info.node_name.as_deref().is_some_and(|name| {
                     name.trim() == requested
-                        || echo_module_loop::federation::sanitize_peer_component(name) == requested
+                        || agent_module_loop::federation::sanitize_peer_component(name) == requested
                 }) {
                     candidates.push(node_id.clone());
                 }
@@ -145,14 +145,14 @@ impl FederationRuntime {
         let node_id = self.peer_names.read().await.get(peer_name).cloned()?;
         let (request, pending) = self.router.query(
             &node_id,
-            echo_module_federation::QueryKind::NodeStatus,
+            agent_module_federation::QueryKind::NodeStatus,
             String::new(),
             String::new(),
             0,
             0,
         );
         self.federation
-            .send_to(&node_id, echo_module_federation::FedFrame::Query(request))
+            .send_to(&node_id, agent_module_federation::FedFrame::Query(request))
             .await
             .ok()?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending.wait())
@@ -173,7 +173,7 @@ impl FederationRuntime {
     pub(crate) async fn peer_policy_for(
         &self,
         peer_name: &str,
-    ) -> Option<echo_module_loop::federation::ExecutorPolicy> {
+    ) -> Option<agent_module_loop::federation::ExecutorPolicy> {
         self.peer_policies.read().await.get(peer_name).cloned()
     }
 
@@ -185,7 +185,7 @@ impl FederationRuntime {
     pub(crate) async fn register_persona(
         &self,
         id: &str,
-        agent: &std::sync::Arc<echo_module_loop::Agent>,
+        agent: &std::sync::Arc<agent_module_loop::Agent>,
     ) {
         let mut list = self.personas.write().await;
         let weak = std::sync::Arc::downgrade(agent);
@@ -202,7 +202,7 @@ impl FederationRuntime {
     /// 顺带把死条目摘掉（这就是"清扫"的全部，不需要定时器）。
     pub(crate) async fn live_personas(
         &self,
-    ) -> Vec<(String, std::sync::Arc<echo_module_loop::Agent>)> {
+    ) -> Vec<(String, std::sync::Arc<agent_module_loop::Agent>)> {
         let mut list = self.personas.write().await;
         let mut live = Vec::with_capacity(list.len());
         list.retain(|(id, weak)| match weak.upgrade() {
@@ -219,7 +219,7 @@ impl FederationRuntime {
     pub(crate) async fn persona_by_id(
         &self,
         id: &str,
-    ) -> Option<std::sync::Arc<echo_module_loop::Agent>> {
+    ) -> Option<std::sync::Arc<agent_module_loop::Agent>> {
         let list = self.personas.read().await;
         list.iter()
             .find(|(existing, _)| existing == id)
@@ -240,14 +240,14 @@ impl FederationRuntime {
     /// 为空）的两个能力一起静默消失：链路事件无处可发、远程调用一律
     /// Forbidden（2026-10 实测：云端中转节点链路正常、工具表看着有 6 个，
     /// 调用全失败）。
-    pub(crate) fn set_core_agent(&self, agent: &std::sync::Arc<echo_module_loop::Agent>) {
+    pub(crate) fn set_core_agent(&self, agent: &std::sync::Arc<agent_module_loop::Agent>) {
         if let Ok(mut slot) = self.event_fallback.write() {
             *slot = Some(std::sync::Arc::downgrade(agent));
         }
     }
 
     /// 核心服务代理（`None` = 组合根未接线 / 已被 drop）。
-    pub(crate) fn core_agent(&self) -> Option<std::sync::Arc<echo_module_loop::Agent>> {
+    pub(crate) fn core_agent(&self) -> Option<std::sync::Arc<agent_module_loop::Agent>> {
         self.event_fallback
             .read()
             .ok()
@@ -266,7 +266,7 @@ impl FederationRuntime {
     /// 按 Forbidden 明确回执（而不是让调用方空等超时）。
     pub(crate) async fn executor_hosts(
         &self,
-    ) -> Vec<(String, std::sync::Arc<echo_module_loop::Agent>)> {
+    ) -> Vec<(String, std::sync::Arc<agent_module_loop::Agent>)> {
         let live = self.live_personas().await;
         if !live.is_empty() {
             return live;
@@ -282,7 +282,7 @@ impl FederationRuntime {
     /// 取第一个而不是"找特定人格"：事件是进程级的，谁发都一样。
     pub(crate) async fn emit_federation_event(
         &self,
-        event: echo_module_management::protocol::BackendEvent,
+        event: agent_module_management::protocol::BackendEvent,
     ) {
         if let Some((_, agent)) = self.live_personas().await.into_iter().next() {
             agent.emit(event);
@@ -298,7 +298,7 @@ impl FederationRuntime {
         }
     }
 
-    pub(crate) async fn status_event(&self) -> echo_module_management::protocol::BackendEvent {
+    pub(crate) async fn status_event(&self) -> agent_module_management::protocol::BackendEvent {
         let active: std::collections::HashSet<String> =
             self.federation.active_peers().await.into_iter().collect();
         let configs = self.federation.peer_configs().await;
@@ -346,7 +346,7 @@ impl FederationRuntime {
                 // 最后在线时刻 + 最近学到的对端宣告地址——Panel 把"持续
                 // 连不上"显性化并给出"改用对端宣告地址"的修复路径。
                 let diag = self.federation.peer_diagnostics(&p.name).await;
-                peers.push(echo_module_management::protocol::FederationPeerInfo {
+                peers.push(agent_module_management::protocol::FederationPeerInfo {
                     name: p.name.clone(),
                     url: p.url,
                     token: String::new(),
@@ -368,9 +368,9 @@ impl FederationRuntime {
                         .map(|x| x.allow_queries.clone())
                         .unwrap_or_default(),
                     link: if online {
-                        echo_module_management::protocol::FederationLinkState::Online
+                        agent_module_management::protocol::FederationLinkState::Online
                     } else {
-                        echo_module_management::protocol::FederationLinkState::Offline
+                        agent_module_management::protocol::FederationLinkState::Offline
                     },
                     active_turns,
                     node_name: self
@@ -386,7 +386,7 @@ impl FederationRuntime {
                 });
             }
         }
-        echo_module_management::protocol::BackendEvent::FederationStatus {
+        agent_module_management::protocol::BackendEvent::FederationStatus {
             enabled: true,
             node_id: self.federation.local_node_id().to_string(),
             node_name: self.node_name.clone(),
@@ -409,7 +409,7 @@ impl FederationRuntime {
     /// - `url` = 本机拨号地址（配置值，可能是内网/VPN——Panel 未必可达）；
     /// - `advertise` = 对端**自己宣告**的可拨地址（握手学到，跨断链保留）——
     ///   Panel 应优先用它，这正是地址漂移场景下唯一正确的那个。
-    pub(crate) async fn directory_event(&self) -> echo_module_management::protocol::BackendEvent {
+    pub(crate) async fn directory_event(&self) -> agent_module_management::protocol::BackendEvent {
         let active: std::collections::HashSet<String> =
             self.federation.active_peers().await.into_iter().collect();
         let peer_names = self.peer_names.read().await.clone();
@@ -421,7 +421,7 @@ impl FederationRuntime {
             let online = !node_id.is_empty() && active.contains(&node_id)
                 || self.federation.is_link_token_online(&config.token).await;
             let info = self.federation.peer_info(&config.name).await;
-            nodes.push(echo_module_management::protocol::FederatedNodeInfo {
+            nodes.push(agent_module_management::protocol::FederatedNodeInfo {
                 name: config.name.clone(),
                 node_id: if node_id.is_empty() {
                     info.as_ref().map(|i| i.node_id.clone()).unwrap_or_default()
@@ -442,7 +442,7 @@ impl FederationRuntime {
                 panel_ready: info.as_ref().map(|i| i.caps.panel_ready).unwrap_or(false),
             });
         }
-        echo_module_management::protocol::BackendEvent::FederationDirectory {
+        agent_module_management::protocol::BackendEvent::FederationDirectory {
             node_id: self.federation.local_node_id().to_string(),
             node_name: self.node_name.clone(),
             listen: self.listen.clone(),
@@ -464,20 +464,20 @@ impl FederationRuntime {
 ///   outbound 通道回传）；其余帧派发给出站等待表
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn federation_router_pump(
-    mut rx: tokio::sync::mpsc::Receiver<echo_module_federation::LinkEvent>,
+    mut rx: tokio::sync::mpsc::Receiver<agent_module_federation::LinkEvent>,
     rt: Arc<FederationRuntime>,
     peer_policies: std::sync::Arc<
         tokio::sync::RwLock<
-            std::collections::HashMap<String, echo_module_loop::federation::ExecutorPolicy>,
+            std::collections::HashMap<String, agent_module_loop::federation::ExecutorPolicy>,
         >,
     >,
     // 联邦出口集合：泵侧销账要用与 Agent 侧**同一个**聚合器（P3 终态：
     // 参数下发，不再摸 kernel cell）。
-    ports: Arc<echo_module_loop::federation::FederationPorts>,
+    ports: Arc<agent_module_loop::federation::FederationPorts>,
 ) {
     // 执行端结果回传通道：handle_invoke spawn 的执行任务 → 本泵统一发送。
     let (outbound_tx, mut outbound_rx) =
-        tokio::sync::mpsc::channel::<(String, echo_module_federation::FedFrame)>(64);
+        tokio::sync::mpsc::channel::<(String, agent_module_federation::FedFrame)>(64);
     // 目标侧会话导入缓冲（P3-2b）：transfer_id → 有序分块。
     let mut imports: std::collections::HashMap<String, federation_import::ImportBuffer> =
         std::collections::HashMap::new();
@@ -500,7 +500,7 @@ pub(crate) async fn federation_router_pump(
             event = rx.recv() => {
                 let Some(event) = event else { break };
                 match event {
-                    echo_module_federation::LinkEvent::Up(info) => {
+                    agent_module_federation::LinkEvent::Up(info) => {
                         tracing::info!(
                             target: "federation",
                             peer = %info.node_id, name = %info.peer_name,
@@ -554,7 +554,7 @@ pub(crate) async fn federation_router_pump(
                         learn_peer_dial_address(&rt, &info).await;
                         broadcast_federation_status(&rt).await;
                     }
-                    echo_module_federation::LinkEvent::Down { peer_node_id, reason } => {
+                    agent_module_federation::LinkEvent::Down { peer_node_id, reason } => {
                         tracing::info!(target: "federation", peer = %peer_node_id, %reason, "link down");
                         rt.router.drop_peer(&peer_node_id);
                         let package = peer_package(&rt, &peer_node_id).await;
@@ -570,8 +570,8 @@ pub(crate) async fn federation_router_pump(
                         // 链路状态变化 → 面板联邦页实时刷新。
                         broadcast_federation_status(&rt).await;
                     }
-                    echo_module_federation::LinkEvent::Frame { from, frame } => {
-                        if let echo_module_federation::FedFrame::Invoke(request) = frame {
+                    agent_module_federation::LinkEvent::Frame { from, frame } => {
+                        if let agent_module_federation::FedFrame::Invoke(request) = frame {
                             // 执行宿主：人格优先、零人格回退 `__core`。用
                             // `executor_hosts()` 而**不是** `live_personas()`：
                             // 纯执行节点按设计可以零人格，但它的 bash / 文件
@@ -592,9 +592,9 @@ pub(crate) async fn federation_router_pump(
                                     target: "federation", from = %from, call_id = %request.call_id,
                                     "invoke rejected: no executor host on this node"
                                 );
-                                let reply = echo_module_federation::FedFrame::Error {
+                                let reply = agent_module_federation::FedFrame::Error {
                                     call_id: Some(request.call_id.clone()),
-                                    code: echo_module_federation::FedError::Forbidden,
+                                    code: agent_module_federation::FedError::Forbidden,
                                     message: "执行端没有任何执行宿主（零人格且未接线核心服务代理），联邦工具通道不可用".into(),
                                 };
                                 if rt.federation.send_to(&from, reply).await.is_err() {
@@ -609,14 +609,14 @@ pub(crate) async fn federation_router_pump(
                             if rt.federation.send_to(&from, reply).await.is_err() {
                                 tracing::warn!(target: "federation", peer = %from, "invoke reply send failed");
                             }
-                        } else if let echo_module_federation::FedFrame::Query(req) = frame {
+                        } else if let agent_module_federation::FedFrame::Query(req) = frame {
                             // 只读查询执行端（Phase 5）：白名单裁决 → 本机采集 →
                             // QueryResult 回传。
                             let reply = handle_federation_query(&rt, &from, req).await;
                             if rt.federation.send_to(&from, reply).await.is_err() {
                                 tracing::warn!(target: "federation", peer = %from, "query reply send failed");
                             }
-                        } else if let echo_module_federation::FedFrame::SubagentSpawn(req) = &frame {
+                        } else if let agent_module_federation::FedFrame::SubagentSpawn(req) = &frame {
                             // 执行端门控（Phase 3 消费）：peer 未授
                             // allow_subagent 时拒绝受理——此前只记审计就放行，
                             // 配置的 allow_subagent = false 形同虚设。拒绝以
@@ -642,10 +642,10 @@ pub(crate) async fn federation_router_pump(
                                     from = %from, call_id = %req.call_id,
                                     "remote subagent rejected (allow_subagent not granted)"
                                 );
-                                let reply = echo_module_federation::FedFrame::SubagentEvent(
-                                    echo_module_federation::SubagentEventFrame {
+                                let reply = agent_module_federation::FedFrame::SubagentEvent(
+                                    agent_module_federation::SubagentEventFrame {
                                         call_id: req.call_id.clone(),
-                                        status: echo_module_federation::SubagentStatus::Failed,
+                                        status: agent_module_federation::SubagentStatus::Failed,
                                         result: Some(format!(
                                             "peer {} 未授予远程委派（allow_subagent = false）",
                                             peer_name.as_deref().unwrap_or(&from)
@@ -666,7 +666,7 @@ pub(crate) async fn federation_router_pump(
                                 task = %req.task.chars().take(120).collect::<String>(),
                                 "remote subagent spawned on this node"
                             );
-                        } else if let echo_module_federation::FedFrame::SubagentEvent(ev) = &frame {
+                        } else if let agent_module_federation::FedFrame::SubagentEvent(ev) = &frame {
                             tracing::info!(
                                 target: "federation",
                                 from = %from, call_id = %ev.call_id, status = ?ev.status,
@@ -675,7 +675,7 @@ pub(crate) async fn federation_router_pump(
                             // P3-3 聚合销账：组内全部终态时，聚合摘要
                             // 投递父会话 timeline（assistant 系统消息）。
                             if let Some(summary) =
-                                echo_module_loop::federation::aggregator::settle_remote_subagent(
+                                agent_module_loop::federation::aggregator::settle_remote_subagent(
                                     &ports.aggregator,
                                     &ev.call_id,
                                     ev.status,
@@ -684,13 +684,13 @@ pub(crate) async fn federation_router_pump(
                             {
                                 federation_import::deliver_aggregate_summary(&rt, summary).await;
                             }
-                        } else if let echo_module_federation::FedFrame::SessionImport(import) = &frame {
+                        } else if let agent_module_federation::FedFrame::SessionImport(import) = &frame {
                             // 目标侧（P3-2b）：聚合分块 + 每块 ack（流控/重发）；
                             // 凑齐后 spawn_blocking 导入，终态经 Result 回源。
                             let (acked, outcome) =
                                 federation_import::handle_session_import(&rt, import, &mut imports);
-                            let ack = echo_module_federation::FedFrame::SessionImportAck(
-                                echo_module_federation::SessionImportAckFrame {
+                            let ack = agent_module_federation::FedFrame::SessionImportAck(
+                                agent_module_federation::SessionImportAckFrame {
                                     transfer_id: import.transfer_id.clone(),
                                     acked_upto: acked,
                                 },
@@ -727,14 +727,14 @@ pub(crate) async fn federation_router_pump(
                                     });
                                 }
                             }
-                        } else if let echo_module_federation::FedFrame::SessionImportAck(ack) = &frame {
+                        } else if let agent_module_federation::FedFrame::SessionImportAck(ack) = &frame {
                             // 源侧（P3-2b）：目标 ack → 推进本任务窗口。
                             federation_import::note_session_import_ack(
                                 &rt,
                                 &ack.transfer_id,
                                 ack.acked_upto,
                             );
-                        } else if let echo_module_federation::FedFrame::SessionImportResult(result) = &frame
+                        } else if let agent_module_federation::FedFrame::SessionImportResult(result) = &frame
                         {
                             // 源侧（P3-2b）：目标终态回执 → 面板结果事件。
                             let message = if result.success {
@@ -745,7 +745,7 @@ pub(crate) async fn federation_router_pump(
                             } else {
                                 format!("迁移失败：{}", result.message)
                             };
-                            let event = echo_module_management::protocol::BackendEvent::SessionMigrated {
+                            let event = agent_module_management::protocol::BackendEvent::SessionMigrated {
                                 session_id: result.session_id.clone(),
                                 target_peer: result.target_peer.clone(),
                                 new_session_id: result
@@ -801,7 +801,7 @@ pub(crate) async fn broadcast_federation_status(rt: &FederationRuntime) {
 /// 而 `allow_queries = ["*"]` 的互信对端根本看不出差别（沙箱被豁免），
 /// 于是问题只在收紧配置的节点上才暴露。
 fn executor_roots(
-    hosts: &[(String, std::sync::Arc<echo_module_loop::Agent>)],
+    hosts: &[(String, std::sync::Arc<agent_module_loop::Agent>)],
 ) -> Vec<std::path::PathBuf> {
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
     for (_id, agent) in hosts {
@@ -832,8 +832,8 @@ fn executor_roots(
 /// 只读镜像，不再有 `agent.workspace_store()`。
 async fn all_workspace_directories(
     rt: &FederationRuntime,
-) -> Vec<echo_module_workspace::wire::WorkspaceDirectory> {
-    let mut all: Vec<echo_module_workspace::wire::WorkspaceDirectory> = Vec::new();
+) -> Vec<agent_module_workspace::wire::WorkspaceDirectory> {
+    let mut all: Vec<agent_module_workspace::wire::WorkspaceDirectory> = Vec::new();
     for (_id, agent) in rt.executor_hosts().await {
         if let Some(mirror) = agent.workspace_mirror() {
             for session in mirror.snapshot().sessions {
@@ -855,9 +855,9 @@ async fn all_workspace_directories(
 pub(crate) async fn handle_federation_query(
     rt: &FederationRuntime,
     from: &str,
-    req: echo_module_federation::QueryRequest,
-) -> echo_module_federation::FedFrame {
-    use echo_module_federation::{FedFrame, QueryKind, QueryResultFrame};
+    req: agent_module_federation::QueryRequest,
+) -> agent_module_federation::FedFrame {
+    use agent_module_federation::{FedFrame, QueryKind, QueryResultFrame};
     let call_id = req.call_id.clone();
     let ok = |payload: serde_json::Value| {
         FedFrame::QueryResult(QueryResultFrame {
@@ -920,9 +920,9 @@ pub(crate) async fn handle_federation_query(
                     }
                     Ok(p)
                 } else {
-                    echo_module_loop::workspace::resolve_within_directories(&all_dirs, &dir)
+                    agent_module_loop::workspace::resolve_within_directories(&all_dirs, &dir)
                 }?;
-                echo_module_loop::workspace::collect_dir_files(&resolved)
+                agent_module_loop::workspace::collect_dir_files(&resolved)
             })
             .await;
             match collected {
@@ -952,9 +952,9 @@ pub(crate) async fn handle_federation_query(
                     }
                     p
                 } else {
-                    echo_module_loop::workspace::resolve_within_directories(&all_dirs, &dir)?
+                    agent_module_loop::workspace::resolve_within_directories(&all_dirs, &dir)?
                 };
-                Ok::<_, String>(echo_module_loop::workspace::collect_dir_git(
+                Ok::<_, String>(agent_module_loop::workspace::collect_dir_git(
                     &resolved.to_string_lossy(),
                 ))
             })
@@ -1024,7 +1024,7 @@ pub(crate) async fn handle_federation_query(
             };
             // 浏览根 = 全部 persona 工作区目录并集 ∪ HOME（与大脑侧本机
             // 浏览同一逻辑——browse_roots helper）。
-            let mut all_dirs: Vec<echo_module_workspace::wire::WorkspaceDirectory> = Vec::new();
+            let mut all_dirs: Vec<agent_module_workspace::wire::WorkspaceDirectory> = Vec::new();
             let mut labels: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             // 数据来自模块镜像（store 已随模块迁出 Core）。
@@ -1040,7 +1040,7 @@ pub(crate) async fn handle_federation_query(
                     }
                 }
             }
-            let roots = echo_module_loop::workspace::browse_roots(&all_dirs, &labels);
+            let roots = agent_module_loop::workspace::browse_roots(&all_dirs, &labels);
             if requested.is_empty() {
                 return ok(serde_json::json!({
                     "roots": roots,
@@ -1049,8 +1049,8 @@ pub(crate) async fn handle_federation_query(
             }
             let collected = tokio::task::spawn_blocking(move || {
                 let resolved =
-                    echo_module_loop::workspace::resolve_within_browse_roots(&roots, &requested)?;
-                echo_module_loop::workspace::collect_child_dirs(&resolved)
+                    agent_module_loop::workspace::resolve_within_browse_roots(&roots, &requested)?;
+                agent_module_loop::workspace::collect_child_dirs(&resolved)
             })
             .await;
             match collected {
@@ -1134,7 +1134,7 @@ pub(crate) async fn handle_federation_query(
 /// 已配置/已学习的地址；对端呼叫本机地址（同机双节点等）时跳过。
 pub(crate) async fn learn_peer_dial_address(
     rt: &FederationRuntime,
-    info: &echo_module_federation::PeerInfo,
+    info: &agent_module_federation::PeerInfo,
 ) {
     // 解析后的配置名（邀请占位已提升为最终名）。
     let name = rt
@@ -1154,7 +1154,7 @@ pub(crate) async fn learn_peer_dial_address(
     // 自指防护：对端宣告的竟是本机地址 → 学习只会导致自拨回环。
     let observed = rt.federation.observed_host_sync();
     let own =
-        echo_module_federation::admin::invite_host(&rt.listen, &rt.advertise, observed.as_deref())
+        agent_module_federation::admin::invite_host(&rt.listen, &rt.advertise, observed.as_deref())
             .map(|host_port| format!("ws://{host_port}"));
     if own.as_deref() == Some(url.as_str()) {
         return;
@@ -1171,7 +1171,7 @@ pub(crate) async fn learn_peer_dial_address(
         tracing::warn!(target: "federation", %name, error = %e, "learn peer url: config write failed");
     }
     rt.federation
-        .add_peer(echo_module_federation::PeerConfig {
+        .add_peer(agent_module_federation::PeerConfig {
             name: name.clone(),
             url: url.clone(),
             token: cfg.token.clone(),
@@ -1197,7 +1197,7 @@ pub(crate) fn learnable_peer_url(existing_url: &str, advertised: Option<&str>) -
 
 pub(crate) async fn promote_paired_invite_placeholders(
     rt: &FederationRuntime,
-    policies: &mut std::collections::HashMap<String, echo_module_loop::federation::ExecutorPolicy>,
+    policies: &mut std::collections::HashMap<String, agent_module_loop::federation::ExecutorPolicy>,
 ) {
     let configs = rt.federation.peer_configs().await;
     // 占位判定走**登记表**（2026-10 审计 P1-1）：此前按「名字前缀 invite-」
@@ -1261,7 +1261,7 @@ pub(crate) async fn promote_paired_invite_placeholders(
         }
         // 2. 运行时：登记 peer（url 空 = 仅接受连入）+ 满权限策略。
         rt.federation
-            .add_peer(echo_module_federation::PeerConfig {
+            .add_peer(agent_module_federation::PeerConfig {
                 name: promoted.clone(),
                 url: String::new(),
                 token: token.clone(),
@@ -1269,11 +1269,11 @@ pub(crate) async fn promote_paired_invite_placeholders(
             .await;
         policies.insert(
             promoted.clone(),
-            echo_module_loop::federation::ExecutorPolicy::full(),
+            agent_module_loop::federation::ExecutorPolicy::full(),
         );
         rt.router.set_policy(
             node_id,
-            echo_module_loop::federation::ExecutorPolicy::full(),
+            agent_module_loop::federation::ExecutorPolicy::full(),
         );
         // 3. 映射替换 + 移除占位。
         rt.peer_names.write().await.remove(&placeholder);
@@ -1383,11 +1383,11 @@ fn peer_tool_package(peer_name: &str) -> String {
 /// - 人格新建 → 只给自己调一次（`adopt_active_links`）。
 pub(crate) async fn register_remote_tools_for_agent(
     rt: &FederationRuntime,
-    agent: &std::sync::Arc<echo_module_loop::Agent>,
-    info: &echo_module_federation::PeerInfo,
+    agent: &std::sync::Arc<agent_module_loop::Agent>,
+    info: &agent_module_federation::PeerInfo,
     peer_name: &str,
 ) -> Vec<echo_context::Disposer> {
-    let candidates = echo_module_loop::federation::remote_tool_candidates(&info.caps);
+    let candidates = agent_module_loop::federation::remote_tool_candidates(&info.caps);
     if candidates.is_empty() {
         return Vec::new();
     }
@@ -1405,8 +1405,8 @@ pub(crate) async fn register_remote_tools_for_agent(
     for alias in &aliases {
         for remote_name in &candidates {
             let (description, parameters) =
-                echo_module_loop::federation::proxy_schema(&definitions, remote_name, alias);
-            let tool = std::sync::Arc::new(echo_module_loop::federation::RemoteTool::new(
+                agent_module_loop::federation::proxy_schema(&definitions, remote_name, alias);
+            let tool = std::sync::Arc::new(agent_module_loop::federation::RemoteTool::new(
                 alias,
                 &info.node_id,
                 remote_name,
@@ -1417,7 +1417,7 @@ pub(crate) async fn register_remote_tools_for_agent(
             ));
             keepers.push(agent.tools.register_reversible(tool));
             agent.tools.set_package(
-                &echo_module_loop::federation::remote_tool_name(alias, remote_name),
+                &agent_module_loop::federation::remote_tool_name(alias, remote_name),
                 &package,
             );
         }
@@ -1455,10 +1455,10 @@ fn peer_tool_aliases(
 /// 按对端 caps 给**全部** persona 注册代理工具（链路 Up 时调）。
 pub(crate) async fn register_remote_tools(
     rt: &FederationRuntime,
-    info: &echo_module_federation::PeerInfo,
+    info: &agent_module_federation::PeerInfo,
     peer_name: &str,
 ) {
-    let candidates = echo_module_loop::federation::remote_tool_candidates(&info.caps);
+    let candidates = agent_module_loop::federation::remote_tool_candidates(&info.caps);
     if candidates.is_empty() {
         return;
     }
@@ -1547,7 +1547,7 @@ fn prune_deleted_personas(rt: &FederationRuntime) {
 /// 幂等：已注册过的人格再调一次只会覆盖自己的桶（先删后插），不会重复注册。
 pub(crate) async fn adopt_active_links(
     rt: &FederationRuntime,
-    agent: &std::sync::Arc<echo_module_loop::Agent>,
+    agent: &std::sync::Arc<agent_module_loop::Agent>,
     persona_id: &str,
 ) {
     // 先清扫：这个入口在每次人格新建时都会跑，是顺手的回收点。
@@ -1586,13 +1586,13 @@ pub(crate) async fn adopt_active_links(
             .into_iter()
             .map(|p| p.name)
             .collect();
-        let remote_candidates = echo_module_loop::federation::remote_tool_candidates(&info.caps);
+        let remote_candidates = agent_module_loop::federation::remote_tool_candidates(&info.caps);
         let installed: Vec<String> =
             peer_tool_aliases(&peer_name, info.node_name.as_deref(), &configured)
                 .iter()
                 .flat_map(|alias| {
                     remote_candidates.iter().map(move |tool| {
-                        echo_module_loop::federation::remote_tool_name(alias, tool)
+                        agent_module_loop::federation::remote_tool_name(alias, tool)
                     })
                 })
                 .collect();
@@ -1631,7 +1631,7 @@ mod remote_tool_install_tests {
     struct NullProvider;
 
     #[async_trait::async_trait]
-    impl echo_module_loop::llm::LlmProvider for NullProvider {
+    impl agent_module_loop::llm::LlmProvider for NullProvider {
         fn name(&self) -> &str {
             "null"
         }
@@ -1640,25 +1640,25 @@ mod remote_tool_install_tests {
         }
         async fn chat(
             &self,
-            _request: &echo_module_loop::llm::ChatRequest,
-        ) -> Result<echo_module_loop::llm::ChatResponse, echo_module_loop::llm::LlmError> {
-            Err(echo_module_loop::llm::LlmError::Config("not used".into()))
+            _request: &agent_module_loop::llm::ChatRequest,
+        ) -> Result<agent_module_loop::llm::ChatResponse, agent_module_loop::llm::LlmError> {
+            Err(agent_module_loop::llm::LlmError::Config("not used".into()))
         }
         async fn chat_stream(
             &self,
-            request: &echo_module_loop::llm::ChatRequest,
-            _tx: tokio::sync::mpsc::UnboundedSender<echo_module_loop::llm::ChatChunk>,
-        ) -> Result<echo_module_loop::llm::ChatResponse, echo_module_loop::llm::LlmError> {
+            request: &agent_module_loop::llm::ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<agent_module_loop::llm::ChatChunk>,
+        ) -> Result<agent_module_loop::llm::ChatResponse, agent_module_loop::llm::LlmError> {
             self.chat(request).await
         }
     }
 
-    fn new_agent(team: &str) -> Arc<echo_module_loop::Agent> {
-        let agent = Arc::new(echo_module_loop::Agent::new(
+    fn new_agent(team: &str) -> Arc<agent_module_loop::Agent> {
+        let agent = Arc::new(agent_module_loop::Agent::new(
             Arc::new(NullProvider),
-            echo_module_loop::AgentConfig::default(),
-            echo_module_loop::skill::SkillRegistry::new(),
-            echo_module_loop::tool::ToolRegistry::new(),
+            agent_module_loop::AgentConfig::default(),
+            agent_module_loop::skill::SkillRegistry::new(),
+            agent_module_loop::tool::ToolRegistry::new(),
             Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
         ));
         agent.set_team_id(Some(team.to_string()));
@@ -1669,10 +1669,10 @@ mod remote_tool_install_tests {
     pub(super) fn runtime(dir: &std::path::Path) -> Arc<super::FederationRuntime> {
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
-        let federation = echo_module_federation::Federation::new(
+        let federation = agent_module_federation::Federation::new(
             "node-local".into(),
             None,
-            echo_module_federation::NodeCaps::default(),
+            agent_module_federation::NodeCaps::default(),
             Vec::new(),
             None,
             event_tx,
@@ -1680,7 +1680,7 @@ mod remote_tool_install_tests {
         );
         Arc::new(super::FederationRuntime {
             federation,
-            router: echo_module_loop::federation::InvokeRouter::new("node-local".into()),
+            router: agent_module_loop::federation::InvokeRouter::new("node-local".into()),
             peer_names: Arc::new(tokio::sync::RwLock::new(Default::default())),
             node_to_peer: Arc::new(tokio::sync::RwLock::new(Default::default())),
             config_store: echo_config::ConfigStore::new(dir.join("core.toml")),
@@ -1697,8 +1697,8 @@ mod remote_tool_install_tests {
         })
     }
 
-    fn peer_info(caps: echo_module_federation::NodeCaps) -> echo_module_federation::PeerInfo {
-        echo_module_federation::PeerInfo {
+    fn peer_info(caps: agent_module_federation::NodeCaps) -> agent_module_federation::PeerInfo {
+        agent_module_federation::PeerInfo {
             node_id: "node-remote".into(),
             node_name: Some("gpu-box".into()),
             version: "0.0.0".into(),
@@ -1736,7 +1736,7 @@ mod remote_tool_install_tests {
         let alice = new_agent("alice");
         let bob = new_agent("bob");
 
-        let caps = echo_module_federation::NodeCaps {
+        let caps = agent_module_federation::NodeCaps {
             tools: vec!["read_file".into(), "bash".into()],
             ..Default::default()
         };
@@ -1792,7 +1792,7 @@ mod remote_tool_install_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let rt = runtime(&dir);
         let agent = new_agent("alice");
-        let mut info = peer_info(echo_module_federation::NodeCaps {
+        let mut info = peer_info(agent_module_federation::NodeCaps {
             tools: vec!["bash".into()],
             ..Default::default()
         });
@@ -1821,7 +1821,7 @@ mod remote_tool_install_tests {
         let keepers = super::register_remote_tools_for_agent(
             &rt,
             &alice,
-            &peer_info(echo_module_federation::NodeCaps::default()),
+            &peer_info(agent_module_federation::NodeCaps::default()),
             "gpu-box",
         )
         .await;
@@ -1879,7 +1879,7 @@ mod remote_tool_install_tests {
         let rt = runtime(&dir);
 
         // ① 什么都没有：不 panic（只记 warn）。
-        rt.emit_federation_event(echo_module_management::protocol::BackendEvent::Error {
+        rt.emit_federation_event(agent_module_management::protocol::BackendEvent::Error {
             session_id: None,
             message: "x".into(),
         })
@@ -1893,7 +1893,7 @@ mod remote_tool_install_tests {
         core.attach_event_sink(Arc::new(move |event| {
             sink.lock().unwrap().push(event.kind_name().to_string());
         }));
-        rt.emit_federation_event(echo_module_management::protocol::BackendEvent::Error {
+        rt.emit_federation_event(agent_module_management::protocol::BackendEvent::Error {
             session_id: None,
             message: "y".into(),
         })
@@ -2116,8 +2116,8 @@ mod core_util_tests {
         index: u32,
         total: u32,
         data: &str,
-    ) -> echo_module_federation::SessionImportFrame {
-        echo_module_federation::SessionImportFrame {
+    ) -> agent_module_federation::SessionImportFrame {
+        agent_module_federation::SessionImportFrame {
             transfer_id: "mig-1".into(),
             session_id: "local:tui::local_user".into(),
             team_id: "alix".into(),
@@ -2216,7 +2216,7 @@ mod directory_tests {
         let dir = tmpdir("directory");
         let rt = runtime(&dir);
         rt.federation
-            .add_peer(echo_module_federation::PeerConfig {
+            .add_peer(agent_module_federation::PeerConfig {
                 name: "gpu-box".into(),
                 url: "ws://10.0.0.9:3132".into(),
                 token: "peer-tok".into(),
@@ -2224,7 +2224,7 @@ mod directory_tests {
             .await;
 
         match rt.directory_event().await {
-            echo_module_management::protocol::BackendEvent::FederationDirectory {
+            agent_module_management::protocol::BackendEvent::FederationDirectory {
                 node_id,
                 listen,
                 panel_ready,
@@ -2261,7 +2261,7 @@ mod directory_tests {
 
         // 未配置：off。
         match rt.status_event().await {
-            echo_module_management::protocol::BackendEvent::FederationStatus {
+            agent_module_management::protocol::BackendEvent::FederationStatus {
                 panel_ready,
                 panel_access,
                 ..
@@ -2274,13 +2274,13 @@ mod directory_tests {
 
         // 开放为 operate。
         rt.federation
-            .set_panel_identity(echo_module_federation::PanelIdentity::new(
+            .set_panel_identity(agent_module_federation::PanelIdentity::new(
                 vec!["super-secret-panel-key".into()],
-                echo_module_federation::PanelAccess::Operate,
+                agent_module_federation::PanelAccess::Operate,
             ));
         let event = rt.status_event().await;
         match &event {
-            echo_module_management::protocol::BackendEvent::FederationStatus {
+            agent_module_management::protocol::BackendEvent::FederationStatus {
                 panel_ready,
                 panel_access,
                 ..

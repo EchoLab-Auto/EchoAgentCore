@@ -22,15 +22,15 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Protocol** (QQ 模块仓库 `crates/echo-core`): OneBot event parsing for every variant family
   (message / notice / request / meta), message segments, action builders,
   unknown-type preservation, sender nickname (card vs nickname fallback).
-- **Wire protocol** (echo-module-management): command/event WS round-trips,
+- **Wire protocol** (agent-module-management): command/event WS round-trips,
   malformed frame handling, FanoutHandle subscriber pruning.
-- **Filtering**（**已随去适配器化搬到模块仓库** `crates/echo-module-adapter-qq/src/filter.rs` 的
+- **Filtering**（**已随去适配器化搬到模块仓库** `crates/agent-module-adapter-qq/src/filter.rs` 的
   `#[cfg(test)]` 内联测试，Core 侧已无过滤实现）：allowlist / denylist / rate limit（滑动
   窗口 + 实时过期 + per-user/per-group/global 三桶隔离）/ keyword / content length /
   admin bypass、管道顺序与短路。名单**持久化契约**另在模块仓库 `tests/filter_persist.rs`：
   `persist_filter` 对名单表是整表替换写入，必须原样带回 `group_members_open`——否则
   Panel 上任一名单编辑都会把「群成员放行」开关静默清掉。
-- **Security** (`echo-module-tools`): 相对路径的穿越防护（read/write/edit 共用
+- **Security** (`agent-module-tools`): 相对路径的穿越防护（read/write/edit 共用
   `guard_relative_path`：canonicalize 目标或最近已存在祖先，拦 `../..` 与
   区外符号链接；写工具在创建目录前校验，区外不留空目录）、绝对路径按显式
   意图放行（多仓库工作流，三个 ops 同一约定，均有正向用例）、危险命令模式、
@@ -64,7 +64,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Media migration** (echo-agent session): 加载期把历史事件
   （content 内嵌 + images 字段）与时间线 data URI 落盘改写且幂等；投影出口
   把 `/media/<id>` 还原为 data URI（`persisted_refs_inline_on_projection_for_model`）。
-- **Media download** (QQ 模块仓库 `crates/echo-module-adapter-qq`): 远程图下载经
+- **Media download** (QQ 模块仓库 `crates/agent-module-adapter-qq`): 远程图下载经
   `store_media` 登记（字节/MIME 与源一致）、失败保留原 URL、data URI / 已有引用透传。
 - **QQ 表情渲染** (QQ 模块仓库 echo-core + adapter): face id → 名称对照表有序性/未知回退、
   `readable_text` 混合渲染（`[表情:呲牙]`、`[骰子:6]`、纯表情消息不再整条丢弃）。
@@ -88,10 +88,10 @@ Generated inputs that must satisfy invariants:
   propagation, model switch, API profile switch/delete, skill toggle, **skill
   keyword → prompt injection**, **non-trigger caching**, **concurrent turn
   serialization** (slow provider → no interleaving).
-- `source/modules/echo-module-management`（inline integration tests）— management WS 中继、token 鉴权与端口合并
+- `source/modules/agent-module-management`（inline integration tests）— management WS 中继、token 鉴权与端口合并
   server on ephemeral port: Panel command → agent backend, agent event → Panel
   forward.
-- （QQ 模块仓库）`crates/echo-module-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`（模块侧领域类型，保留）、
+- （QQ 模块仓库）`crates/agent-module-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`（模块侧领域类型，保留）、
   `napcat/mod.rs`、`handler.rs`；`tests/` 目录两个集成测试 `owner_qq.rs` + `filter_persist.rs`）— NapCat client
   against a `wiremock` HTTP server:
   login status detection, WebUI fallback, reverse-WS config, QR fetch.

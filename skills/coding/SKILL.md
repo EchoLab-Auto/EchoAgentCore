@@ -13,7 +13,7 @@ You can interact with the project's source code using these tools:
 - `search_code` — Search for a pattern across source files
 - `write_file` — Create or overwrite a file with new content
 - `edit_file` — Replace specific lines in a file (start_line to end_line)
-- `bash` — Run a terminal command (e.g. `cargo build`, `git status`). Timeout 120s (max 300s via `timeout_secs`), workspace-restricted, dangerous commands blocked.
+- `bash` — Run a terminal command (e.g. `git status`, `ls -la`). Window is 120s by default, at most 300s via `timeout_secs`; workspace-restricted, dangerous commands blocked. **Build / test / install / download / clone / training / data-processing / whole-disk-scan commands must run in the background — do not just stretch the window** (see 「Long-running processes」below).
 - `bash-start` — Start a persistent background bash session (keeps cwd/env/background jobs across commands). Returns a session id. Optional `workdir`.
 - `bash-exec` — Run one command inside an existing session (`session_id` + `command`). Output streams to the Panel live; on timeout the session is **kept**, so you can poll again.
 - `bash-stop` — Stop a session and kill its whole process group (bash + all descendants, including background jobs).
@@ -22,6 +22,27 @@ You can interact with the project's source code using these tools:
 > **不在白名单时**用下面「没有 shell 模块时」的写法，功能等价。
 
 ## Long-running processes
+
+**后台化的判据是命令类别，不是估出来的秒数**（模型估不准耗时）。下面这些
+**默认后台化**，第一动作是切后台，不是调大 `timeout_secs`：
+
+| 类别 | 典型命令 |
+| --- | --- |
+| 编译 / 构建 | `cargo build`、`cargo check --workspace`、`make`、`cmake --build`、`npm run build`、`vite build`、`docker build` / `compose build` |
+| 测试 | `cargo test`、`pytest`、`vitest run`、`playwright test` |
+| 依赖安装 | `npm/pnpm/yarn install`、`pip install`、`uv sync`、`cargo install`、`apt install` |
+| 训练 / 推理 / 数据处理 | `python train.py`、`torchrun`、`accelerate launch`、大 pkl/joblib 加载、数据集转换 |
+| 下载 / 克隆 / 打包 | `git clone`、大仓库 `git fetch/pull`、`wget`/`curl` 大文件、数据集解压、`tar`、`rsync` |
+| 大范围扫描 | `rg`/`find` 扫整个盘或家目录、`grep -r` 全仓、`du` |
+| 常驻 / 持续输出 | dev server、watch 构建、`tail -f` |
+
+可以直接前台跑的：`git status` / `diff` / `log`、`ls`、`sed -n`、`head`/`tail` 单文件、
+单文件 `grep`、`curl -m 5` 这类带短超时的探测、单包增量 `cargo check`。
+
+判不准就后台化：代价不对称——后台化只多一轮 poll（约 2 秒），前台卡住则白等
+满 120s、拿不到任何输出、还得重跑。`bash` 的 120s 窗口是硬边界，调大到 300s
+也只是把超时推迟，那 300s 里拿不到任何中间结果；而 `bash-exec` 到点**不销毁
+会话**，下一轮再 poll 就行。
 
 要跑常驻进程（文档/开发服务器、watch 构建、本地服务等）时，**优先用
 `bash-start` + `bash-exec`**（前提：该人格启用了 `echo-agent.shell`）：

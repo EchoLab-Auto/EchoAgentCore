@@ -205,7 +205,7 @@ MODULE_BINARIES=()
 # 服务作用域（2026-10）：`user`（默认，`systemctl --user`）或 `system`
 # （`/etc/systemd/system`，`systemctl` 无 --user）。
 #
-# 为什么需要这个开关：自更新链路（`echo-module-self-update` 启动 updater 单元、
+# 为什么需要这个开关：自更新链路（`agent-module-self-update` 启动 updater 单元、
 # `update.sh` 重启 Core）此前把 `--user` 写死在代码里，于是**只有 user 作用域
 # 的自更新是通的**。system 作用域的老装法只能靠一个"假 systemctl"（PATH shim
 # 把 `--user` 抹掉）硬凑，core 自身那次调用还凑不上——按钮点了只会报错。

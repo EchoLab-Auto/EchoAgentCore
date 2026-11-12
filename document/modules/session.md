@@ -17,7 +17,7 @@ y: 1200
 外置后依赖方向变成：
 
 ```
-echo-agent（宿主） ──依赖──► echo-module-session
+echo-agent（宿主） ──依赖──► agent-module-session
                                   ├─ TrunkStore（日志 + 投影 + 持久化）
                                   ├─ catalog 里的一行 manifest
                                   └─ ServiceKey "echo-agent.session.factory"
@@ -33,7 +33,7 @@ echo-agent（宿主） ──依赖──► echo-module-session
 | kind | `session`（persona 白名单参与） |
 | 名称 / 路由 | 「会话」/ `session` |
 | 来源 / 运行形态 | 编译内置 / 进程内 |
-| crate | `source/modules/echo-module-session`（2 文件，约 760 行） |
+| crate | `source/modules/agent-module-session`（2 文件，约 760 行） |
 
 | 贡献 | 内容 |
 |---|---|
@@ -57,6 +57,6 @@ echo-agent（宿主） ──依赖──► echo-module-session
 
 ## 边界
 
-- 它**不做**摘要生成本身：压缩要调 LLM，那是宿主侧的编排（`echo-module-loop` 的 `compaction` 模块提供策略），本模块只负责「压缩这件事被触发时，trunk 怎么变」
+- 它**不做**摘要生成本身：压缩要调 LLM，那是宿主侧的编排（`agent-module-loop` 的 `compaction` 模块提供策略），本模块只负责「压缩这件事被触发时，trunk 怎么变」
 - 它**不定义**事件词汇：`SessionEvent` 在 `echo-defs` / `echo-session`，本模块是这些词汇的**宿主实现**而不是定义者
 - 显示面（时间线怎么投影、字段怎么映射）归 [显示层模块](./transcript.md)，不在这里

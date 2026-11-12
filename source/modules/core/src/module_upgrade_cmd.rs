@@ -8,8 +8,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use echo_module_management::protocol::bridge::{deserialize_message, serialize_command, WsMessage};
-use echo_module_management::protocol::{BackendCommand, BackendEvent};
+use agent_module_management::protocol::bridge::{deserialize_message, serialize_command, WsMessage};
+use agent_module_management::protocol::{BackendCommand, BackendEvent};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
@@ -160,8 +160,8 @@ fn parse_event(text: &str) -> Option<BackendEvent> {
 #[cfg(test)]
 mod tests {
     use super::{management_url, parse_event};
-    use echo_module_management::protocol::bridge::serialize_event;
-    use echo_module_management::protocol::{BackendCommand, BackendEvent};
+    use agent_module_management::protocol::bridge::serialize_event;
+    use agent_module_management::protocol::{BackendCommand, BackendEvent};
 
     /// 回执必须经**信封**解析：裸 `BackendCommand` JSON 在 Core 侧是
     /// "missing field `type`"（2026-11 实测踩到过），这里钉住两端格式。
@@ -183,7 +183,7 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
         // 命令侧同理：必须是 {"type":"command","payload":{…}}。
-        let command = echo_module_management::protocol::bridge::serialize_command(
+        let command = agent_module_management::protocol::bridge::serialize_command(
             &BackendCommand::RestartModule { id: "probe".into() },
         );
         assert!(command.contains("\"type\":\"command\""), "{command}");

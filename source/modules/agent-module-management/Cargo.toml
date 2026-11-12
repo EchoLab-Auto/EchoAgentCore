@@ -1,0 +1,23 @@
+[package]
+name = "agent-module-management"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "管理面 WebSocket 模块（解耦计划 Phase 3 ⑧）：Panel 连接中继、端口合并规划与 token 鉴权"
+
+[dependencies]
+echo-module = { workspace = true }
+echo-defs = { workspace = true }
+serde.workspace = true
+tokio-util = { workspace = true }
+# 时间线投影：事件总线订阅 + 消息词汇（都在机制层）+ 图片规范化 + 定时信封解析。
+echo-context = { workspace = true }
+agent-module-federation = { path = "../agent-module-federation" }
+anyhow = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }

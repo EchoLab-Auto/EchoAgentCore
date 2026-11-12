@@ -1,0 +1,394 @@
+//! 内置工具集**模块**：工具清单的所有权在这里，宿主只注入端口。
+//!
+//! ## 为什么有这个模块（2026-11，全模块化 S1）
+//!
+//! 此前本 crate 是一堆 `register_*(registry)` 函数，真正的"有哪些工具、
+//! 怎么装、包标签是什么、自停护栏长什么样"写在宿主
+//! `echo-agent/src/packages/tools_builtin/mod.rs` 里。从**代码位置**看工具
+//! 已经外迁，从**所有权**看没有：宿主仍然知道每一个工具的名字与装配细节，
+//! 模块只是被调用的一批库函数。
+//!
+//! 现在反过来：本模块实现 [`BuiltinToolProvider`]——"给一组端口，产出一个
+//! 配好的 [`ToolRegistry`]"是模块的职责；宿主
+//! （`packages/tools_builtin` → 组合根）只负责**提供端口**（实例注册表 /
+//! 工作区根 / 联邦出口 / Shell 句柄）与注入脱敏器。宿主侧不再出现任何
+//! 内置工具的名字。
+//!
+//! ## 服务键
+//!
+//! `mount` 时把 provider `provide` 到 [`SERVICE_KEY`]，于是"内置工具集"在
+//! 服务表里可寻址（可被包装 / 替换 / 观察），而不再只是一个 Cargo 依赖。
+//! 依赖声明用 `required_services`：本模块不依赖任何别的服务，因此不声明。
+//!
+//! ## 边界
+//!
+//! provider 返回的是**裸工具箱**（无脱敏器、无 persona 门控、无禁用状态）：
+//! 那三件事是宿主的策略（`[agent].disabled_tools`、persona 白名单、
+//! `redactor` 注入），模块不该知道。装配顺序见组合根。
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::ToolRegistry;
+use echo_module::{BuiltinModule, Module, ModuleManifest, MountContext};
+
+/// 模块 id（宿主 `modules::TOOLS_BUILTIN_MODULE_ID` 与本常量同源字面量）。
+pub const MODULE_ID: &str = "echo-agent.tools.builtin";
+
+/// 服务键：内置工具集的构造器（`Arc<dyn BuiltinToolProvider>`）。
+pub const SERVICE_KEY: &str = "tools.builtin";
+
+/// 本模块消费的循环服务键。
+pub const LOOP_SERVICE_KEY: &str = "loop";
+
+/// 宿主要塞给工具箱的**端口**（都是"运行时才知道"的东西）。
+///
+/// 每项都对应工具箱里一个真实接缝（见 lib.rs 的「接缝」章节）——多一项都
+/// 意味着模块多知道一件宿主内部结构，所以这里刻意只有四个。
+///
+/// 2026-11 之前有第五个（`shell`）：`bash-*` 三个工具需要它。那三个工具搬进
+/// `agent-module-shell` 之后，本模块不再认识 shell 会话管理器。
+pub struct ToolsHostCtx {
+    /// 模块实例注册表（`instance_*` 工具按它枚举/寻址实例）。
+    pub instances: Arc<echo_defs::module_instance::InstanceRegistry>,
+    /// 工作区根：编码类工具的文件沙箱边界。
+    pub workspace: PathBuf,
+    /// 联邦远程调用出口（`node://` 前缀的分流目标；None = 联邦未接线）。
+    pub invoker: Option<crate::RemoteInvoker>,
+    /// 共享配置存储（`list_api_profiles` 读供应商池用；None = 未接线，
+    /// 该工具不注册——与"列不出供应商"相比，不注册是更诚实的降级）。
+    pub config_store: Option<echo_config::ConfigStore>,
+    /// 会话只读查询端口（`list_sessions` / `read_session` 的数据源）。
+    /// `None` = 未接线：**不注册**这两个工具，而不是给一个读盘或空结果的实现。
+    pub session_query: Option<Arc<dyn echo_defs::session_query::SessionQuery>>,
+}
+
+/// 内置工具集的构造契约：端口进，配好的工具箱出。
+pub trait BuiltinToolProvider: Send + Sync {
+    fn registry(&self, cx: &ToolsHostCtx) -> ToolRegistry;
+}
+
+/// 唯一实现（保留成类型而不是闭包：`ctx.provide` 需要 `'static + Any`，
+/// 而且将来要按 persona 分支时这是自然的扩展点）。
+#[derive(Default)]
+pub struct BuiltinTools;
+
+impl BuiltinToolProvider for BuiltinTools {
+    fn registry(&self, cx: &ToolsHostCtx) -> ToolRegistry {
+        let guard = core_self_stop_guard();
+        let mut registry = ToolRegistry::new();
+        crate::register_core_tools(&mut registry);
+        // 供应商池清单（`list_api_profiles`）：数据源是共享 `ConfigStore` 的
+        // `[agent.api_profiles]`，读取助手已随 `ApiProfile` 下沉进 provider
+        // 模块（全模块化 S3）——本工具因此也搬进来了。
+        if let Some(store) = &cx.config_store {
+            registry.register(Arc::new(crate::ListApiProfilesTool::new(store.clone())));
+        }
+        // 会话只读查询：数据源是宿主的活 `TrunkStore`（不是持久化 JSON）。
+        if let Some(query) = &cx.session_query {
+            registry.register(Arc::new(crate::session::ListSessionsTool::new(
+                query.clone(),
+            )));
+            registry.register(Arc::new(crate::session::ReadSessionTool::new(
+                query.clone(),
+            )));
+        }
+        crate::register_instance_tools(&mut registry, cx.instances.clone());
+        crate::register_coding_tools(
+            &mut registry,
+            cx.workspace.clone(),
+            Some(guard.clone()),
+            cx.invoker.clone(),
+        );
+        // `bash-*` 三个工具**不在这里**：它们随 shell 会话一起搬进
+        // `agent-module-shell`（2026-11）。本模块只留一次性 `bash`。
+        // 每个工具打上本包标签：`echo-agent.tools.builtin` 的启停按包批量生效
+        // （`ToolRegistry::set_package_enabled`）。打标签的知识归模块——
+        // 它知道"这些是我装的"。
+        for name in registry.names() {
+            registry.set_package(&name, MODULE_ID);
+        }
+        registry
+    }
+}
+
+/// 拒绝会从 Core 自己的进程树里停掉 / 杀掉 Core 服务的命令。
+///
+/// `systemctl stop` 之后没有 `start`：systemd 会终止整个服务 cgroup，包含
+/// 正在跑这条命令的 shell，于是 `stop && cp ... && start` 的后半段永远不执行。
+/// `systemctl restart` 是安全的——重启作业由 systemd 持有，即使调用方被终止。
+///
+/// 宽泛的 `pkill -f` / `killall` 同样拒绝提到 `core.toml` 或
+/// `echo-agent-core` 的模式：即使本意是打某个冒烟测试进程，`pkill -f core.toml`
+/// 也会匹配到生产 Core 的命令行（`--config .../core.toml`）。
+///
+/// 2026-10 技术债清理：此前用 `echo_bootstrap::get_or_init` 存那份编译好的
+/// `Regex`——但正则编译产物是**纯计算常量**，不是宿主状态。改为「构造护栏时
+/// 编译一次、move 进闭包」：零全局态，护栏的唯一实例由调用方持有。
+pub fn core_self_stop_guard() -> crate::CommandGuard {
+    const PATTERN: &str = r#"(?im)(?:^|[;&|]\s*|(?:ba)?sh\s+-[A-Za-z]*c\b\s*['\"]?\s*)\s*(?:sudo\s+)?(?:command\s+)?(?:(?:/usr/bin/)?systemctl\b[^\n;&|]*\b(?:stop|kill)\b[^\n;&|]*\becho-agent-core(?:\.service)?\b|(?:pkill|killall)\b[^\n;&|]*(?:(?:\[e\]|e)cho-agent-core|(?:\[c\]|c)ore\.toml))"#;
+    let regex = regex::Regex::new(PATTERN).expect("self-stop regex is valid");
+    std::sync::Arc::new(move |command: &str| {
+        if regex.is_match(command) {
+            return Err(crate::ToolError::Execution(
+                "blocked command: stopping or killing echo-agent-core from inside its own process would terminate this tool before later cleanup/start steps run. Use `systemctl --user restart echo-agent-core.service` or the managed updater `scripts/update.sh` instead.".into(),
+            ));
+        }
+        Ok(())
+    })
+}
+
+/// 模块清单（id / 名称 / 类别 / 路由键与宿主既有字面量一致）。
+pub fn manifest(version: &str) -> ModuleManifest {
+    ModuleManifest::builtin(
+        MODULE_ID,
+        "内置工具集",
+        version,
+        "tool",
+        "builtin_tools",
+        "平台无关的内置工具（计算/搜索/清单/编码/模块实例管理）",
+    )
+}
+
+/// 构造模块：`mount` 把 provider 挂到 [`SERVICE_KEY`]。
+///
+/// **零参数**（全模块化 S6）：三个命令域的宿主接缝各有一个键
+/// （[`host_keys::SHELL_HOST`] / `INSTANCE_HOST` / `TOOLS_HOST`），`mount` 里
+/// 解析并绑定。此前这三个接缝是构造参数，于是组合根必须知道"tools 模块需要
+/// 哪三个宿主的什么"——那是模块自己的事。
+///
+/// persona 门控**不在这里**：挂载/卸载是一件事，"这个使用者看不看得到它"是
+/// 另一件事，宿主监听 `module.mounted` / `module.unmounted` 统一拨。
+pub fn module(version: &str) -> Arc<dyn Module> {
+    use echo_module::{Inject, ServiceSlot};
+
+    let instance = ServiceSlot::<Arc<dyn crate::instance_commands::InstanceCommandHost>>::new();
+    let tools = ServiceSlot::<Arc<dyn crate::tool_commands::ToolsCommandHost>>::new();
+    let (bind_instance, bind_tools) = (instance.clone(), tools.clone());
+    let (b_instance, b_tools) = (instance.clone(), tools.clone());
+
+    Arc::new(
+        BuiltinModule::new(manifest(version), move |mctx: &MountContext| {
+            let mut disposers = Vec::new();
+            // 服务表可能不存在（裸注册表 / 单测）：此时只做门控式挂载，
+            // 不提供键——与 loop 模块同样的降级口径（缺服务表不是错误）。
+            if let Some(ctx) = mctx.context() {
+                let provider: Arc<dyn BuiltinToolProvider> = Arc::new(BuiltinTools);
+                disposers.push(
+                    ctx.provide(&service_key(), provider)
+                        .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?,
+                );
+            }
+            disposers.push(bind_instance.bind(mctx, &crate::host_keys::INSTANCE_HOST)?);
+            disposers.push(bind_tools.bind(mctx, &crate::host_keys::TOOLS_HOST)?);
+            Ok(disposers)
+        })
+        .with_inject(Inject::new([
+            LOOP_SERVICE_KEY.to_string(),
+            crate::host_keys::INSTANCE_HOST.name().to_string(),
+            crate::host_keys::TOOLS_HOST.name().to_string(),
+        ]))
+        // 命令域：`*Instance*` + 工具管理面两条域由本模块处理
+        // （宿主 `apply_command` 在落内置 match 之前问一次模块）。
+        //
+        // `*Shell*` 四条已随 shell 工具搬进 `agent-module-shell`（2026-11）：
+        // 会话生命周期是一个独立能力，不该让"想关 shell"变成"关掉整个工具集"。
+        .with_commands(
+            crate::instance_commands::COMMANDS
+                .into_iter()
+                .chain(crate::tool_commands::COMMANDS)
+                .collect::<Vec<_>>(),
+        )
+        .with_command_handler_async(move |name, payload| {
+            let (instance, tools) = (b_instance.clone(), b_tools.clone());
+            Box::pin(async move {
+                let (Some(instance_host), Some(tools_host)) = (instance.get(), tools.get()) else {
+                    return Err(format!(
+                        "命令 {name} 到 {MODULE_ID} 时模块尚未挂载（宿主接缝未绑定）"
+                    ));
+                };
+                // 两个域依次问一次；都没认领 = 错（`with_commands` 与处理器
+                // 必须同步，测试守着）。
+                if let Some(outcome) =
+                    crate::instance_commands::InstanceCommandHandler::new(instance_host)
+                        .handle(&name, payload.clone())
+                        .await
+                {
+                    return outcome;
+                }
+                crate::tool_commands::ToolsCommandHandler::new(tools_host)
+                    .handle(&name, payload)
+                    .await
+                    .unwrap_or_else(|| {
+                        Err(format!(
+                            "命令 {name} 被 {MODULE_ID} 声明，但 tools 的三个域都没有认领它"
+                        ))
+                    })
+            })
+        }),
+    )
+}
+
+/// `tools.builtin` 的强类型键（与 [`SERVICE_KEY`] 同源）。
+pub fn service_key() -> echo_context::ServiceKey<Arc<dyn BuiltinToolProvider>> {
+    echo_context::ServiceKey::new(SERVICE_KEY)
+}
+
+/// 便捷解析：宿主在工具装配点问一句"内置工具集在不在"。
+///
+/// 返回 `None` 表示模块未挂载（禁用了 / 还没挂上）——调用方据此降级
+/// （宿主当前的口径是**直接构造**同一实现，见组合根注释）。
+pub fn resolve_provider(ctx: &echo_context::Ctx) -> Option<Arc<dyn BuiltinToolProvider>> {
+    ctx.service(&service_key())
+}
+
+/// 不依赖服务表直接构造（组合根的"模块尚未挂载"路径与单测用）。
+pub fn standalone_provider() -> Arc<dyn BuiltinToolProvider> {
+    Arc::new(BuiltinTools)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 命令域测试不关心具体能力：两个最小宿主（未接线）。
+    struct NoInstanceHost;
+
+    impl crate::instance_commands::InstanceCommandHost for NoInstanceHost {
+        fn instances(&self) -> Arc<echo_defs::module_instance::InstanceRegistry> {
+            Arc::new(echo_defs::module_instance::InstanceRegistry::new())
+        }
+        fn emit(&self, _event: agent_module_management::protocol::BackendEvent) {}
+    }
+
+    struct NoToolsHost;
+
+    impl crate::tool_commands::ToolsCommandHost for NoToolsHost {
+        fn registry(&self) -> Arc<crate::ToolRegistry> {
+            Arc::new(crate::ToolRegistry::new())
+        }
+        fn set_enabled(
+            &self,
+            _name: &str,
+            _enabled: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
+            Box::pin(async { false })
+        }
+        fn emit(&self, _event: agent_module_management::protocol::BackendEvent) {}
+    }
+
+    fn ports() -> ToolsHostCtx {
+        ToolsHostCtx {
+            instances: Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
+            workspace: std::env::temp_dir(),
+            invoker: None,
+            config_store: None,
+            session_query: None,
+        }
+    }
+
+    /// **声明 ⇒ 认领**：模块声明的每条命令都必须被两个域之一认领。
+    ///
+    /// 两个命令域（instance / tools）各自声明 `COMMANDS`，模块把两者拼起来
+    /// 交给分发器。拼错或漏接时命令会被"认领"成空操作——面板点了没反应也
+    /// 没有错误。这里逐条过一遍（`Null` 载荷被拒算认领）。
+    ///
+    /// （`*Shell*` 四条在 `agent-module-shell`，那里有自己的同款测试。）
+    #[tokio::test]
+    async fn every_declared_command_is_claimed_by_one_of_the_two_domains() {
+        let instance =
+            crate::instance_commands::InstanceCommandHandler::new(Arc::new(NoInstanceHost));
+        let tools = crate::tool_commands::ToolsCommandHandler::new(Arc::new(NoToolsHost));
+        let declared: Vec<String> = crate::instance_commands::COMMANDS
+            .into_iter()
+            .chain(crate::tool_commands::COMMANDS)
+            .map(str::to_string)
+            .collect();
+        for name in &declared {
+            let claimed = instance
+                .handle(name, serde_json::Value::Null)
+                .await
+                .is_some()
+                || tools.handle(name, serde_json::Value::Null).await.is_some();
+            assert!(claimed, "{name} 声明了但没有处理分支");
+        }
+        // 反向：没声明的命令不许被认领（分发器永远路由不到它）。
+        for handler_claims in [
+            instance
+                .handle("SendMessage", serde_json::Value::Null)
+                .await
+                .is_some(),
+            tools
+                .handle("SendMessage", serde_json::Value::Null)
+                .await
+                .is_some(),
+        ] {
+            assert!(!handler_claims, "未声明的命令不该被认领");
+        }
+    }
+
+    /// provider 产出的工具箱必须带上本包标签：包级启停靠它。
+    #[test]
+    fn provider_tags_every_tool_with_the_package_id() {
+        let registry = BuiltinTools.registry(&ports());
+        assert!(!registry.is_empty(), "内置工具集不该是空的");
+        for name in registry.names() {
+            assert_eq!(
+                registry.package_of(&name).as_deref(),
+                Some(MODULE_ID),
+                "工具 {name} 缺包标签"
+            );
+        }
+    }
+
+    /// 自停护栏仍是工具箱的一部分（搬模块时最容易漏的一条）：
+    /// `systemctl stop <core>` 被拒，`restart` 放行。
+    #[test]
+    fn self_stop_guard_rejects_stop_and_allows_restart() {
+        let guard = core_self_stop_guard();
+        assert!(
+            guard("systemctl stop echo-agent-core").is_err(),
+            "stop 必须被拒（会杀死调用方自己）"
+        );
+        assert!(
+            guard("pkill -f core.toml").is_err(),
+            "宽泛 pkill 必须被拒（会误伤生产 Core）"
+        );
+        assert!(
+            guard("systemctl --user restart echo-agent-core.service").is_ok(),
+            "restart 必须放行（systemd 持有重启作业）"
+        );
+        // 工具箱里仍有编码类工具（护栏的挂载点）。
+        let registry = BuiltinTools.registry(&ports());
+        assert!(
+            registry.contains_tool("bash"),
+            "编码类工具未装：{}",
+            registry.names().join(", ")
+        );
+    }
+
+    /// 挂到服务表之后可被解析；卸载后键消失（可逆）。
+    #[test]
+    fn mount_provides_and_unmount_revokes_the_service() {
+        let ctx = Arc::new(echo_context::Ctx::default());
+        let instance_host: Arc<dyn crate::instance_commands::InstanceCommandHost> =
+            Arc::new(NoInstanceHost);
+        let tools_host: Arc<dyn crate::tool_commands::ToolsCommandHost> = Arc::new(NoToolsHost);
+        // 宿主接缝按**服务键**注册（全模块化 S6：模块不再收构造参数）。
+        // （shell 的键已随工具搬进 `agent-module-shell`，本模块不再需要它。）
+        let _keep_instance = ctx.provide(&crate::host_keys::INSTANCE_HOST, instance_host);
+        let _keep_tools = ctx.provide(&crate::host_keys::TOOLS_HOST, tools_host);
+        let module = module("9.9.9");
+        let mounted = module
+            .mount(&MountContext::new().with_ctx(ctx.clone()))
+            .expect("mount ok");
+        assert!(
+            resolve_provider(&ctx).is_some(),
+            "挂载后应能解析到 provider"
+        );
+        for d in mounted {
+            d.dispose();
+        }
+        assert!(resolve_provider(&ctx).is_none(), "卸载后服务键必须消失");
+    }
+}

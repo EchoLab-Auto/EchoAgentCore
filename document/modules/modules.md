@@ -18,7 +18,7 @@ link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "wo
 1. **一切皆模块**：LLM provider、TurnRunner、工具、技能、模块实例、编排、management server 均为模块，无特权核心模块
 2. 模块 = manifest + 生命周期钩子；注册是可逆副作用（disposer）
 3. **热重载优先于重启**：数据类模块（技能/工具/清单）秒级热重载；代码类模块不热重载——provider / loop 经原子二进制替换 + 进程重启生效，模块实例实现作为进程外模块随 Core 重启重建
-4. 模块**不 import `echo-agent`**（只有组合根可以），可按需依赖定义层（`echo-defs` / `echo-module` / `echo-context`）与机制层（`echo-module-tools` / `echo-module-shell` / `echo-module-management` / `echo-session` / `echo-module-federation`）；逐 crate 的完整白名单在 `scripts/deps-policy.txt`，方向只向下
+4. 模块**不 import `echo-agent`**（只有组合根可以），可按需依赖定义层（`echo-defs` / `echo-module` / `echo-context`）与机制层（`agent-module-tools` / `agent-module-shell` / `agent-module-management` / `echo-session` / `agent-module-federation`）；逐 crate 的完整白名单在 `scripts/deps-policy.txt`，方向只向下
 
 ### 为什么不用动态库（.so）模块
 
@@ -102,15 +102,15 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 
 表的来源分两类，别混算：**框架内置 17 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 17]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
-> **Panel 进程内模块的实现完全在 Panel 仓**（`source/echo-module-panel`）。Core 的组合根只引用其公开工厂，不持有 Panel 代码；挂载语义与本文相同，默认不启用。详见 Panel 仓文档。
+> **Panel 进程内模块的实现完全在 Panel 仓**（`source/agent-module-panel`）。Core 的组合根只引用其公开工厂，不持有 Panel 代码；挂载语义与本文相同，默认不启用。详见 Panel 仓文档。
 
-联邦（`echo-module-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
+联邦（`agent-module-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
-> **框架侧实现位置**：每个内置模块都是一个独立 crate（`source/modules/echo-module-*`），上表第一列的链接即它的契约文档。工具子系统的跨包机制（`ToolRegistry`）在 `echo-module-tools`，Shell 机制在 `echo-module-shell`——**机制层**放词汇与通用实现，**模块 crate** 放「这台部署上要不要装、装了之后给谁用」。
+> **框架侧实现位置**：每个内置模块都是一个独立 crate（`source/modules/echo-module-*`），上表第一列的链接即它的契约文档。工具子系统的跨包机制（`ToolRegistry`）在 `agent-module-tools`，Shell 机制在 `agent-module-shell`——**机制层**放词汇与通用实现，**模块 crate** 放「这台部署上要不要装、装了之后给谁用」。
 >
 > **仍内联在 echo-agent 的**只剩三个包：`packages/tools_builtin`（**只剩端口接线**——工具清单的所有权已在模块，`build_registry` 只做「给端口、拿工具箱」）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。
 >
-> QQ 工具（`send_*`/`get_*` 共 11 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由模块进程申报（模块仓库 `crates/echo-module-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。去适配器化时 `source/modules/core/src/qq_tools.rs` 已删除——模块实例本就能声明工具，没有留给组合根的特例。
+> QQ 工具（`send_*`/`get_*` 共 11 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由模块进程申报（模块仓库 `crates/agent-module-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。去适配器化时 `source/modules/core/src/qq_tools.rs` 已删除——模块实例本就能声明工具，没有留给组合根的特例。
 
 ### 内置模块也能由 `modules.toml` 组合（P4）
 
@@ -158,7 +158,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
   - `instance.qq`：禁用 = 停止 QQ 模块实例进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_modules` 移除该 id 后重启 Core）。**防自锁保护**：经 `ToggleModule` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
-  - `loop.single`：**唯一循环模块**（`kind = loop`，进程级）——mount 时构造唯一的 echo-module-loop `TurnRunner` 并 `provide` 成 `loop` 服务，卸载撤销该服务；`loop` 服务缺失 = 启动失败。策略只有一条：同一会话的 turn 串行排队（每会话一条时间线），没有模式可切，persona 白名单不参与。详见 [Agent 循环](../core/agent-loop.md)「会话内准入」
+  - `loop.single`：**唯一循环模块**（`kind = loop`，进程级）——mount 时构造唯一的 agent-module-loop `TurnRunner` 并 `provide` 成 `loop` 服务，卸载撤销该服务；`loop` 服务缺失 = 启动失败。策略只有一条：同一会话的 turn 串行排队（每会话一条时间线），没有模式可切，persona 白名单不参与。详见 [Agent 循环](../core/agent-loop.md)「会话内准入」
   - `provider.llm`：**命令域随模块启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因模块挂载而改变
   - `provider.llm`：**命令域随模块启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因模块挂载而改变
   - `selfupdate`：进程级、`kind = orchestration`（按人格启停是假开关——挂载是进程级的，命令分发不看人格白名单）

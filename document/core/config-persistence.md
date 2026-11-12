@@ -143,7 +143,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 Panel 操作（实例弹层）
   → BackendCommand::InvokeInstanceOp { instance, method, payload }
       （method = set_gate_mode / update_allowlist / update_denylist / set_owner …）
-  → 命令泵 → `echo-module-tools::instance_commands`（按 instance 实例名寻址）
+  → 命令泵 → `agent-module-tools::instance_commands`（按 instance 实例名寻址）
     → 进程外模块经 Invoke("<instance>:custom", {method, payload}) 转发
       → 模块更新内存中的 runtime 字段 + 重建过滤管道（立即生效）
       → 模块 ConfigStore::patch(|root| { 在 root["adapters"]["qq"] 下写 gate/filter/owner })
@@ -227,7 +227,7 @@ ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
 - **记录来源**：① 余额——周期任务 `[agent].balance_snapshot_secs`（默认 600s /
   10 分钟；0 = 关闭；下限 30s，启动即采首条）+ 手动「查余额」成功；② 用量——
   **计量 provider 装饰器**（`llm::wrap_metering`，与脱敏装饰器同一装配点，
-  覆盖 turn 循环（echo-module-loop）/ 等待回复 / 压缩 / 子代理的全部 LLM 出口，
+  覆盖 turn 循环（agent-module-loop）/ 等待回复 / 压缩 / 子代理的全部 LLM 出口，
   记录成功后 `usage`）。
 - **归属命名**：`name` 与 `QueryApiBalance` 同命名空间——空 = 顶层默认配置，
   否则 profile 名（provider 构建时快照 `active_api` / persona 引用名；模型名取
@@ -246,11 +246,11 @@ ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
   `cache_hit_tokens` 为其子集。Anthropic 协议端点（原生 / DeepSeek / Kimi
   兼容）的原始 `input_tokens` **不含**缓存读取/写入（实测：同前缀
   复调 input 234 + cache_read 128 = 首调 input 362）——provider 侧已把三者
-  求和归一（`echo_module_provider_llm::providers::anthropic::normalize_usage`）；旧 JSONL 行中
+  求和归一（`agent_module_provider_llm::providers::anthropic::normalize_usage`）；旧 JSONL 行中
   「命中数 > prompt」的行是修复前口径（prompt=未命中），`usage_slices`
   读取时归一补全。展示与估价统一按此口径（此前注释「input_tokens 包含
   命中」与实测相反，已按实测口径更正）。
 - **协议**：`QueryApiMetrics{name}`（空 = 默认 + 全部 profile）→ `ApiMetrics`
   事件（`entries: [{name, balance[], usage[], cost_currency}]`；`usage` 按
-  小时 × 模型聚合）。实现：`echo-module-provider-llm` 的 `metrics.rs`（存储/剪枝/定价；`echo-agent/src/metrics.rs` 只留 re-export）+
+  小时 × 模型聚合）。实现：`agent-module-provider-llm` 的 `metrics.rs`（存储/剪枝/定价；`echo-agent/src/metrics.rs` 只留 re-export）+
   `agent/api_admin.rs`（查询响应 / 周期任务）。

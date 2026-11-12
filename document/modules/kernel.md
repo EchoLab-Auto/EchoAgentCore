@@ -17,7 +17,7 @@ link: []
 
 | | 中间层 | 模块 |
 |---|---|---|
-| 例子 | `echo-module-tools` / `echo-session` / `echo-module-management` | `echo-module-tools` / `-shell` / `-session` |
+| 例子 | `agent-module-tools` / `echo-session` / `agent-module-management` | `agent-module-tools` / `-shell` / `-session` |
 | 有 `ModuleManifest` | ❌ | ✅ |
 | 进 `catalog` | ❌ | ✅ |
 | 出现在 Panel 清单 | ❌ | ✅ |
@@ -59,9 +59,9 @@ Error: kernel module cannot be disabled: modules.toml 试图禁用 kernel 模块
 `echo-agent.kernel.sanitize` 曾是这个列表的第 9 项（crate `echo-sanitize`，2026-11 与其它中间层一起补了 manifest）。2026-11 二次收敛时撤销，两条理由：
 
 1. **不符合判据**。kernel 的判据是「禁用之后系统还能不能起来」；脱敏关掉后内核照常启动，只是不再脱敏。它自己也一直在文档里被称作「唯一的例外」——一个需要例外的判据其实是判据没写对。
-2. **没有消费者**。该 crate 在生产路径上的唯一引用是 `echo-module-sanitize` 的 `build()`，其余全在 `#[cfg(test)]` 里。按 [架构总览](../overview/architecture.md) 的判据（消费者 = 1 → 合并），它本就该是那个模块的实现细节。
+2. **没有消费者**。该 crate 在生产路径上的唯一引用是 `agent-module-sanitize` 的 `build()`，其余全在 `#[cfg(test)]` 里。按 [架构总览](../overview/architecture.md) 的判据（消费者 = 1 → 合并），它本就该是那个模块的实现细节。
 
-现在：实现（`registry.rs`）+ 构造（`build`）+ 身份（`kind = "security"`）同处 `echo-module-sanitize`。关闭脱敏的唯一路径仍是 `core.toml` 的 `[security.sanitize].enabled = false`（需重启 + 启动日志 `warn!`），见 [敏感信息隔离](../core/security-redaction.md)。
+现在：实现（`registry.rs`）+ 构造（`build`）+ 身份（`kind = "security"`）同处 `agent-module-sanitize`。关闭脱敏的唯一路径仍是 `core.toml` 的 `[security.sanitize].enabled = false`（需重启 + 启动日志 `warn!`），见 [敏感信息隔离](../core/security-redaction.md)。
 
 ## 四个成员
 
@@ -69,7 +69,7 @@ Error: kernel module cannot be disabled: modules.toml 试图禁用 kernel 模块
 |---|---|---|---|
 | `echo-agent.kernel.defs` | `echo-defs` | 9 个能力接缝 trait 与全部跨边界词汇（**零 `echo-*` 依赖**） | ❌ 纯 trait + 纯函数 |
 | `echo-agent.kernel.config` | `echo-config` | TOML 原子读改写（tmp+rename，不认识任何段语义） | ✅ `ConfigStore` |
-| `echo-agent.kernel.protocol` | `echo-module-management` | `BackendCommand` / `BackendEvent` / bridge / `timeline_text` | ❌ 纯数据 |
+| `echo-agent.kernel.protocol` | `agent-module-management` | `BackendCommand` / `BackendEvent` / bridge / `timeline_text` | ❌ 纯数据 |
 | `echo-agent.kernel.session` | `echo-session` | `SessionEvent` 事件集 / `EventLog` / `derive_messages` / compaction | ✅ `EventLog` |
 
 ## `mount` 为什么是空的（纯身份声明）
@@ -79,12 +79,12 @@ Error: kernel module cannot be disabled: modules.toml 试图禁用 kernel 模块
 | 模块 | 运行期实例归谁 | 为什么不在 `mount` 里构造 |
 |---|---|---|
 | `tool` | 每 persona 一份 `ToolRegistry`（工具白名单不同） | 在此 provide 会造出"全局工具表"，与 persona 门控矛盾 |
-| `session` | 每 persona 一份 trunk（`echo-module-session` 持有） | 在此 provide 会造出"全局日志"的假象 |
+| `session` | 每 persona 一份 trunk（`agent-module-session` 持有） | 在此 provide 会造出"全局日志"的假象 |
 | `shell` | `ShellManager` 要绑定宿主事件出口 | 那是组合根装配期的信息 |
 | `federation` | 链路泵要 peers 表 + 出站通道 | 只有组合根知道 |
 | `config` | `ConfigStore` 要配置路径（`--config` 参数） | 模块在挂载期拿不到 |
 | `defs` / `protocol` | — | 纯编译期概念，没有运行期对象可注册 |
-| `loop` | `TurnRunner` 由 `echo-module-loop` 在 mount 里构造 | 本 crate 只提供状态机**类型** |
+| `loop` | `TurnRunner` 由 `agent-module-loop` 在 mount 里构造 | 本 crate 只提供状态机**类型** |
 
 也就是说：**kernel 模块的 manifest 表达"这个地基存在"，而它的运行期实例由需要它的人构造。** 这与 `echo-agent.subagent`（纯身份模块，工具实现在别处）是同一手法。
 

@@ -12,11 +12,11 @@ y: 1200
 
 ## 为什么是独立模块
 
-它此前和 `bash-*` 一起住在 `echo-module-tools`（6000 行的内置工具集）里，拆分理由是两者只共享「都是模型能调用的工具」这一点——而这一点几乎不构成理由：
+它此前和 `bash-*` 一起住在 `agent-module-tools`（6000 行的内置工具集）里，拆分理由是两者只共享「都是模型能调用的工具」这一点——而这一点几乎不构成理由：
 
 | 维度 | 内置工具集 | Shell 会话 |
 |---|---|---|
-| 机制依赖 | 纯函数 + 可选 `echo-module-shell` | **必须** `echo-module-shell`（进程组生命周期） |
+| 机制依赖 | 纯函数 + 可选 `agent-module-shell` | **必须** `agent-module-shell`（进程组生命周期） |
 | 状态 | 无（除 checklist 的会话内状态） | 长驻子进程 + 哨兵分帧 |
 | 面板 | 工具列表里几行 | 独立的 Shell 页面（会话卡 / 实时流） |
 | 关闭需求 | —— | 「我不要 shell」不该连计算器一起关 |
@@ -31,7 +31,7 @@ y: 1200
 | kind | `tool`（persona 白名单参与） |
 | 名称 / 路由 | 「Shell 会话」/ `shell` |
 | 来源 / 运行形态 | 编译内置 / 进程内 |
-| crate | `source/modules/echo-module-shell`（4 文件，约 900 行） |
+| crate | `source/modules/agent-module-shell`（4 文件，约 900 行） |
 
 它贡献三类东西，**都在模块自己的 crate 里定义**，宿主只提供端口：
 
@@ -50,7 +50,7 @@ y: 1200
 
 | 字段 | 类型 | 谁提供 |
 |---|---|---|
-| `shell` | `ShellHandle`（`echo-module-shell` 的会话管理器句柄） | 组合根，与 Panel 的 Shell 页面**共用同一个进程级实例** |
+| `shell` | `ShellHandle`（`agent-module-shell` 的会话管理器句柄） | 组合根，与 Panel 的 Shell 页面**共用同一个进程级实例** |
 | `guard` | `Option<CommandGuard>` | 组合根按 `[agent]` 配置装配；`None` = 不做该检查 |
 
 命令域则走另一条路：`mount` 时把宿主实现 `ShellCommandHost` 的适配器绑定到 `SHELL_HOST` 键，处理命令时取用——会话管理器、事件出口、归属人格、进度回调全在这一个 trait 后面。
@@ -66,6 +66,6 @@ y: 1200
 
 ## 边界
 
-- 它**不管**会话存活：进程组回收、孤儿清理、输出分帧都是 `echo-module-shell` 的事，模块只把工具与命令翻译成语义调用
+- 它**不管**会话存活：进程组回收、孤儿清理、输出分帧都是 `agent-module-shell` 的事，模块只把工具与命令翻译成语义调用
 - 它**不做**权限判定：命令护栏由宿主装配成 `CommandGuard` 传进来；模块不知道也不关心规则内容
 - 与 [工具系统](./tools.md) 的分界：那边写「一次 `bash-exec` 在宿主里怎么走完生命周期」，这边写「这个能力作为一个可插拔单位长什么样」

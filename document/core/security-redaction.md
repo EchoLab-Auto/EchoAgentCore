@@ -31,20 +31,20 @@ y: 1200
 ```
 echo-defs::sanitize          契约：Redactor trait（redact / scan / register）
       ▲                       零实现、零依赖；SecretHit 不携带明文（审计安全）
-echo-module-sanitize         默认实现：RegistryRedactor（src/registry.rs）
+agent-module-sanitize         默认实现：RegistryRedactor（src/registry.rs）
       ▲                       字面值注册表（Aho-Corasick 最左最长）+ 保守模式集
-echo-module-sanitize         模块（`echo-agent.security.sanitize`，kind=security）
+agent-module-sanitize         模块（`echo-agent.security.sanitize`，kind=security）
       ▲                       构造 `build(&RedactorSpec)`；纯身份 mount
 core 组合根                  收集秘密表 → 调模块构造 → 注册 "sanitizer" 键
       ▲                       见 source/modules/core/src/security.rs 与 main.rs
 卡口                         工具出口 / LLM 出口 / QQ 外发 / 入站 / 落盘
 ```
 
-**宿主与模块的分界**：宿主知道"这台部署上哪些字符串是秘密"（`redactor_spec(&cfg)`：配置里的 api_key、env 回退、实例凭据字段、`extra_*`），模块知道"怎么脱敏"（模式集、Aho-Corasick、占位符形状）。换实现 = 换模块，宿主侧只调 `echo_module_sanitize::build` 一个函数名。模块契约见 [脱敏模块](../modules/sanitize.md)。
+**宿主与模块的分界**：宿主知道"这台部署上哪些字符串是秘密"（`redactor_spec(&cfg)`：配置里的 api_key、env 回退、实例凭据字段、`extra_*`），模块知道"怎么脱敏"（模式集、Aho-Corasick、占位符形状）。换实现 = 换模块，宿主侧只调 `agent_module_sanitize::build` 一个函数名。模块契约见 [脱敏模块](../modules/sanitize.md)。
 
 - **契约**（`source/modules/echo-defs/src/sanitize.rs`）：`Redactor` 为对象安全 trait；实现约定「绝不 panic、命中不含明文、幂等（占位符不再被识别）」。占位符格式 `【已隐藏:<label>】`。
-- **默认实现**（`source/modules/echo-module-sanitize/src/registry.rs`）：字面值进 Aho-Corasick 自动机（一次扫描全部命中），模式集用 `regex`；登记须 ≥8 字符且不含占位符括号（防空转与误报）；label 净化防注入。
-- **服务定位**：组合根经 `Ctx::register::<Arc<dyn Redactor>>("sanitizer", …)` 注册；键的**单一真值**是 `echo_module_sanitize::SERVICE_KEY`（强类型形式 `service_key()`），注册方与解析方都引用它。进程内模块在 `MountContext.ctx` 里解析（见「模块接入」）。
+- **默认实现**（`source/modules/agent-module-sanitize/src/registry.rs`）：字面值进 Aho-Corasick 自动机（一次扫描全部命中），模式集用 `regex`；登记须 ≥8 字符且不含占位符括号（防空转与误报）；label 净化防注入。
+- **服务定位**：组合根经 `Ctx::register::<Arc<dyn Redactor>>("sanitizer", …)` 注册；键的**单一真值**是 `agent_module_sanitize::SERVICE_KEY`（强类型形式 `service_key()`），注册方与解析方都引用它。进程内模块在 `MountContext.ctx` 里解析（见「模块接入」）。
 - **无运行期一键开关**：脱敏器是安全不变量（同管理面模块不可经命令禁用的口径）——关闭只能编辑 `core.toml` 并重启，让停机与告知成为明确动作。
 
 ## 出口卡口（调用点）
@@ -52,14 +52,14 @@ core 组合根                  收集秘密表 → 调模块构造 → 注册 "
 | # | 卡口 | 位置 | 覆盖 |
 |---|---|---|---|
 | 1 | 工具结果出口 | `ToolRegistry::execute` / `execute_rich_in` 出口（结果文本与错误消息，出口持有脱敏器） | 一切工具：内置 / 模块 / 远程 / **子代理直呼** / 联邦路由 |
-| 2 | LLM 请求出口 | `echo-module-provider-llm::redacting::wrap_redacting`（装饰 provider，请求侧全文扫描；`echo_agent::llm` 只 re-export） | 全部 LLM 出口：turn 循环（echo-module-loop）/ 子代理 / 等待回复 |
-| 3 | 模块实例外发出口 | `echo-module-tools::instance_bridge` 的 `gate_outbound`（**全部**模块实例工具，不按 `send_` 前缀；组合根侧的 `core::instance_tools` 只是 re-export） | 文本命中按策略阻断/替换（`block` 默认 / `redact`）；`file_path`/`file`/`image` 落在敏感目录直接拒发 |
+| 2 | LLM 请求出口 | `agent-module-provider-llm::redacting::wrap_redacting`（装饰 provider，请求侧全文扫描；`echo_agent::llm` 只 re-export） | 全部 LLM 出口：turn 循环（agent-module-loop）/ 子代理 / 等待回复 |
+| 3 | 模块实例外发出口 | `agent-module-tools::instance_bridge` 的 `gate_outbound`（**全部**模块实例工具，不按 `send_` 前缀；组合根侧的 `core::instance_tools` 只是 re-export） | 文本命中按策略阻断/替换（`block` 默认 / `redact`）；`file_path`/`file`/`image` 落在敏感目录直接拒发 |
 | 4 | 入站与落盘 | `Agent::process_message` / `process_inbound_branch` / `record_incoming_and_snapshot` / `run_tool` 参数 | 用户与 QQ 输入、工具调用参数（事件与会话日志）、工具结果事件 |
 | 5 | 密钥登记 | 启动构建（`core::security::build_redactor`）+ `Agent::rebuild_provider` 热同步 | 顶层与 profile 的 `api_key`、env 回退、**实例配置里按键名形态识别的凭据**（键名含 `token`/`secret`/`password`/`api_key`/`apikey` 且值 ≥8 字符，递归扫 `shared` 与各实例 `overrides`——不点名平台）、用户追加值 |
 
 设计取舍：
 
-- **卡口放在注册表出口而非 `ToolPipeline` 中间件**：pipeline 仅 echo-module-loop 路径使用（生产零中间件），注册表出口覆盖全部执行路径（含子代理直呼与联邦）。
+- **卡口放在注册表出口而非 `ToolPipeline` 中间件**：pipeline 仅 agent-module-loop 路径使用（生产零中间件），注册表出口覆盖全部执行路径（含子代理直呼与联邦）。
 - **双保险**：`run_tool` 在编排工具（如 `spawn_subagent` 结论）路径再脱敏一次；幂等保证重复扫描无副作用。
 - **请求侧脱敏不处理响应侧**：上下文已被保证干净，模型不可能复述未见的秘密；流式 chunk 逐段扫描会破坏跨 chunk 的值，故明确不做。
 - **QQ 出站闸门用「文本全扫 + 文件路径拒发」**：`block` 时不回显任何片段（错误只说命中处数）；`redact` 时占位符替换后照发。
@@ -94,7 +94,7 @@ extra_secrets = []        # 追加精确值（label 自动编号 extra:<序号>�
 
 ```rust
 // 挂载时经 MountContext 拿到的 Ctx 解析（与 "llm" / "loop" 同款）：
-if let Some(redactor) = ctx.service(&echo_module_sanitize::service_key()) {
+if let Some(redactor) = ctx.service(&agent_module_sanitize::service_key()) {
     let clean = redactor.redact(user_text).text;   // 或 scan() 只检查
 }
 ```
@@ -103,7 +103,7 @@ if let Some(redactor) = ctx.service(&echo_module_sanitize::service_key()) {
 
 **测试不变量**（改脱敏相关代码必须保持）：
 
-- `echo-module-sanitize` 单测：字面值 / 模式 / 幂等 / 占位符不二次命中 / 短值忽略；
+- `agent-module-sanitize` 单测：字面值 / 模式 / 幂等 / 占位符不二次命中 / 短值忽略；
 - `echo-agent`：工具出口（结果与错误）脱敏、请求侧永不泄漏（RecordingProvider 断言）；
 - `core`：QQ 闸门（block 阻断不回显 / redact 替换 / 敏感目录拒发）、配置构建登记；
 - 协议回呼：`echo-module-host/tests/host_call.rs`（HostCall 路由 / 未知服务错误）与 SDK 侧 `HostClient` 往返 / 超时测试（`echo-module-sdk`）；

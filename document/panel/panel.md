@@ -32,7 +32,7 @@ EchoAgentPanel/
 │   ├── vendor/ui-frame/             # ui-frame 组件库本地快照（dist + package.json，入库）
 │   ├── scripts/use-ui-frame.mjs     # 引用方式切换（本地快照 ⇄ npm 包，见下）
 │   └── src/
-│       ├── protocol.ts              # echo-module-management 线格式的 TS 镜像
+│       ├── protocol.ts              # agent-module-management 线格式的 TS 镜像
 │       ├── state.ts                 # 状态 + reducer
 │       ├── state_domains/           # timeline / helpers
 │       ├── connection.ts            # WS 连接（重连退避 + Bootstrap）
@@ -56,14 +56,14 @@ EchoAgentPanel/
 
 ## 中继模型
 
-每个浏览器 WS 连接同时中继到**全部**接入点 Core 的 management WS（`[[cores]]`，单接入点 = 一条）；**单接入点时帧按原文转发，不解析、不记录负载**；多接入点时事件按来源节点加壳 `{core, frame}` 信封、命令按信封路由到目标节点（仅信封层，不触碰负载）——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-module-management` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
+每个浏览器 WS 连接同时中继到**全部**接入点 Core 的 management WS（`[[cores]]`，单接入点 = 一条）；**单接入点时帧按原文转发，不解析、不记录负载**；多接入点时事件按来源节点加壳 `{core, frame}` 信封、命令按信封路由到目标节点（仅信封层，不触碰负载）——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `agent-module-management` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
 
 - 中继仍无状态（`echo-web-server/src/proxy.rs`，含接入点聚合、信封路由与令牌校验），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传；`tests/relay-diag.rs` 用假 Core + 真中继 + 真浏览器验证诊断只观察、不改转发）
 - 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel，每条连接独立订阅通道，互不抢事件）；窗口之间如何各看各的见本文「多窗口语义」与[桌面端布局](./desktop-layout.md)「多窗口语义」
 
 ### 事件流连续性与丢帧诊断
 
-**概念**：Core 是事件流的唯一产生方——`management::EventBroker` 给每条广播事件分配**进程内单调递增的扇出序号**，`echo-module-management` 的 `serialize_event_sequenced` 把它作为帧顶层字段 `seq` 附上（放顶层而非塞进 `BackendEvent`，不动事件契约，旧版 Panel 忽略未知字段即可）。序号对同一 Core 的所有连接是**同一条流**（中途订阅者从当前进度起收），因此「跳号」精确等价于「这条链路中途丢了帧」；中继与前端据此各自独立检测，互不依赖。
+**概念**：Core 是事件流的唯一产生方——`management::EventBroker` 给每条广播事件分配**进程内单调递增的扇出序号**，`agent-module-management` 的 `serialize_event_sequenced` 把它作为帧顶层字段 `seq` 附上（放顶层而非塞进 `BackendEvent`，不动事件契约，旧版 Panel 忽略未知字段即可）。序号对同一 Core 的所有连接是**同一条流**（中途订阅者从当前进度起收），因此「跳号」精确等价于「这条链路中途丢了帧」；中继与前端据此各自独立检测，互不依赖。
 
 **机制**（诊断只观察、不改变转发；补齐一律由客户端按游标补拉完成）：
 

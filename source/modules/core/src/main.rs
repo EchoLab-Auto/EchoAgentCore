@@ -2,7 +2,7 @@
 //!
 //! 运行 Agent 核心：LLM agent 循环、平台模块（独立进程模块）、
 //! 以及供 Panel 等前端连接的 management WebSocket（默认 :3132）。
-//! 前端（TUI）在独立的 EchoAgentPanel 仓库中，通过 `echo-module-management` 定义的
+//! 前端（TUI）在独立的 EchoAgentPanel 仓库中，通过 `agent-module-management` 定义的
 //! WS/JSON 协议与本服务通信。
 
 use std::path::PathBuf;
@@ -31,12 +31,12 @@ mod node;
 mod port_cmd;
 
 /// 管理面模块（Phase 3 ⑧：已外迁为独立 crate，组合根只负责启动它）。
-use echo_module_management as management;
+use agent_module_management as management;
 mod security;
 
 use config::CoreConfig;
 use echo_defs::module_instance::ModuleInstance;
-use echo_module_loop::{Agent, AgentProfile};
+use agent_module_loop::{Agent, AgentProfile};
 #[allow(unused_imports)]
 use federation_rt::*;
 use logging::init_tracing;
@@ -297,7 +297,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // P3 终态：**按值构造、显式下发**给 AgentManager 与每个 Agent
     // （`make_agent` 闭包），不再写进程级 kernel cell。
     let node_identity =
-        echo_module_loop::NodeIdentity::new(node_doc.node_id.clone(), region_name.clone());
+        agent_module_loop::NodeIdentity::new(node_doc.node_id.clone(), region_name.clone());
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -326,23 +326,23 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 进程级事件出口的延迟槽位：联邦命令处理器在装配期就要绑好（端口集合
     // 是值，构造后不再改），而 bridge 与 `event_sink` 在更后面才建立。
     // 一次写、多次读。
-    let federation_emit_slot: std::sync::Arc<std::sync::OnceLock<echo_module_loop::EventSink>> =
+    let federation_emit_slot: std::sync::Arc<std::sync::OnceLock<agent_module_loop::EventSink>> =
         std::sync::Arc::new(std::sync::OnceLock::new());
     // Shell 子系统句柄（技债清理：替代两个进程级锚点）。工具注册与 agent
     // 构造都早于 ShellManager 本体，所以先建空槽、就绪后再 bind。
-    let shell_handle = echo_module_loop::shell::ShellHandle::new();
+    let shell_handle = agent_module_loop::shell::ShellHandle::new();
     // manager 弱引用槽（技债清理：替代 `global_manager` 进程级锚点）。
     // rt 随后被解构进路由泵，而 manager 更晚就绪——外层留同一份 Arc，
     // 延迟写入即可；rt 内部读的是同一个槽。
     let agent_manager_slot: std::sync::Arc<
-        std::sync::RwLock<std::sync::Weak<echo_module_loop::agent_manager::AgentManager>>,
+        std::sync::RwLock<std::sync::Weak<agent_module_loop::agent_manager::AgentManager>>,
     > = Default::default();
     let federation = {
         let peers = cfg
             .federation
             .peers
             .iter()
-            .map(|(name, p)| echo_module_federation::PeerConfig {
+            .map(|(name, p)| agent_module_federation::PeerConfig {
                 name: name.clone(),
                 url: p.url.clone(),
                 token: p.token.clone(),
@@ -360,7 +360,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // `[federation] panel_keys` + `panel_access`：一个 Panel 用同一把密钥
         // 接入全网任一节点，权限由**本节点**决定。解析与校验都在这里做
         // （fail-closed：配置写错宁可起不来，也不要"以为开了其实没开"）。
-        let panel_access = echo_module_federation::PanelAccess::parse(&cfg.federation.panel_access)
+        let panel_access = agent_module_federation::PanelAccess::parse(&cfg.federation.panel_access)
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "[federation] panel_access = {:?} 不是合法级别（可选 off / readonly / operate / admin）",
@@ -373,7 +373,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             &cfg.core.management_access_token,
             |t| cfg.federation.peers.values().any(|p| p.token == t),
         )?;
-        let caps = echo_module_federation::NodeCaps {
+        let caps = agent_module_federation::NodeCaps {
             tools: Vec::new(),
             subagent: true,
             workspaces: Vec::new(),
@@ -384,12 +384,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             panel_ready: panel_access.is_open() && !cfg.federation.panel_keys.is_empty(),
         };
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
-        let router = echo_module_loop::federation::InvokeRouter::new(node_doc.node_id.clone());
+        let router = agent_module_loop::federation::InvokeRouter::new(node_doc.node_id.clone());
         // 策略表共享可变——SaveFederationPeer 运行时更新即生效（此前
         // 启动期冻结的 HashMap 会让 Panel 配的白名单静默失效到重启）。
         let peer_policies: std::sync::Arc<
             tokio::sync::RwLock<
-                std::collections::HashMap<String, echo_module_loop::federation::ExecutorPolicy>,
+                std::collections::HashMap<String, agent_module_loop::federation::ExecutorPolicy>,
             >,
         > = std::sync::Arc::new(tokio::sync::RwLock::new(
             cfg.federation
@@ -398,7 +398,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .map(|(name, p)| {
                     (
                         name.clone(),
-                        echo_module_loop::federation::ExecutorPolicy {
+                        agent_module_loop::federation::ExecutorPolicy {
                             allow_tools: p.allow_tools.clone(),
                             require_confirm: p.require_confirm.clone(),
                             allow_queries: p.allow_queries.clone(),
@@ -416,13 +416,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 启动期还没有任何入站连接（= 没有观测地址），这里先按配置推导；
         // 真正的对外地址在首个 Panel/对端连入后由 `Federation::hello`
         // 用观测到的 `Host` 主机名替换（2026-11）。
-        let local_advertise = echo_module_federation::admin::invite_host(
+        let local_advertise = agent_module_federation::admin::invite_host(
             listen_for_advertise,
             &cfg.federation.advertise,
             None,
         )
         .map(|host_port| format!("ws://{host_port}"));
-        let fed = echo_module_federation::Federation::new(
+        let fed = agent_module_federation::Federation::new(
             node_doc.node_id.clone(),
             cfg.federation
                 .node_name
@@ -436,7 +436,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         );
         // Panel 身份注入（P1）：握手 `caps.panel_ready` 与合并端口/独立监听
         // 的令牌分流都从这里取（`Federation::panel_gate_sync`）。
-        fed.set_panel_identity(echo_module_federation::PanelIdentity::new(
+        fed.set_panel_identity(agent_module_federation::PanelIdentity::new(
             cfg.federation.panel_keys.clone(),
             panel_access,
         ));
@@ -516,7 +516,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 三个出口都持有本节点的 Federation / InvokeRouter 句柄，只能在
         // 组合根这里造；造好后经 `AgentBuilder::federation` 下发给每个
         // persona，并经同一份 `ports` 供联邦泵销账。
-        let mut ports = echo_module_loop::federation::FederationPorts::unlinked();
+        let mut ports = agent_module_loop::federation::FederationPorts::unlinked();
         // 联邦 / 自更新命令处理器（联邦始终开启，无需条件注册）：需要
         // Federation 句柄与 ConfigStore，只能在组合根实现。
         // 出口在**装配期**固定成进程级汇聚点：`command_handler` 的类型已不再
@@ -524,7 +524,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // emit——此前每个 persona 都会往同一个进程级 ports 里塞"自己的 emit"，
         // 谁的装配最后跑谁生效。
         // 管理面的**状态迁移**出口（2026-11 S11）：命令的判定与文案已经搬进
-        // `echo-module-federation::admin`，这里只提供"改内存与磁盘"的原子动作。
+        // `agent-module-federation::admin`，这里只提供"改内存与磁盘"的原子动作。
         // 事件出口由模块侧从服务表取（进程级汇聚点），所以这里不需要再传 emit。
         ports.admin = Some(std::sync::Arc::new(
             crate::federation_admin_host::RuntimeAdminHost::new(Arc::clone(&rt)),
@@ -558,17 +558,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                             return;
                         };
                         let frame =
-                            if matches!(status, echo_module_federation::SubagentStatus::Running) {
-                                echo_module_federation::FedFrame::SubagentSpawn(
-                                    echo_module_federation::SubagentSpawnRequest {
+                            if matches!(status, agent_module_federation::SubagentStatus::Running) {
+                                agent_module_federation::FedFrame::SubagentSpawn(
+                                    agent_module_federation::SubagentSpawnRequest {
                                         call_id,
                                         task,
                                         timeout_secs,
                                     },
                                 )
                             } else {
-                                echo_module_federation::FedFrame::SubagentEvent(
-                                    echo_module_federation::SubagentEventFrame {
+                                agent_module_federation::FedFrame::SubagentEvent(
+                                    agent_module_federation::SubagentEventFrame {
                                         call_id,
                                         status,
                                         result,
@@ -602,7 +602,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         let call_id = pending.call_id.clone();
                         if rt
                             .federation
-                            .send_to(&node_id, echo_module_federation::FedFrame::Query(request))
+                            .send_to(&node_id, agent_module_federation::FedFrame::Query(request))
                             .await
                             .is_err()
                         {
@@ -640,7 +640,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     let call_id = pending.call_id.clone();
                     if rt
                         .federation
-                        .send_to(&node_id, echo_module_federation::FedFrame::Invoke(request))
+                        .send_to(&node_id, agent_module_federation::FedFrame::Invoke(request))
                         .await
                         .is_err()
                     {
@@ -691,7 +691,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // （skills_dir，读写）在后——同名技能用户层覆盖出厂版本。
     let mut skill_dirs = cfg.agent.skills_dirs.clone();
     skill_dirs.push(cfg.agent.skills_dir.clone());
-    let mut skills = echo_module_loop::SkillRegistry::discover_many(&skill_dirs)
+    let mut skills = agent_module_loop::SkillRegistry::discover_many(&skill_dirs)
         .map_err(|e| anyhow::anyhow!("failed to load skills: {e}"))?;
     // Apply persisted runtime disable state (survives restarts).
     for name in &cfg.agent.disabled_skills {
@@ -738,14 +738,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 先于 provider 构建：provider 以脱敏装饰器包装后分发给全部下游
     //（LLM 请求出口卡口）；同时把脱敏器注册进服务定位器（"sanitizer"），
     // 供进程内模块与消费者解析。关闭需编辑 core.toml + 重启（无运行期开关）。
-    // 构造在 `echo-module-sanitize`（实现归模块，宿主只提供秘密表）。
+    // 构造在 `agent-module-sanitize`（实现归模块，宿主只提供秘密表）。
     // 时机必须在挂载之前：脱敏是 **LLM 出口的装饰器**，`llm` 服务要以
-    // 「已脱敏」的形态进 `Ctx`，而 `echo-module-loop` 把它当硬依赖。
+    // 「已脱敏」的形态进 `Ctx`，而 `agent-module-loop` 把它当硬依赖。
     // 见该 crate 的模块文档「为什么构造不能在 mount 里做」。
     let redactor: Option<Arc<dyn echo_defs::sanitize::Redactor>> = if cfg.security.sanitize.enabled
     {
         let spec = crate::security::redactor_spec(&cfg);
-        let redactor = echo_module_sanitize::build(&spec);
+        let redactor = agent_module_sanitize::build(&spec);
         tracing::info!(
             secrets = spec.secrets.len(),
             patterns = spec.patterns.len(),
@@ -763,14 +763,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     // ---- API 指标存储（余额快照 / token 用量；面板图表数据源）----
     // 文件与 core.toml 同目录：echo-balances.jsonl / echo-usage.jsonl。
-    let metrics_store = std::sync::Arc::new(echo_module_loop::metrics::MetricsStore::new(
+    let metrics_store = std::sync::Arc::new(agent_module_loop::metrics::MetricsStore::new(
         args.config_path()
             .parent()
             .map(|path| path.to_path_buf())
             .unwrap_or_else(|| std::path::PathBuf::from(".")),
     ));
 
-    let provider = echo_module_loop::llm::create_provider(&provider_cfg)?;
+    let provider = agent_module_loop::llm::create_provider(&provider_cfg)?;
     info!(provider = %provider_cfg.provider, model = %provider_cfg.model, "llm provider ready");
 
     // ---- Service context (dsh-style service locator) ----
@@ -779,30 +779,30 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let ctx: Arc<echo_context::Ctx> = Arc::new(echo_context::Ctx::default());
     // LLM 出口装饰：先包计量（token 用量记录），再包脱敏（请求出口卡口），
     // 之后才分发给一切下游（runner / agent / subagent）。
-    let base_provider: Arc<dyn echo_module_loop::LlmProvider> = Arc::from(provider);
-    let base_provider = echo_module_loop::llm::wrap_metering(
+    let base_provider: Arc<dyn agent_module_loop::LlmProvider> = Arc::from(provider);
+    let base_provider = agent_module_loop::llm::wrap_metering(
         base_provider,
         metrics_store.clone(),
         base_profile_key,
     );
-    let provider_arc: Arc<dyn echo_module_loop::LlmProvider> = match &redactor {
-        Some(redactor) => echo_module_loop::llm::wrap_redacting(base_provider, redactor.clone()),
+    let provider_arc: Arc<dyn agent_module_loop::LlmProvider> = match &redactor {
+        Some(redactor) => agent_module_loop::llm::wrap_redacting(base_provider, redactor.clone()),
         None => base_provider,
     };
-    let _ctx_keep = ctx.register::<Arc<dyn echo_module_loop::LlmProvider>>(
+    let _ctx_keep = ctx.register::<Arc<dyn agent_module_loop::LlmProvider>>(
         echo_defs::llm::LLM_PROVIDER_SERVICE_KEY,
         provider_arc.clone(),
     );
-    // 脱敏服务（键由 `echo-module-sanitize` 声明；进程内模块经
+    // 脱敏服务（键由 `agent-module-sanitize` 声明；进程内模块经
     // `MountContext.ctx` 解析，子进程模块经 HostCall 同名服务走同一实例）。
     let _sanitizer_keep: Option<echo_context::Disposer> = redactor.as_ref().map(|redactor| {
         ctx.register::<Arc<dyn echo_defs::sanitize::Redactor>>(
-            echo_module_sanitize::SERVICE_KEY,
+            agent_module_sanitize::SERVICE_KEY,
             redactor.clone(),
         )
     });
 
-    // 回合驱动（`loop` 服务）：**由 `echo-module-loop` 模块在 mount 里构造并
+    // 回合驱动（`loop` 服务）：**由 `agent-module-loop` 模块在 mount 里构造并
     // provide**，组合根不再自己建一个再借模块的名义登记（2026-11 S2）。
     //
     // 它需要的前置都在上下文里：`llm`（上面已注册）+ `modules.toml` 的
@@ -839,7 +839,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .iter()
         .filter(|(_, m)| {
             m.enabled
-                && echo_module_loop::modules::profile_allows_module(
+                && agent_module_loop::modules::profile_allows_module(
                     m,
                     &crate::instance_manifests::module_id_for(&platform),
                 )
@@ -973,12 +973,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // ---- Frontend bridge (management WS) ----
     //（提前到人格装配之前：每个 persona 建好即接入进程级事件汇聚点，
     //  不再依赖"默认人格"转接事件）
-    let (bridge, handle) = echo_module_loop::create_bridge();
+    let (bridge, handle) = agent_module_loop::create_bridge();
     let bridge = Arc::new(bridge);
     let handle = Arc::new(handle);
     // 进程级事件汇聚点：所有 persona 的 emit 都投递到它（即 bridge 的事件端），
     // Panel 单连接即可看到全部人格活动。
-    let event_sink: echo_module_loop::EventSink = {
+    let event_sink: agent_module_loop::EventSink = {
         let tx = handle.event_tx.clone();
         Arc::new(move |event| {
             let _ = tx.send(event);
@@ -989,11 +989,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     // 进程级模块宿主（去主 P1）：所有人格共享同一实例，模块注册/挂载/卸载
     // 与「谁挂到 Panel」同样不再寄居在某个"默认人格"上。
-    let module_host: std::sync::Arc<echo_module_loop::modules::ModuleHost> =
-        std::sync::Arc::new(echo_module_loop::modules::ModuleHost::new());
+    let module_host: std::sync::Arc<agent_module_loop::modules::ModuleHost> =
+        std::sync::Arc::new(agent_module_loop::modules::ModuleHost::new());
     // 全局禁用策略（工具/技能启停）：全局开关不属于任何人格。构造**一份**，
     // 注入每个 persona（不再走进程级锚点——2026-10 技术债清理）。
-    let global_policy = std::sync::Arc::new(echo_module_loop::agent::GlobalPolicy::new(
+    let global_policy = std::sync::Arc::new(agent_module_loop::agent::GlobalPolicy::new(
         agent_config.disabled_tools.clone(),
         agent_config.disabled_skills.clone(),
     ));
@@ -1007,7 +1007,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         |services| {
             if let Some(redactor) = &redactor {
                 services.register(
-                    echo_module_sanitize::SERVICE_KEY,
+                    agent_module_sanitize::SERVICE_KEY,
                     std::sync::Arc::new(crate::security::SanitizerHostService::new(
                         redactor.clone(),
                     )),
@@ -1078,7 +1078,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
         map
     };
-    let module_tools: std::sync::Arc<Vec<std::sync::Arc<echo_module_loop::adapter::RemoteTool>>> =
+    let module_tools: std::sync::Arc<Vec<std::sync::Arc<agent_module_loop::adapter::RemoteTool>>> =
         std::sync::Arc::new(
             module_runtime
                 .as_ref()
@@ -1091,7 +1091,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         std::sync::Mutex<
             std::collections::HashMap<
                 String,
-                std::sync::Arc<echo_module_loop::agent::workspace_mirror::WorkspaceMirror>,
+                std::sync::Arc<agent_module_loop::agent::workspace_mirror::WorkspaceMirror>,
             >,
         >,
     > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -1136,7 +1136,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 注册表、建好 agent 再回填（`register` 拿的是 trunk 的克隆句柄）。
     // 端口只读；工具侧不碰持久化文件，读的是内存里的活 trunk。
     let session_queries =
-        std::sync::Arc::new(echo_module_loop::agent::session_query::SessionQueryRegistry::new());
+        std::sync::Arc::new(agent_module_loop::agent::session_query::SessionQueryRegistry::new());
     let factory_session_queries = session_queries.clone();
     let make_agent: Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync> = Arc::new(
         move |id: String, profile: AgentProfile| -> Arc<Agent> {
@@ -1172,7 +1172,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 }
                 // 每个 persona 独立的工具注册表（启动期一次性组装）。
                 //
-                // **清单在模块里**（`echo-module-tools` 的 `BuiltinToolProvider`），
+                // **清单在模块里**（`agent-module-tools` 的 `BuiltinToolProvider`），
                 // 这里只递端口。服务表里有 provider 就用它（模块已挂载），
                 // 否则直接构造同一实现（`core_agent` 早于模块挂载——S1b 前的
                 // 唯一无服务表路径，见 `tools_builtin` 模块文档）。
@@ -1180,17 +1180,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| default_instances.clone());
-                let mut t = echo_module_loop::tool::builtin::build_registry(
+                let mut t = agent_module_loop::tool::builtin::build_registry(
                     instances2.clone(),
                     workspace.clone(),
                     agents_config_store.clone(),
                     factory_federation.invoker.clone(),
                     factory_shell_handle.clone(),
                     Some(factory_session_queries.clone()),
-                    echo_module_loop::tool::builtin::resolve_provider(&tool_ctx),
+                    agent_module_loop::tool::builtin::resolve_provider(&tool_ctx),
                     // Shell 工具由 shell 模块造（2026-11 拆出的独立模块）：
                     // 未挂载 = 这个 persona 没有 `bash-*` 工具，正是想要的效果。
-                    echo_module_loop::tool::builtin::resolve_shell_provider(&tool_ctx),
+                    agent_module_loop::tool::builtin::resolve_shell_provider(&tool_ctx),
                 );
                 // 工具结果出口卡口（2026-10 安全）：本 persona 注册表注入
                 // 脱敏器——所有工具（内置 / 模块 / 远程 / 子代理直呼）的
@@ -1233,37 +1233,37 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 工作区会话（workspace 模块）：每 persona 独立存储 + 工具。
                 // 存储文件与配置 TOML 解耦（独立 JSON，绝不同路径互写）；
                 // 模块未列入该 persona 白名单时工具会被门控禁用（判据是模块 kind，见 `modules::scope`）。
-                // 工作区模块已迁出为独立仓库（`echo-module-workspace`）：store
+                // 工作区模块已迁出为独立仓库（`agent-module-workspace`）：store
                 // 归模块所有（文档名/路径不变，旧数据可直接读），宿主这边只剩
                 // 两样东西——
                 //   1. 状态镜像（模块 emit `workspace.changed` 时刷新）；
                 //   2. 工具代理（`WorkspaceTool`：把调用转发给模块的
                 //      `WorkspaceToolCall` 入口，描述/参数 schema 取自模块）。
                 let workspace_mirror = std::sync::Arc::new(
-                    echo_module_loop::agent::workspace_mirror::WorkspaceMirror::new(),
+                    agent_module_loop::agent::workspace_mirror::WorkspaceMirror::new(),
                 );
                 workspace_mirrors
                     .lock()
                     .expect("workspace mirror registry")
                     .insert(id.clone(), workspace_mirror.clone());
                 t.register(std::sync::Arc::new(
-                    echo_module_loop::agent::workspace_tool::WorkspaceTool::new(
+                    agent_module_loop::agent::workspace_tool::WorkspaceTool::new(
                         shared_module_host.clone(),
                     ),
                 ));
-                t.set_package("workspace", echo_module_loop::modules::WORKSPACE_MODULE_ID);
+                t.set_package("workspace", agent_module_loop::modules::WORKSPACE_MODULE_ID);
                 // ProDoc 文档群检查（prodoc 模块）：同一种代理形态——工具在宿主
                 // 注册表里，检查逻辑在模块（`ProDocCheck` 命令）。不注册的话
                 // 「模型能不能查文档图」就取决于有没有人记得加这一段，
                 // 而模块本身已经挂上了。
                 t.register(std::sync::Arc::new(
-                    echo_module_loop::agent::prodoc_tool::ProDocCheckTool::new(
+                    agent_module_loop::agent::prodoc_tool::ProDocCheckTool::new(
                         shared_module_host.clone(),
                     ),
                 ));
                 t.set_package(
-                    echo_module_loop::agent::prodoc_tool::TOOL_NAME,
-                    echo_module_prodoc::MODULE_ID,
+                    agent_module_loop::agent::prodoc_tool::TOOL_NAME,
+                    agent_module_prodoc::MODULE_ID,
                 );
                 // Subagent 委派（subagent 模块）：**注册归模块接线**（2026-11 S7）。
                 //
@@ -1272,7 +1272,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 存在"与"能力可用"是两件事，宿主只能靠工具名特判把它们对上。
                 // 现在 `attach_subagent_runtime_with` 一次做完：注册工具、打
                 // 包标签、接执行闭包。这里只把 store 交给 builder。
-                let subagent_store = echo_module_loop::subagent::SubagentStore::new();
+                let subagent_store = agent_module_loop::subagent::SubagentStore::new();
                 // 子进程模块工具（modules.toml；RemoteTool 已实现 Tool trait）。
                 //
                 // 语义在 `ToolRegistry::register_module_tools`（可单测的纯逻辑）：
@@ -1281,8 +1281,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 顶掉内置实现（内置工具外迁为模块后 `calculator` /
                 // `web_search` 曾经如此，线上只能看到"功能还在但行为变了"）。
                 let registration = t.register_module_tools(pt.iter().map(|tool| {
-                    echo_module_loop::ModuleTool::new(
-                        tool.clone() as std::sync::Arc<dyn echo_module_loop::Tool>,
+                    agent_module_loop::ModuleTool::new(
+                        tool.clone() as std::sync::Arc<dyn agent_module_loop::Tool>,
                         tool.package().map(str::to_string),
                     )
                 }));
@@ -1313,8 +1313,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 }
                 // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
                 // 自己的 provider（从全局池解析，不共享默认 provider）。
-                let mut api_cfg_override: Option<echo_module_loop::AgentConfig> = None;
-                let persona_provider: Option<Arc<dyn echo_module_loop::LlmProvider>> = if let Some(
+                let mut api_cfg_override: Option<agent_module_loop::AgentConfig> = None;
+                let persona_provider: Option<Arc<dyn agent_module_loop::LlmProvider>> = if let Some(
                     ref name,
                 ) =
                     profile.api_profile
@@ -1323,17 +1323,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     if resolved.apply_named_profile(name) {
                         resolved.api_key = resolved.effective_api_key();
                         resolved.base_url = resolved.effective_base_url();
-                        match echo_module_loop::llm::create_provider(&resolved) {
+                        match agent_module_loop::llm::create_provider(&resolved) {
                             Ok(p) => {
                                 api_cfg_override = Some(resolved.clone());
-                                let provider: Arc<dyn echo_module_loop::LlmProvider> = Arc::from(p);
-                                let provider = echo_module_loop::llm::wrap_metering(
+                                let provider: Arc<dyn agent_module_loop::LlmProvider> = Arc::from(p);
+                                let provider = agent_module_loop::llm::wrap_metering(
                                     provider,
                                     metrics2.clone(),
                                     name.clone(),
                                 );
                                 let provider = match &redactor2 {
-                                    Some(redactor) => echo_module_loop::llm::wrap_redacting(
+                                    Some(redactor) => agent_module_loop::llm::wrap_redacting(
                                         provider,
                                         redactor.clone(),
                                     ),
@@ -1361,7 +1361,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 进程级事件汇聚点与共享模块宿主（运行期新建人格同样走这里）、
                 // Persona 级 API 引用（None = 跟随全局默认；运行期重建走
                 // apply_persona_api）一次声明完成。
-                let mut builder = echo_module_loop::agent::builder::AgentBuilder::new(
+                let mut builder = agent_module_loop::agent::builder::AgentBuilder::new(
                     persona_provider.unwrap_or_else(|| Arc::clone(&provider_arc2)),
                     cfg.clone(),
                     skills2.clone(),
@@ -1381,7 +1381,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .subagent_store(subagent_store.clone())
                 // 远程委派聚合：模块不认识联邦，聚合登记经这个接缝交出去。
                 .subagent_remote_sink(std::sync::Arc::new(
-                    echo_module_loop::federation::aggregator::AggregatorDelegationSink::from_ports(
+                    agent_module_loop::federation::aggregator::AggregatorDelegationSink::from_ports(
                         &factory_federation,
                     ),
                 ))
@@ -1460,9 +1460,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 进程级核心服务代理（不是人格）：承接全局/管理类命令（API 配置、技能/
     // 工具/模块清单与启停、模块实例启停、Shell、Teams 管理…）。它不出现在
     // `[agent.teams]` 与 TeamsList 中，team_id 为空，也不接收聊天消息。
-    let core_agent: Arc<echo_module_loop::Agent> = make_agent(
+    let core_agent: Arc<agent_module_loop::Agent> = make_agent(
         "__core".into(),
-        echo_module_loop::AgentProfile {
+        agent_module_loop::AgentProfile {
             name: "Core".into(),
             description: "进程级核心服务（非人格）：管理面命令宿主".into(),
             enabled: true,
@@ -1484,7 +1484,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 去"主智能体"：不存在默认人格。全局/管理用途一律走进程级核心服务代理
     // （`core_agent`，team_id 为空、不在 TeamsList 中）；聊天与会话按 team_id
     // 显式路由到具体人格。
-    let agent: Arc<echo_module_loop::Agent> = core_agent.clone();
+    let agent: Arc<agent_module_loop::Agent> = core_agent.clone();
     info!(agents = ?supervisor.ids(), "agent supervisor ready");
 
     // 联邦路由泵（Phase 2）：supervisor 就绪后启动（代理工具注册需要全部
@@ -1521,7 +1521,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         rt.federation
             .set_tool_reporter(std::sync::Arc::new(move || {
                 let personas = caps_supervisor.personas();
-                let mut hosts: Vec<&Arc<echo_module_loop::Agent>> =
+                let mut hosts: Vec<&Arc<agent_module_loop::Agent>> =
                     personas.iter().map(|p| &p.agent).collect();
                 if hosts.is_empty() {
                     hosts.push(&caps_core);
@@ -1574,9 +1574,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 门控启动负责），运行期由重启（stop + start）换实现。
     let qq_wired = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // 回合驱动：**由 `echo-module-loop` 在挂载时 provide**，本块结束时解析出来。
+    // 回合驱动：**由 `agent-module-loop` 在挂载时 provide**，本块结束时解析出来。
     // 声明在这里（块外）是为了后面每个人格接线（`set_loop_runner`）用同一实例。
-    let loop_runner: Arc<echo_module_loop::TurnRunner>;
+    let loop_runner: Arc<agent_module_loop::TurnRunner>;
     // 宿主能力的注册句柄：**必须活到进程结束**。
     //
     // 服务是 RAII 的（`Disposer` 落下即注销），而模块在 `mount` 里按服务键
@@ -1592,7 +1592,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // persona 管理器：门控（挂载/卸载事件的反应）与宿主能力注册都要它。
         let gating_manager = supervisor.manager();
         // 挂载上下文只带服务定位器（框架层零领域依赖；`tools`/`skills` 两个
-        // sink 是死代码，2026-10 M2 删除——见 echo_module_loop::modules 模块文档）。
+        // sink 是死代码，2026-10 M2 删除——见 agent_module_loop::modules 模块文档）。
         module_host.set_mount_ctx(MountContext::new().with_ctx(ctx.clone()));
         // 模块事件出口（echo-fabric-arch v0.7）：模块 `emit` 的东西（含注册表
         // 自己发的 `module.mounted` / `module.unmounted`）转成
@@ -1623,7 +1623,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         return;
                     }
                     sink(
-                        echo_module_management::protocol::BackendEvent::ModuleEvent {
+                        agent_module_management::protocol::BackendEvent::ModuleEvent {
                             module: event.module,
                             name: event.name,
                             payload: event.payload,
@@ -1778,7 +1778,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 为什么必须失败而不是静默跳过：静默跳过等于给了运维一个**假动作**
         // （"我关掉了它，系统还在跑"），而实际后果要么是启动到一半才发现
         // 缺东西，要么是运行期某个能力静默失效。假动作比不给开关更糟。
-        if let Some(off) = echo_module_loop::modules::disabled_kernel_modules(&catalog_ids, &plan) {
+        if let Some(off) = agent_module_loop::modules::disabled_kernel_modules(&catalog_ids, &plan) {
             return Err(anyhow::anyhow!(
                 "modules.toml 试图禁用 kernel 模块 {off:?}——它们是其它模块的运行地基\
                  （kind = \"kernel\"），禁用后系统无法启动。\n\
@@ -1796,7 +1796,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let optional_ids = catalog
             .iter()
             .filter(|module| {
-                !echo_module_loop::modules::BUILTIN_MODULE_IDS
+                !agent_module_loop::modules::BUILTIN_MODULE_IDS
                     .contains(&module.manifest().id.as_str())
             })
             .map(|module| module.manifest().id.clone())
@@ -1804,11 +1804,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let plan = optional_ids
             .iter()
             .filter(|id| !plan.iter().any(|step| step.id == **id))
-            .map(|id| echo_module_loop::modules::MountStep::new(id.clone(), false))
+            .map(|id| agent_module_loop::modules::MountStep::new(id.clone(), false))
             .chain(plan.iter().cloned())
             .collect::<Vec<_>>();
         let (order, diagnostics) =
-            echo_module_loop::modules::resolve_mount_order(&catalog_ids, &plan);
+            agent_module_loop::modules::resolve_mount_order(&catalog_ids, &plan);
         for diagnostic in &diagnostics {
             warn!(%diagnostic, "builtin mount plan");
         }
@@ -1863,10 +1863,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 在挂载完成后才解析它。解析失败 = 模块没装/挂载失败——**启动失败**
         // （没有驱动的 agent 只会收消息不干活，静默比崩溃难查）。
         loop_runner = ctx
-            .resolve::<Arc<echo_module_loop::TurnRunner>>("loop")
+            .resolve::<Arc<agent_module_loop::TurnRunner>>("loop")
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "`loop` 服务未提供：echo-module-loop 未挂载或挂载失败（驱动由该模块 provide）"
+                    "`loop` 服务未提供：agent-module-loop 未挂载或挂载失败（驱动由该模块 provide）"
                 )
             })?;
 
@@ -1932,7 +1932,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // （那里也在挂载之后），这里补的是 `core_agent`——它在挂载前就被构造好了，
     // 此前的能力应用因此跑在空注册表上。
     core_agent
-        .apply_capabilities(&echo_module_loop::AgentProfile {
+        .apply_capabilities(&agent_module_loop::AgentProfile {
             enabled: true,
             ..Default::default()
         })
@@ -1946,12 +1946,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     // ---- Background shell sessions（进程级，面板 + 工具共用）----
     {
-        use echo_module_loop::shell::{ShellEvent, ShellManager};
+        use agent_module_loop::shell::{ShellEvent, ShellManager};
         let mgr = std::sync::Arc::new(ShellManager::new());
         // 事件广播：接到默认 agent 的 handle，Panel 单连接即可实时可视化。
         let shell_emitter = core_agent.clone();
         let emit = std::sync::Arc::new(move |event: ShellEvent| {
-            shell_emitter.emit(echo_module_loop::shell::shell_event_to_backend(event));
+            shell_emitter.emit(agent_module_loop::shell::shell_event_to_backend(event));
         });
         // 绑定到共享句柄：工具侧与命令侧读同一份（不再是进程级锚点）。
         shell_handle.bind(std::sync::Arc::clone(&mgr), emit);
@@ -2022,12 +2022,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 continue;
             }
         };
-        let hook = Arc::new(echo_module_loop::AgentMessageHook::new(target));
+        let hook = Arc::new(agent_module_loop::AgentMessageHook::new(target));
         let worker_instance = instance_id.clone();
         let mut inbound_rx = handle.inbound_rx;
         tokio::spawn(async move {
             while let Some(message) = inbound_rx.recv().await {
-                let incoming = echo_module_loop::adapter::message_to_incoming(message);
+                let incoming = agent_module_loop::adapter::message_to_incoming(message);
                 if let Err(error) = hook.on_incoming_message(incoming).await {
                     tracing::warn!(
                         instance = %worker_instance,
@@ -2059,7 +2059,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     continue;
                 };
                 entry.agent.emit(
-                    echo_module_management::protocol::BackendEvent::InstanceStateChanged {
+                    agent_module_management::protocol::BackendEvent::InstanceStateChanged {
                         instance_name: change.instance,
                         connected: change.connected,
                         self_id: change.self_id,
@@ -2073,7 +2073,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     if let Some(rt) = &module_runtime {
         let mut ui_states = rt.core_api().subscribe_ui_states();
         let supervisor_for_ui = Arc::clone(&supervisor);
-        let ui_fallback_agent: Arc<echo_module_loop::Agent> = core_agent.clone();
+        let ui_fallback_agent: Arc<agent_module_loop::Agent> = core_agent.clone();
         let ui_persona_by_instance: std::collections::HashMap<String, String> = qq_instances
             .iter()
             .map(|instance| (instance.id.clone(), instance.persona.clone()))
@@ -2098,7 +2098,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .map(|entry| entry.agent)
                     .unwrap_or_else(|| ui_fallback_agent.clone());
                 entry.emit(
-                    echo_module_management::protocol::BackendEvent::InstanceState {
+                    agent_module_management::protocol::BackendEvent::InstanceState {
                         instance: change.instance,
                         state: change.state,
                     },
@@ -2129,12 +2129,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 进程级命令先处理：命中即 `continue`，不落到任何 agent 上。
                 // `admin` / `registry` 是同一个 manager 的两个面向。
                 if let Some(manager) = pump_slot.read().ok().and_then(|w| w.upgrade()) {
-                    let host = echo_module_loop::process_commands::ProcessCommandHost {
+                    let host = agent_module_loop::process_commands::ProcessCommandHost {
                         admin: manager.clone(),
                         registry: manager,
                         emitter: pump_core.clone(),
                     };
-                    if echo_module_loop::process_commands::try_handle(&cmd, &host).await {
+                    if agent_module_loop::process_commands::try_handle(&cmd, &host).await {
                         continue;
                     }
                 }
@@ -2171,7 +2171,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         {
             let store = config_store.clone();
             mgr_arc.set_config_writer(Box::new(
-                move |teams: &std::collections::BTreeMap<String, echo_module_loop::TeamMember>| {
+                move |teams: &std::collections::BTreeMap<String, agent_module_loop::TeamMember>| {
                     store
                         .patch(|root| {
                             let agent = echo_config::ensure_table(root, "agent");
@@ -2206,7 +2206,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             //
             // S4b：绑的是**两个收窄后的面向**（查询 / 管理），不是 manager 本身。
             {
-                let registry: std::sync::Arc<dyn echo_module_loop::agent::registry::AgentRegistry> =
+                let registry: std::sync::Arc<dyn agent_module_loop::agent::registry::AgentRegistry> =
                     mgr_arc.clone();
                 core_agent.set_registry(&registry);
             }
@@ -2368,9 +2368,9 @@ fn external_builtin_modules(
     version: &str,
     core: &crate::config::CoreSection,
 ) -> Vec<Arc<dyn echo_module::Module>> {
-    vec![echo_module_panel::module_with_defaults(
+    vec![agent_module_panel::module_with_defaults(
         version,
-        Some(echo_module_panel::PanelDefaults {
+        Some(agent_module_panel::PanelDefaults {
             core_url: core.management_address.clone(),
             core_access_token: core.management_access_token.clone(),
         }),

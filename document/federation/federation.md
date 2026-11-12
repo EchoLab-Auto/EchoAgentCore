@@ -15,7 +15,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 跨机器的工作区执行工具、委派子任务、做只读查询。典型场景：联合调试
 （A 机改代码、B 机起服务）、跨机部署验证、能力互补（GPU/专有环境）。
 
-实现分布：`source/modules/echo-module-federation`（通用连接 + Core 帧与身份适配 + 执行层）+
+实现分布：`source/modules/agent-module-federation`（通用连接 + Core 帧与身份适配 + 执行层）+
 `source/modules/echo-agent/src/packages/federation`（执行层）+
 `source/modules/core/src/federation_rt.rs`（路由泵 `federation_router_pump` + 代理注册 + 状态快照）、`source/modules/core/src/federation_import.rs`（迁移导入）；`source/modules/core/src/main.rs` 只做装配与 `tokio::spawn`。
 
@@ -49,7 +49,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 ### 通用模块边界
 
-`echo-module-federation::connection` 不引用任何 EchoAgent 业务类型，可随模块平移：
+`agent-module-federation::connection` 不引用任何 EchoAgent 业务类型，可随模块平移：
 应用帧是泛型 `Frame`，握手能力是任意 JSON；模块只负责监听/拨出、Bearer
 认证、握手、心跳、重连、双向去重、邀请与诊断。业务请求和权限裁决不属于
 该模块。Core 的根模块 通过 `Frame::{encode_wire, decode_wire}`
@@ -321,7 +321,7 @@ Panel 的**主节点失效转移**语义与联邦一致（**换节点、换会�
   要等下次断线重连才补上
 - **管理命令域在模块里**：`SaveFederationPeer` /
   `DeleteFederationPeer` / `RequestFederationStatus` / `RequestFederationInvite` /
-  `MigrateSession` 的**规则与分发**在 `echo-module-federation::admin`（纯函数
+  `MigrateSession` 的**规则与分发**在 `agent-module-federation::admin`（纯函数
   可单测：token 继承 / token 与管理面令牌冲突 / token 跨 peer 唯一 / URL 形状 /
   邀请地址推导）；**状态迁移**由组合根实现 `FederationAdminHost`（落 peer、
   配置原子写回、断链清理、邀请占位登记、会话迁移）。此前整段处理在
@@ -382,7 +382,7 @@ parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销�
   `AgentBuilder::federation` 下发给每个 persona，再作为 `register_coding_tools`
   的 `invoker` 参数进入工具注册期（联邦关闭 = `None`，带 `node://` 前缀的
   调用报「联邦未接线」，本机路径不受影响）。
-  注：工具外迁 `echo-module-tools` 时，工具侧曾留下一份 kernel cell
+  注：工具外迁 `agent-module-tools` 时，工具侧曾留下一份 kernel cell
   却无人注入，`node://` 分流因此恒报未接线；本次改为显式参数后修复
 - 失败路径：peer 离线/不存在、链路不可用、对端拒绝（白名单/沙箱——
   完全开放策略无沙箱）、超时均原样透传为 ToolError。超时链：工具守卫**默认 120s（可配）** → `RemoteTool` 硬超时 **460s**（守卫 ×1.5 网络余量封顶；`timeout_hint` 同 460s）；路由侧 pending 的 120s 只是**清扫下限**，带显式超时会按 `timeout + 60` 延长
@@ -494,7 +494,7 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
 - `{"broadcast": true, "frame": {...}}` → 广播给全部在线接入点（仅只读发现
   命令：`RequestState` / `RequestTeamsList` / `RequestInstanceStatus` / `RequestShellSessions` /
   `RequestTrunkTimeline`（前端引导命令组）与清单类 `RequestModulesList` / `RequestSkillsList` /
-  `RequestToolsList` 等——权威清单是 `echo_module_management::protocol::command::BROADCAST_READONLY_COMMANDS`；
+  `RequestToolsList` 等——权威清单是 `agent_module_management::protocol::command::BROADCAST_READONLY_COMMANDS`；
   探活走 WS 层 Ping 控制帧 + 重连探测，**不经广播壳**，协议里也没有 `Ping` 命令）；
 - 无壳 → 仅单接入点语义下直接转发；多接入点下拒绝（不猜测命令语义）。
 

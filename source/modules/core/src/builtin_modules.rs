@@ -23,7 +23,7 @@
 //! ## 迁移方向（全模块化 S3 的剩余工作）
 //!
 //! 本文件里的条目大多是**门控壳**：`mount` 只做 `reapply_module_gating`，
-//! 因为真实实现已经在对应模块 crate 里（`echo-module-tools` / `-skills` /
+//! 因为真实实现已经在对应模块 crate 里（`agent-module-tools` / `-skills` /
 //! `-subagent` / `-workspace` / `-federation` / `-management`）。壳之所以还在
 //! 这里，是因为**构造参数是宿主的东西**（哪个人格、哪个端口、哪个事件出口）。
 //! 要彻底消除它们，需要「模块自己声明构造参数」的能力（框架的 `factory`
@@ -135,17 +135,17 @@ pub(crate) fn catalog_with(
     // `push_builtin_identity` 声明——它们的 id 常量仍在各自 crate 里。
     //
     // **`echo-sanitize` 不在这一列**（原第 9 个，2026-11 二次收敛）：它的
-    // 唯一生产消费者就是 `echo-module-sanitize` 的 `build()`，按
+    // 唯一生产消费者就是 `agent-module-sanitize` 的 `build()`，按
     // `architecture.md` 的判据（消费者 = 1 → 合并）不该独立成 crate；
     // 而脱敏本身也不是「禁用后起不来」的地基，占着禁不掉的 kernel 位等于
-    // 给运维一个假动作。实现与身份现同在 `echo-module-sanitize`
+    // 给运维一个假动作。实现与身份现同在 `agent-module-sanitize`
     // （`kind = "security"`，唯一关闭路径是 `core.toml`）。
     push_builtin_identity(&mut catalog, version, echo_defs::MODULE_ID)?;
     push_builtin_identity(&mut catalog, version, echo_config::MODULE_ID)?;
     push_builtin_identity(
         &mut catalog,
         version,
-        echo_module_management::PROTOCOL_MODULE_ID,
+        agent_module_management::PROTOCOL_MODULE_ID,
     )?;
     for module in echo_session::module::modules(version) {
         push_module(&mut catalog, module)?;
@@ -156,66 +156,66 @@ pub(crate) fn catalog_with(
     // 第一个挂：它 provide 的 `echo-agent.session.factory` 是"造一个 trunk"
     // 的唯一入口，排在其它模块之前可以让后续模块在 mount 期就能解析到。
     // 它自己不依赖任何服务（工厂是纯构造），所以位置只影响可读性。
-    push_module(&mut catalog, echo_module_session::module(version))?;
+    push_module(&mut catalog, agent_module_session::module(version))?;
 
     // ── 内置工具集（工具清单所有权在模块里）──
     push_module(
         &mut catalog,
-        echo_module_loop::tool::builtin::builtin_module::module(version),
+        agent_module_loop::tool::builtin::builtin_module::module(version),
     )?;
 
     // ── Shell 会话（`bash-start` / `bash-exec` / `bash-stop` + 命令域）──
     //
-    // 2026-11 从工具集拆出：它有自己的机制依赖（`echo-module-shell` 的进程组
+    // 2026-11 从工具集拆出：它有自己的机制依赖（`agent-module-shell` 的进程组
     // 生命周期）、自己的面板页面、独立的启停需求。顺序紧跟工具集——不是因为
     // 依赖（它不依赖 tools.builtin），而是让"工具类模块"在面板里相邻。
-    push_module(&mut catalog, echo_module_shell::module(version))?;
+    push_module(&mut catalog, agent_module_shell::module(version))?;
 
     // ── 技能目录（整表 + 命令域）──
-    push_module(&mut catalog, echo_module_loop::skill::module(version))?;
+    push_module(&mut catalog, agent_module_loop::skill::module(version))?;
 
     // ── LLM provider 与循环驱动（先 provider，再 loop）──
-    push_module(&mut catalog, echo_module_provider_llm::module(version))?;
+    push_module(&mut catalog, agent_module_provider_llm::module(version))?;
 
     // ── 循环模式（二选一，纯策略）──
     //
-    // 驱动本体只有一个（echo-module-loop TurnRunner，2026-10 单轨化），两个模式模块
+    // 驱动本体只有一个（agent-module-loop TurnRunner，2026-10 单轨化），两个模式模块
     // 只表达策略（per-persona 白名单推导的 `LoopMode`）；mount/unmount 不切换
     // 驱动、不注册任何运行期资源。
     //
     // 协议化：模块族声明 `Service{key:"loop"}` 贡献；runner 实例由模块在 mount
     // 里构造并 provide，服务键与贡献声明同源。
-    for module in echo_module_loop::modules(version) {
+    for module in agent_module_loop::modules(version) {
         push_module(&mut catalog, module)?;
     }
 
     // ── 工作区会话（命令域 + 提示词块）──
-    push_module(&mut catalog, echo_module_workspace::module(version))?;
+    push_module(&mut catalog, agent_module_workspace::module(version))?;
 
     // ── ProDoc 文档群（只读命令域）──
     //
     // 进程级（kind = "tool" → persona 门控集合，与 workspace 同级）：文档根
     // 由配置给出，不随人格变化；但命令里带 team_id，面板按人格过滤事件。
-    push_module(&mut catalog, echo_module_prodoc::module(version))?;
+    push_module(&mut catalog, agent_module_prodoc::module(version))?;
 
     // ── 联邦（命令域 + 远程工具路由）──
-    push_module(&mut catalog, echo_module_federation::module(version))?;
+    push_module(&mut catalog, agent_module_federation::module(version))?;
 
     // ── subagent 委派（纯身份：工具与 hook 在 echo-agent 侧实现）──
     push_builtin_identity(
         &mut catalog,
         version,
-        echo_module_loop::modules::SUBAGENT_MODULE_ID,
+        agent_module_loop::modules::SUBAGENT_MODULE_ID,
     )?;
 
     // ── 显示层（时间线投影 + 会话视图命令域）──
     //
     // 2026-11 S8 自 management 外置：连接面与显示面分轴。会话视图宿主接缝
     // 的线键不变（`echo-agent.host.session_view`），只是注册方换到了这里。
-    push_module(&mut catalog, echo_module_transcript::module(version))?;
+    push_module(&mut catalog, agent_module_transcript::module(version))?;
 
     // ── 管理面（Panel 通道 + 会话视图命令域）──
-    push_module(&mut catalog, echo_module_management::module(version))?;
+    push_module(&mut catalog, agent_module_management::module(version))?;
 
     // ── 脱敏（安全不变量；`kind = "security"` → 进程级，人格关不掉）──
     //
@@ -223,12 +223,12 @@ pub(crate) fn catalog_with(
     // 装饰器，必须随 `llm` 服务一起进 `Ctx`）——见该 crate 的模块文档。
     // 进目录的意义是：可观测（Panel 清单）、可配置（`modules.toml` 的
     // builtin 行）、进文档门禁、换实现只需换模块。
-    for module in echo_module_sanitize::modules(version) {
+    for module in agent_module_sanitize::modules(version) {
         push_module(&mut catalog, module)?;
     }
 
     // ── 自更新（updater 单元 + 状态文件）──
-    push_module(&mut catalog, echo_module_self_update::module(version))?;
+    push_module(&mut catalog, agent_module_self_update::module(version))?;
 
     // 外部仓的进程内模块和本仓目录走同一套身份、配置与冲突检查。
     for module in additional {
@@ -322,7 +322,7 @@ fn push_builtin_identity(
     id: &str,
 ) -> anyhow::Result<()> {
     let (name, kind, route, description) = match id {
-        echo_module_loop::modules::SUBAGENT_MODULE_ID => (
+        agent_module_loop::modules::SUBAGENT_MODULE_ID => (
             "Subagent 委派",
             "tool",
             "subagent",
@@ -360,7 +360,7 @@ fn reject_reserved_commands(catalog: &[Arc<dyn Module>]) -> anyhow::Result<()> {
     for module in catalog {
         let id = module.manifest().id.clone();
         for command in module.handled_commands() {
-            if echo_module_loop::modules::command_is_host_reserved(&command) {
+            if agent_module_loop::modules::command_is_host_reserved(&command) {
                 return Err(anyhow::anyhow!(
                     "{id} declares host-reserved command {command}: the dispatcher will never \
                      route it to the module (remove the declaration or the reservation)"
@@ -416,13 +416,13 @@ mod catalog_shape_tests {
         let mut unclassified = Vec::new();
         for module in &catalog {
             let manifest = module.manifest();
-            if !echo_module_loop::modules::kind_is_classified(&manifest.kind) {
+            if !agent_module_loop::modules::kind_is_classified(&manifest.kind) {
                 unclassified.push(format!("{} (kind={})", manifest.id, manifest.kind));
             }
         }
         assert!(
             unclassified.is_empty(),
-            "以下模块的 kind 未在 `echo_module_loop::modules::KIND_SCOPE` 登记，\
+            "以下模块的 kind 未在 `agent_module_loop::modules::KIND_SCOPE` 登记，\
              新增 kind 必须显式声明作用域（Persona = 可被 persona 白名单关掉；\
              Process = 进程级）：\n{}",
             unclassified.join("\n")
@@ -443,7 +443,7 @@ mod catalog_shape_tests {
                 (manifest.id.clone(), manifest.kind.clone())
             })
             .collect();
-        let gated = echo_module_loop::modules::persona_scoped_ids(&registered);
+        let gated = agent_module_loop::modules::persona_scoped_ids(&registered);
 
         // 改造前 `GATED_MODULE_IDS: [&str; 5]` 的全部成员。
         for id in [
@@ -493,7 +493,7 @@ mod catalog_shape_tests {
     /// 运维写 `enabled = false` 就会被静默忽略，而系统半死不活地起来。
     #[test]
     fn kernel_modules_cannot_be_disabled_but_capabilities_can() {
-        use echo_module_loop::modules::{disabled_kernel_modules, MountStep};
+        use agent_module_loop::modules::{disabled_kernel_modules, MountStep};
 
         let catalog = catalog("0.0.0-test").expect("目录构造");
         let ids: Vec<String> = catalog
@@ -505,7 +505,7 @@ mod catalog_shape_tests {
         for id in [
             echo_defs::MODULE_ID,
             echo_config::MODULE_ID,
-            echo_module_management::PROTOCOL_MODULE_ID,
+            agent_module_management::PROTOCOL_MODULE_ID,
             echo_session::module::MODULE_ID,
         ] {
             assert!(ids.iter().any(|c| c == id), "kernel {id} 不在 catalog 里");
@@ -513,14 +513,14 @@ mod catalog_shape_tests {
 
         // ① 能力模块可关：不报违规。
         let plan = vec![MountStep::new(
-            echo_module_loop::modules::SHELL_MODULE_ID,
+            agent_module_loop::modules::SHELL_MODULE_ID,
             false,
         )];
         assert_eq!(disabled_kernel_modules(&ids, &plan), None);
 
         // ② kernel 模块不可关：必须被抓到并点名。
         let plan = vec![
-            MountStep::new(echo_module_loop::modules::SHELL_MODULE_ID, false),
+            MountStep::new(agent_module_loop::modules::SHELL_MODULE_ID, false),
             MountStep::new(echo_session::module::MODULE_ID, false),
         ];
         assert_eq!(
@@ -541,11 +541,11 @@ mod catalog_shape_tests {
             .iter()
             // catalog 同时装着外部仓的可选进程内模块；它们故意不属于
             // Core 的默认 BUILTIN_MODULE_IDS，不能把“可选”误报成漏登记。
-            .filter(|module| module.manifest().id != echo_module_workspace::MODULE_ID)
+            .filter(|module| module.manifest().id != agent_module_workspace::MODULE_ID)
             .map(|module| module.manifest().id.clone())
             .collect();
         let declared: std::collections::BTreeSet<String> =
-            echo_module_loop::modules::BUILTIN_MODULE_IDS
+            agent_module_loop::modules::BUILTIN_MODULE_IDS
                 .iter()
                 .map(|id| (*id).to_string())
                 .collect();
@@ -554,7 +554,7 @@ mod catalog_shape_tests {
         let missing_from_catalog: Vec<&String> = declared.difference(&from_catalog).collect();
         assert!(
             missing_from_list.is_empty() && missing_from_catalog.is_empty(),
-            "`echo_module_loop::modules::BUILTIN_MODULE_IDS` 与 catalog 漂移：\n\
+            "`agent_module_loop::modules::BUILTIN_MODULE_IDS` 与 catalog 漂移：\n\
              catalog 有、清单缺：{missing_from_list:?}\n\
              清单有、catalog 缺：{missing_from_catalog:?}\n\
              → 补 `source/modules/echo-agent/src/modules.rs` 的常量，并同步 \
@@ -564,7 +564,7 @@ mod catalog_shape_tests {
 
     /// `llm` 键的 ownership 不得再漂移（2026-11 S10 的更正）。
     ///
-    /// 这条守着一段真实的历史误解：`echo-module-provider-llm` 里曾有个叫
+    /// 这条守着一段真实的历史误解：`agent-module-provider-llm` 里曾有个叫
     /// `SERVICE_KEY` 的常量，值是 `"llm"`，文档写"本模块贡献的服务键"——而
     /// 它**并不提供**这个键（提供的是命令域接缝 `PROVIDER_HOST`）。真正的
     /// 注册方是组合根，消费方是 `loop` 模块。于是"谁拥有 `llm`"读代码会读错。
@@ -589,7 +589,7 @@ mod catalog_shape_tests {
 
         // ③ 模块侧的**别名**必须指向定义层（不是又写一遍字面量）。
         assert_eq!(
-            echo_module_provider_llm::PROVIDER_KEY,
+            agent_module_provider_llm::PROVIDER_KEY,
             key,
             "provider 模块的别名必须指向定义层常量，不能自己再写一遍 \"llm\""
         );
@@ -738,14 +738,14 @@ mod tests {
         let catalog = catalog("0.0.0-test").expect("目录构造");
         let ids: Vec<&str> = catalog.iter().map(|p| p.manifest().id.as_str()).collect();
         assert!(
-            ids.contains(&echo_module_session::MODULE_ID),
+            ids.contains(&agent_module_session::MODULE_ID),
             "会话模块未登记：{ids:?}"
         );
     }
 
     /// 内嵌 Panel 模块必须出现在**带外部模块**的目录里（2026-11）。
     ///
-    /// 它来自 Panel 仓（`echo-module-panel`），由组合根经
+    /// 它来自 Panel 仓（`agent-module-panel`），由组合根经
     /// [`crate::external_builtin_modules`] 塞进目录。漏登记的表现是：`modules.toml`
     /// 里写 `id = "echo-agent.panel.web"` 却报 "unknown builtin module"，
     /// 而用户看到的是"我明明启用了它，端口没起来"。
@@ -759,7 +759,7 @@ mod tests {
         .expect("目录构造");
         let ids: Vec<&str> = catalog.iter().map(|p| p.manifest().id.as_str()).collect();
         assert!(
-            ids.contains(&echo_module_panel::MODULE_ID),
+            ids.contains(&agent_module_panel::MODULE_ID),
             "内嵌 Panel 模块未登记：{ids:?}"
         );
     }
