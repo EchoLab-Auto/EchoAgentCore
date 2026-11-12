@@ -581,6 +581,16 @@ impl ModuleHost {
             if !self.registry.is_enabled(&id) {
                 continue;
             }
+            // 配置**必须**跟着下发给子作用域（2026-11 修）：
+            // `ModuleScope::root(child)` 建的是一个全新注册表，只继承 Ctx 里的
+            // 服务，不继承进程级注册表登记过的 `[module.config]`。漏了这一步，
+            // 模块在人格作用域里 `mount` 时拿到的是 `Null`，于是各自的配置
+            // （workspace 的 `state_dir`、prodoc 的 `roots`）静默失效——表现是
+            // "modules.toml 改了没反应"，且只有人格内执行的命令受影响，进程级
+            // 那条路径照常，极难定位。
+            scope
+                .registry()
+                .set_config(&id, self.registry.config_for(&id));
             match scope.mount(module) {
                 Ok(()) => mounted.push(id),
                 Err(error) => {
@@ -1104,6 +1114,37 @@ mod tests {
         }
     }
 
+    /// 只记录 `mount` 时看到的 `MountContext::config` 的探针。
+    fn config_probe(
+        id: &str,
+        seen: Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
+    ) -> Arc<dyn echo_module::Module> {
+        struct ConfigProbe {
+            manifest: echo_module::ModuleManifest,
+            seen: Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
+        }
+        impl echo_module::Module for ConfigProbe {
+            fn manifest(&self) -> &echo_module::ModuleManifest {
+                &self.manifest
+            }
+            fn mount(&self, ctx: &echo_module::MountContext) -> echo_module::ModuleMountResult {
+                self.seen.lock().push(ctx.config().clone());
+                Ok(Vec::new())
+            }
+        }
+        Arc::new(ConfigProbe {
+            manifest: echo_module::ModuleManifest::builtin(
+                id,
+                "配置探针",
+                "0.0.0-test",
+                "tool",
+                "cfg-probe",
+                "记录 mount 时拿到的配置",
+            ),
+            seen,
+        })
+    }
+
     fn probe(
         id: &str,
         kind: &str,
@@ -1302,6 +1343,38 @@ mod tests {
         // 同一个 agent 再来一次 = 复用，不重建。
         let again = host.persona_scope(&second).expect("scope 3");
         assert!(Arc::ptr_eq(&scope_second.scope, &again.scope));
+    }
+
+    /// 人格作用域的模块**必须**看到 `[module.config]`（2026-11 修）。
+    ///
+    /// 子作用域的注册表是全新的（只继承 Ctx 服务），进程级登记的配置不会自动
+    /// 跟过去。漏了这一步，模块在人格内 mount 时拿到 `Null`，配置静默失效：
+    /// 表现是"modules.toml 改了没反应"，而且只有人格内执行的命令受影响
+    /// （进程级那条路径照常），排查时很容易误判成模块自己的 bug。
+    #[tokio::test]
+    async fn persona_scope_inherits_module_config() {
+        let host = ModuleHost::new();
+        host.attach_root_ctx(Arc::new(echo_context::Ctx::default()));
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::<serde_json::Value>::new()));
+        let captured = seen.clone();
+        host.set_persona_catalog(Arc::new(move || {
+            let captured = captured.clone();
+            vec![config_probe("test.tool.cfg", captured)]
+        }));
+        host.set_configs([(
+            "test.tool.cfg",
+            serde_json::json!({"roots": ["/srv/docs"]}),
+        )]);
+
+        let agent = scope_agent("a");
+        host.persona_scope(&agent).expect("persona scope");
+
+        let configs = seen.lock().clone();
+        assert_eq!(configs.len(), 1, "应恰好挂载一次: {configs:?}");
+        assert_eq!(
+            configs[0]["roots"][0], "/srv/docs",
+            "人格作用域的模块没拿到配置: {configs:?}"
+        );
     }
 
     /// 命令按作用域分发：人格作用域认领的命令在那一层执行。
