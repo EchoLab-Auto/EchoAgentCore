@@ -25,12 +25,16 @@ Panel 是独立进程，没有文件系统权限模型，也不该为了"看个�
 
 ## 身份
 
+2026-11 迁出 Core 为独立仓库（与 `agent-module-workspace` / `agent-module-subagent`
+同形）：命令域、扫描、沙箱、检查与 Panel 扩展全在那一边，Core 只留通用接线
+（依赖 + `push_module` + `expected_ids`）。迁出后 Core 不再编译这块业务代码。
+
 | 项 | 值 |
 |---|---|
 | 模块 id | `echo-agent.prodoc` |
 | kind | `tool`（persona 白名单参与） |
 | 名称 / 路由 | 「ProDoc 文档群」/ `prodoc` |
-| 实现位置 | `source/modules/agent-module-prodoc`（Core 仓内，path 依赖） |
+| 实现位置 | **独立仓** `EchoLab-Auto/agent-module-prodoc`（Core 以 git 依赖引入） |
 
 ## 上限：与 CLI 唯一的刻意差异（扫描侧）
 

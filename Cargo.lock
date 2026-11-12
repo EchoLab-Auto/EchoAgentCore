@@ -148,8 +148,8 @@ dependencies = [
 [[package]]
 name = "agent-module-prodoc"
 version = "0.1.0"
+source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#755f3daa5c0b4ac6006147ffbabbf41c4a45c972"
 dependencies = [
- "echo-context",
  "echo-module",
  "serde",
  "serde_json",

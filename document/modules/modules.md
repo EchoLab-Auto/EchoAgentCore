@@ -85,7 +85,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 | [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话** |
 | [`echo-agent.shell`](./shell.md) | Tool | 进程内 | 后台 bash 会话 + Shell 面板命令域 |
 | [`echo-agent.workspace`](./workspace.md) | Tool | 进程内（**独立仓**） | 工作区会话（多目录管理 + git 状态 + 只读文件浏览）。2026-11 迁出 Core 至 `EchoLab-Auto/agent-module-workspace`：store 与命令域归模块，宿主只留只读镜像 + 工具代理 |
-| [`echo-agent.prodoc`](./prodoc.md) | Tool | 进程内 | ProDoc 文档群：把一棵 Markdown 目录读成文档图（只读 + 上限），渲染在浏览器（`DocGraphViewer`） |
+| [`echo-agent.prodoc`](./prodoc.md) | Tool | 进程内（**独立仓**） | ProDoc 文档群：把 Markdown 目录读成文档图 + 单文件读写（带 `base` 冲突检测）+ 文档图检查；渲染在浏览器（`DocGraphViewer`）。实现位于 `EchoLab-Auto/agent-module-prodoc` |
 | [`echo-agent.subagent`](./subagent.md) | Tool | 进程内（**独立仓**） | 委派隔离上下文的子任务 + 完成后回灌；实现位于 `EchoLab-Auto/agent-module-subagent` |
 | [`echo-agent.skills.dir`](./skills.md) | Skill | 进程内 | SKILL.md 技能目录（热重载） |
 | [`echo-agent.provider.llm`](./provider-llm.md) | Provider | 进程内 | provider 工厂 + 计量/脱敏装饰 + API 命令域 |

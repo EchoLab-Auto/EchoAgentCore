@@ -38,7 +38,6 @@ modules/echo-session                        echo-defs echo-module
 modules/echo-protocol                    agent-module-management
 modules/agent-module-management              echo-module echo-context echo-defs agent-module-federation echo-session
 modules/echo-config
-modules/agent-module-prodoc               echo-module echo-context
 modules/agent-module-tools echo-config echo-context echo-defs echo-module agent-module-management echo-test-utils
 modules/agent-module-shell                   echo-context echo-defs echo-module agent-module-management agent-module-tools
 test/utils                                echo-defs
