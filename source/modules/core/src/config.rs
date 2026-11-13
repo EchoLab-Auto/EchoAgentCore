@@ -178,6 +178,19 @@ pub struct PlatformSection {
     /// 见 `load()` 的归一化告警）。
     pub mode: String,
     /// 模块进程启动配置（`[instances.qq.module]`）。
+    ///
+    /// **`alias = "plugin"`** 是给旧配置的救生圈：`36c22f9`（2026-11-06
+    /// 统一模块体系命名）把这一节从 `[instances.<平台>.plugin]` 改名为
+    /// `module`，但**没有留别名**。而本结构有 `#[serde(flatten)] shared`，
+    /// 于是旧配置里的 `plugin` 表被**静默吞进共享层**——`command` 退回空值，
+    /// 组合根按平台名派生出 `echo-adapter-qq`，PATH 里没有它，表现为
+    /// `failed to spawn module process "echo-adapter-qq": No such file or
+    /// directory`，而配置里明明写着绝对路径。这种失败最难查：配置文件看着
+    /// 完全正确，日志说的却是另一个路径。
+    ///
+    /// 别名保留下来是有意的：改名是**我们**做的，不该让部署方为此排查一遍。
+    /// 命中别名时 `load()` 会打一条 warn 提示改成 `module`（见那里的注释）。
+    #[serde(alias = "plugin")]
     pub module: ModuleLaunchSection,
     /// 实例表：实例 id → 覆盖项。
     pub instances: std::collections::BTreeMap<String, PlatformInstanceSection>,
@@ -416,11 +429,23 @@ impl CoreConfig {
         let mut config: CoreConfig = toml::from_str(&raw)
             .with_context(|| format!("invalid config in {}", path.display()))?;
 
+        // 原始表留着做「键是否存在」判定（serde 填充后分不清缺省与显式同值，
+        // 别名生效后也看不出配的是新键还是旧键）。raw 已成功解析，这里不会失败。
+        let raw_table: Option<toml::Table> = raw.parse::<toml::Table>().ok();
+        // `[instances.<name>]` / 旧名 `[adapters.<name>]` 两种写法都认（顶层
+        // 结构有 `alias = "adapters"`，这里保持一致）。
+        let raw_platforms: toml::Table = raw_table
+            .as_ref()
+            .and_then(|t| t.get("instances").or_else(|| t.get("adapters")))
+            .and_then(toml::Value::as_table)
+            .cloned()
+            .unwrap_or_default();
+
         // 端口合并「缺省 vs 显式」判定：原始 TOML 里是否写有
         // [federation].listen 键（serde 填充后无法区分「缺省」与「显式
         // 同值」；两者语义不同——缺省=自动合并管理端口、显式=按值独立/
         // 合并）。raw 已成功解析为 CoreConfig，此处的二次解析不会失败。
-        if let Ok(table) = raw.parse::<toml::Table>() {
+        if let Some(table) = &raw_table {
             config.federation.listen_explicit = table
                 .get("federation")
                 .and_then(|section| section.get("listen"))
@@ -486,6 +511,20 @@ impl CoreConfig {
                         server.insert("access_token".into(), toml::Value::String(token.clone()));
                     }
                 }
+            }
+
+            // 旧键 `plugin` 已由 `#[serde(alias)]` 接住，但要在日志里点名，
+            // 否则它会永远留在配置里（别名掩盖了"该改名"这件事）。
+            let used_legacy_plugin = raw_platforms
+                .get(&name)
+                .and_then(toml::Value::as_table)
+                .map(|t| t.contains_key("plugin"))
+                .unwrap_or(false);
+            if used_legacy_plugin {
+                eprintln!(
+                    "warning: [instances.{name}.plugin] 是旧键（`36c22f9` 起改名 `module`）；\
+                     本次仍按它启动，请把段落改成 [instances.{name}.module]"
+                );
             }
 
             let mut host = InstanceHostConfig::from_section(&name, &section, shared);
@@ -594,6 +633,55 @@ command = "echo-adapter-telegram"
         assert_eq!(
             config.instances["qq"].shared["command_prefix"].as_str(),
             Some("!")
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 旧键 `[instances.<平台>.plugin]` 仍被接受（`36c22f9` 起改名 `module`）。
+    ///
+    /// 回归背景（真实现场）：改名没留别名，而本结构有 `#[serde(flatten)] shared`，
+    /// 于是 `plugin` 表被**静默吞进共享层**，`command` 退回空值 → 组合根按
+    /// 平台名派生 `echo-adapter-qq` → PATH 里没有 → spawn 失败。配置文件看着
+    /// 完全正确（绝对路径就写在那儿），日志报的却是另一个路径名。
+    ///
+    /// 这条测试锁住两件事：别名接得住，且**接住之后不再进共享层**（否则模块
+    /// 会在 `Hello.config.config` 里收到一份它不认识的 `plugin` 表）。
+    #[test]
+    fn legacy_plugin_launch_section_still_parses() {
+        let path = std::env::temp_dir().join("echo-agent-legacy-plugin-launch-test.toml");
+        std::fs::write(
+            &path,
+            r#"
+[agent]
+provider = "openai"
+model = "gpt-4o"
+
+[adapters.qq]
+enabled = true
+
+[adapters.qq.plugin]
+command = "/opt/echo/plugins/echo-adapter-qq/echo-adapter-qq"
+args = ["--verbose"]
+
+[adapters.qq.instances.qq]
+persona = "alix"
+"#,
+        )
+        .unwrap();
+        let config = CoreConfig::load(&path).unwrap();
+
+        // ① 别名接住在 module 上：command 不是空（空 = 派生出裸名 → spawn 失败）
+        assert_eq!(
+            config.instances["qq"].launch.command,
+            "/opt/echo/plugins/echo-adapter-qq/echo-adapter-qq",
+            "旧键 plugin 的 command 必须被接住，否则会派生裸名导致 spawn 失败"
+        );
+        assert_eq!(config.instances["qq"].launch.args, vec!["--verbose"]);
+
+        // ② 别名生效后，`plugin` 不该再落在共享层里（模块会收到不明字段）
+        assert!(
+            !config.instances["qq"].shared.contains_key("plugin"),
+            "别名命中后 plugin 表仍留在 shared 里：模块会收到它不该见的键"
         );
         std::fs::remove_file(&path).ok();
     }
