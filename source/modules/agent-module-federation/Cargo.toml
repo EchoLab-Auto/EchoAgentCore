@@ -23,5 +23,12 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+# TypeScript 绑定生成（可选）：联邦状态类型出现在管理面协议里（Panel 要读），
+# 所以生成能力也要到这里。feature 关闭时零影响。
+ts-rs = { version = "12", optional = true }
+
+[features]
+ts-bindings = ["dep:ts-rs"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

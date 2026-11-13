@@ -76,6 +76,21 @@ enum SubCommand {
         #[command(subcommand)]
         action: Option<port_cmd::PortSubCommand>,
     },
+    /// 导出管理面协议的 TypeScript 绑定（Panel 仓的 `protocol.generated.ts`）。
+    ///
+    /// 只在 `--features ts-bindings` 构建里存在：默认构建不含 ts-rs。
+    /// 输出是**单文件、纯类型声明**，没有运行时值——Panel 直接 `export *`。
+    ///
+    /// 为什么由 Core 提供而不是 Panel 自己写脚本解析 Rust：线格式的真值是
+    /// `agent-module-management/src/protocol/` 里的 serde 类型，只有 Rust
+    /// 编译器知道它们最终是什么形状（tag/content/rename/untagged/default）。
+    #[cfg(feature = "ts-bindings")]
+    DumpProtocolTs {
+        /// 输出路径（缺省 stdout）。写文件时用「临时文件 + 原子 rename」，
+        /// 避免 Panel 的 `tsc` 读到半截内容。
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// 打印 modules.toml 的**分层合成结果**（profile → bundles → patches →
     /// 行内条目；每行上方注释标出来自哪一层）。
     ///
@@ -185,6 +200,8 @@ async fn main() -> Result<()> {
             SubCommand::Token { rotate } => return token_command(&args.config_path(), rotate),
             SubCommand::Port { action } => return port_cmd::run(&args.config_path(), action),
             SubCommand::DumpConfig => return dump_config_command(&args.config_path()),
+            #[cfg(feature = "ts-bindings")]
+            SubCommand::DumpProtocolTs { out } => return dump_protocol_ts_command(out.as_deref()),
             SubCommand::ModuleUpgrade {
                 id,
                 binary,
@@ -209,6 +226,36 @@ async fn main() -> Result<()> {
 ///
 /// 输出到 stdout（可直接 `>` 成文件、或 `diff` 两份合成结果）；诊断信息
 /// 走 stderr，保证管道里拿到的只有 TOML 正文。
+/// `dump-protocol-ts` 子命令：把管理面协议的 TypeScript 绑定写到指定路径。
+///
+/// 与 `dump-config` 同一族：纯函数式、不启动任何东西（不拉模块、不监听端口、
+/// 不碰配置）。
+#[cfg(feature = "ts-bindings")]
+fn dump_protocol_ts_command(out: Option<&std::path::Path>) -> Result<()> {
+    let body = agent_module_management::protocol::ts_bindings::declarations();
+    match out {
+        None => {
+            print!("{body}");
+            Ok(())
+        }
+        Some(path) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("创建目录失败：{}", parent.display()))?;
+            }
+            // 原子替换：Panel 的 `tsc` / `vitest` 可能并发读这个文件，
+            // 直接覆写会让它们读到半截内容并报出莫名其妙的语法错误。
+            let tmp = path.with_extension("ts.tmp");
+            std::fs::write(&tmp, body)
+                .with_context(|| format!("写入失败：{}", tmp.display()))?;
+            std::fs::rename(&tmp, path)
+                .with_context(|| format!("替换失败：{}", path.display()))?;
+            eprintln!("wrote {}", path.display());
+            Ok(())
+        }
+    }
+}
+
 fn dump_config_command(config_path: &std::path::Path) -> Result<()> {
     let modules_path = config_path.with_file_name("modules.toml");
     match modules_runtime::dump_config(config_path) {

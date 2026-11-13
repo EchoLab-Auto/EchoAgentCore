@@ -135,6 +135,7 @@ impl FanoutHandle {
 /// 序号由 Core 的 WS 扇出（`management::EventBroker`）在**持有订阅者表的
 /// 锁时**分配并投递，因此所有订阅者看到的顺序与序号完全一致。
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct SequencedEvent {
     /// 单调递增序号（从 1 开始；一次进程生命周期内唯一）。
     pub seq: u64,
@@ -160,6 +161,7 @@ pub struct SequencedEvent {
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub enum WsMessage {
     Command(BackendCommand),
     Event(BackendEvent),

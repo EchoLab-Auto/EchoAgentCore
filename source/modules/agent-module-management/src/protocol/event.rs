@@ -16,6 +16,7 @@ pub type ToolStateEventBuilder =
 
 /// 技能来源信息（外部 Git 仓库安装）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct SkillSourceInfo {
     pub url: String,
     pub rev: String,
@@ -27,6 +28,7 @@ pub struct SkillSourceInfo {
 
 /// ModuleInstance status reported to the TUI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct InstanceStatus {
     pub name: String,
     pub display_name: String,
@@ -67,6 +69,7 @@ pub struct InstanceStatus {
 /// （2026-10 去适配器化）。字段保留是为了不改线协议：将来若有「不适合进
 /// 描述符」的只读展示值，仍可走这里。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct InstanceMetadataEntry {
     /// 稳定键（程序消费）。
     pub key: String,
@@ -78,6 +81,7 @@ pub struct InstanceMetadataEntry {
 
 /// 后台 shell 会话摘要（前端可视化终端）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct ShellSessionInfo {
     pub session_id: String,
     /// 归属 team（persona）。面板按当前 agent 过滤，不串显其他 agent 的 shell。
@@ -100,6 +104,7 @@ pub struct ShellSessionInfo {
 
 /// Snapshot of a conversation session, for the TUI session list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct SessionInfo {
     pub id: String,
     /// 来源节点身份（federation NodeId，`node-<ulid>`）。多节点聚合客户端据此
@@ -129,6 +134,7 @@ pub struct SessionInfo {
 
 /// One message inside the trunk context snapshot (`/context`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct ContextMessageInfo {
     /// "user" | "assistant" | "tool" | "system".
     pub role: String,
@@ -147,6 +153,7 @@ pub struct ContextMessageInfo {
 /// so the panel can visualize where tokens are spent; conversation history is
 /// aggregated per role.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct ContextBlockInfo {
     /// Stable identifier, e.g. "base", "skills", "skill:alix-persona",
     /// "triggered:web-search", "boundary:qq_hook",
@@ -167,6 +174,7 @@ pub struct ContextBlockInfo {
 
 /// Source provenance of a timeline user message (mirrors `MessageReceived`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct TimelineSource {
     pub instance_name: String,
     pub platform: String,
@@ -181,6 +189,7 @@ pub struct TimelineSource {
 
 /// Tool-call details of a timeline tool message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct TimelineTool {
     pub name: String,
     pub input: String,
@@ -205,6 +214,7 @@ pub struct TimelineTool {
 /// (up to `TRUNK_TIMELINE_MAX` entries) that survives TUI restarts; it is
 /// independent of the LLM-facing trunk context, which is token-bounded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct TimelineMessage {
     /// "user" | "backend" | "tool" | "system".
     pub kind: String,
@@ -336,6 +346,7 @@ impl TimelineMessage {
 
 /// Events flowing from the backend to the TUI.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub enum BackendEvent {
     // ---- ModuleInstance lifecycle ----
     /// An instance's connection state changed.
@@ -984,6 +995,7 @@ pub enum BackendEvent {
 
 /// 目录选择器的浏览根（可进入浏览的位置）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct BrowseRoot {
     /// 展示名（Panel 主标签），如「家目录」「<工作区名>」。
     pub label: String,
@@ -993,6 +1005,7 @@ pub struct BrowseRoot {
 
 /// One discovered skill with its full instructions (for panel display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
@@ -1025,6 +1038,7 @@ fn default_true() -> bool {
 
 /// One registered tool definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct ToolInfo {
     pub name: String,
     pub description: String,
@@ -1043,6 +1057,7 @@ pub struct ToolInfo {
 
 /// One team member (frontend display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct TeamInfo {
     pub id: String,
     /// 来源节点身份（federation NodeId）。多节点聚合时人格身份 = (node_id, id)。
@@ -1104,6 +1119,7 @@ pub struct TeamInfo {
 
 /// One mounted module (frontend display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct ModuleInfo {
     pub id: String,
     pub name: String,
@@ -1231,6 +1247,7 @@ pub struct ModuleInfo {
 ///   至多一条；旧数据的首条对话——事件日志 append-only，id 不可改写）；
 /// - 其余对话：`local:workspace:<ws>/<conv>:local_user`。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct WorkspaceConversationInfo {
     /// 稳定 id（slug；工作区内唯一，不含 `/`）。
     #[serde(default)]
@@ -1247,6 +1264,7 @@ pub struct WorkspaceConversationInfo {
 
 /// 一个工作区会话（workspace 模块）：名称 + 多个工作区目录。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct WorkspaceSessionInfo {
     /// 稳定 id（空 = 由 Core 依名称生成）。
     #[serde(default)]
@@ -1277,6 +1295,7 @@ pub struct WorkspaceSessionInfo {
 /// 的条目写表形式。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub enum WorkspaceDirectory {
     /// 本机目录（线格式：纯字符串）。
     Local(String),
@@ -1345,6 +1364,7 @@ impl std::fmt::Display for WorkspaceDirectory {
 }
 /// 一个工作区目录的 git 状态快照（只读采集）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct WorkspaceGitInfo {
     pub directory: String,
     /// 是否是 git 仓库（工作树内）。
@@ -1393,6 +1413,7 @@ pub struct WorkspaceGitInfo {
 
 /// 一条工作区变更（`git status --porcelain` v1 的两列状态 + 路径）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct WorkspaceChangedEntry {
     /// 仓库相对路径：porcelain 原样，重命名/复制形态是 `旧 -> 新`。
     pub path: String,
@@ -1406,6 +1427,7 @@ pub struct WorkspaceChangedEntry {
 
 /// 文件浏览器中的一个条目（文件或子目录）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct WorkspaceFileEntry {
     pub name: String,
     /// 绝对路径（目录条目可继续下钻）。
@@ -1418,6 +1440,7 @@ pub struct WorkspaceFileEntry {
 
 /// API profile summary (for TUI list display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct ApiProfileInfo {
     pub name: String,
     pub provider: String,
@@ -1433,6 +1456,7 @@ pub struct ApiProfileInfo {
 
 /// 单个 API profile 的指标序列（[`BackendEvent::ApiMetrics`] 元素）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct ApiMetricsEntry {
     /// 配置名（空 = 顶层默认配置）。
     pub name: String,
@@ -1449,6 +1473,7 @@ pub struct ApiMetricsEntry {
 
 /// 单条余额快照（金额单位 = `currency`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct ApiBalancePoint {
     /// 采样时间戳（Unix 毫秒）。
     pub ts_ms: i64,
@@ -1465,6 +1490,7 @@ pub struct ApiBalancePoint {
 
 /// 单条 token 用量（小时桶 × 模型）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct ApiUsagePoint {
     /// 小时桶起点（Unix 毫秒）。
     pub ts_ms: i64,

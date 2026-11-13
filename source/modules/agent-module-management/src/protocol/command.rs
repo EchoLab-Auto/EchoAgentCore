@@ -4,6 +4,7 @@ use echo_defs::mode::{ReasoningEffort, ThinkingMode};
 
 /// Commands from the frontend to the agent backend.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub enum BackendCommand {
     /// Send a message into a session (as if from the local user).
     /// `images` carries image URLs / data URIs for multimodal models.

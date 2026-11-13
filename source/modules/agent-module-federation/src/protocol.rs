@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct FederationPeerInfo {
     pub name: String,
     #[serde(default)]
@@ -40,6 +41,7 @@ pub struct FederationPeerInfo {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct FederatedNodeInfo {
     pub name: String,
     #[serde(default)]
@@ -57,6 +59,7 @@ pub struct FederatedNodeInfo {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub enum FederationLinkState {
     #[default]
     Offline,

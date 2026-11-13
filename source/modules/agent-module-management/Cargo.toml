@@ -21,3 +21,17 @@ tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 serde_json = { workspace = true }
+# TypeScript 绑定生成（可选）：只有 `dump-protocol-ts` 子命令需要它。
+# 默认关闭——生产构建不引入这个依赖，也不因为它的升级而受影响。
+ts-rs = { version = "12", features = ["serde-json-impl"], optional = true }
+
+[features]
+# 打开后 `protocol` 里的线格式类型获得 `TS` derive，`dump_protocol_ts()`
+# 才能把它们导出成 TypeScript。Panel 仓的 `protocol.generated.ts` 由它产出。
+# 传递到提供协议字段类型的两个 crate：它们各自的策略枚举/联邦状态类型
+# 也出现在线格式里，不一起打开就会缺少 TS derive。
+ts-bindings = [
+    "dep:ts-rs",
+    "echo-defs/ts-bindings",
+    "agent-module-federation/ts-bindings",
+]

@@ -526,6 +526,18 @@ if [[ "$UPDATE_SCOPE" != modules && -d "$BUILTIN_SKILLS_DIR" && -d "$SOURCE_DIR/
     unset _skill_src
 fi
 
+# fabric-arch 版本门禁（2026-11）：进程内模块（Panel / subagent / workspace /
+# prodoc）与 Core 必须锁同一个 `echo-module`——两份 `Module` trait 会让编译
+# 直接失败，而错误信息是「expected `Module`, found `Module`」，无法定位。
+# 检查放在安装二进制**之前**：不一致就不该把这次构建推上去。
+# 只告警不阻断：本机可能只检出部分仓（CI/容器里通常只有 Core），缺仓时脚本
+# 会跳过；真漂移时人已经在看日志了。
+if [[ -x "$SOURCE_DIR/scripts/check-fabric-arch-sync.sh" ]]; then
+    if ! "$SOURCE_DIR/scripts/check-fabric-arch-sync.sh"; then
+        echo "    WARNING: fabric-arch 版本漂移（见上），本次更新继续但请尽快对齐" >&2
+    fi
+fi
+
 if [[ "$UPDATE_SCOPE" != modules ]]; then
     temporary=$(mktemp "${BINARY}.new.XXXXXX")
     install -m 755 "$SOURCE_DIR/target/release/echo-agent-core" "$temporary"

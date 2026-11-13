@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Whether model thinking/reasoning is enabled for DeepSeek-compatible APIs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub enum ThinkingMode {
     #[default]
     Enabled,
@@ -23,6 +24,7 @@ impl ThinkingMode {
 /// DeepSeek reasoning effort level.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub enum ReasoningEffort {
     Low,
     High,

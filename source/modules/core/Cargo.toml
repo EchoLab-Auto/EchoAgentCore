@@ -53,3 +53,9 @@ flate2.workspace = true
 # 脱敏实现已归 `agent-module-sanitize`：组合根只在**测试**里直接构造
 # `RegistryRedactor`（其余路径一律走模块导出的 `build`）。
 [dev-dependencies]
+
+[features]
+# 导出管理面协议的 TypeScript 绑定（`dump-protocol-ts` 子命令）。
+# 默认关闭：生产二进制不引入 ts-rs，也不因为它的升级而需要重建。
+# Panel 仓的 `protocol.generated.ts` 由它产出（见 `scripts/sync-protocol.sh`）。
+ts-bindings = ["agent-module-management/ts-bindings"]

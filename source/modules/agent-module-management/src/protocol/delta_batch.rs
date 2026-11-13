@@ -31,6 +31,7 @@ use crate::event::BackendEvent;
 
 /// 一条待下发的合并事件。
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct Emit {
     pub event: BackendEvent,
     pub entry: Option<String>,

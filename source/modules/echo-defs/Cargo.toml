@@ -19,6 +19,12 @@ tracing.workspace = true
 
 
 toml = { workspace = true }
+# TypeScript 绑定生成（可选）：协议里出现的策略枚举（ThinkingMode /
+# ReasoningEffort）住在这里，所以生成能力也要到这里。feature 关闭时零影响。
+ts-rs = { version = "12", optional = true }
+
+[features]
+ts-bindings = ["dep:ts-rs"]
 
 [dev-dependencies]
 proptest = "1"
