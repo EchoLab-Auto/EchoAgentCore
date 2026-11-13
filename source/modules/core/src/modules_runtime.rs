@@ -393,18 +393,6 @@ impl ModuleRuntime {
         agent_module_loop::adapter::tools_of(&self.started)
     }
 
-    /// 全部已启动模块贡献的**技能**，`owner` = 模块 id。
-    ///
-    /// 与 [`Self::tools`] 同一来源（`ModuleHandle::contributions`），差别只在
-    /// 解码的目标类型：工具要包成 `Tool` trait 对象再注册，技能是纯数据，
-    /// 直接交给技能表按 owner 替换。
-    ///
-    /// 每次调用都是**实时**读句柄：模块热替换后 `Register` 会重新上报，被禁
-    /// / 启动失败的模块不在 `handles` 里，因此不需要额外失效逻辑。
-    pub fn skills(&self) -> Vec<(String, Vec<echo_defs::skill::Skill>)> {
-        agent_module_loop::adapter::skills_of(&self.started)
-    }
-
     /// 全部已启动模块的模块实例贡献的远程模块实例（P1，2026-10 实例模块化）。
     ///
     /// 每个 `(InstanceContribution, ModuleHandle)` 构造一个 `RemoteInstance`
