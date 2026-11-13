@@ -133,7 +133,7 @@ dependencies = [
 [[package]]
 name = "agent-module-panel"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#40f2e5fa1dc33dba724d4abb81317ea1eae480bb"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#c03ab7f0dc0c1e623ed1a428af61ea57ebb8a38f"
 dependencies = [
  "anyhow",
  "echo-context",
@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "agent-module-prodoc"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#282b5d300289a7f9f26f6543196d321d0cdb15a7"
+source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#9a1803a9e386c9e488abcec9ab2b32e7391f1dde"
 dependencies = [
  "echo-module",
  "serde",
@@ -319,7 +319,7 @@ dependencies = [
 [[package]]
 name = "agent-module-workspace"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#70fd8c31fdd8c563debc59b4e3f6a5dc1cd7a53d"
+source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#d1706d433b1040d49e8bbb7c55c91d57664f5629"
 dependencies = [
  "echo-context",
  "echo-module",
@@ -1108,8 +1108,8 @@ dependencies = [
 
 [[package]]
 name = "echo-context"
-version = "0.15.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
+version = "0.16.1"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.16.1#a6b5c90e9869278116f5e961a0a71019870a9f35"
 dependencies = [
  "dashmap",
  "thiserror 2.0.21",
@@ -1134,8 +1134,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module"
-version = "0.15.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
+version = "0.16.1"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.16.1#a6b5c90e9869278116f5e961a0a71019870a9f35"
 dependencies = [
  "echo-context",
  "serde",
@@ -1147,8 +1147,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module-api"
-version = "0.15.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
+version = "0.16.1"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.16.1#a6b5c90e9869278116f5e961a0a71019870a9f35"
 dependencies = [
  "serde",
  "serde_json",
@@ -1156,8 +1156,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module-host"
-version = "0.15.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
+version = "0.16.1"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.16.1#a6b5c90e9869278116f5e961a0a71019870a9f35"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1172,8 +1172,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module-loader"
-version = "0.15.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
+version = "0.16.1"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.16.1#a6b5c90e9869278116f5e961a0a71019870a9f35"
 dependencies = [
  "serde",
  "serde_json",
@@ -1215,7 +1215,7 @@ dependencies = [
 [[package]]
 name = "echo-web-server"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#40f2e5fa1dc33dba724d4abb81317ea1eae480bb"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#c03ab7f0dc0c1e623ed1a428af61ea57ebb8a38f"
 dependencies = [
  "anyhow",
  "axum",

@@ -19,6 +19,8 @@
 //! - [`builtin_mount_plan`]：`modules.toml` 里 `kind = "builtin"` 的行 →
 //!   内置模块的挂载计划（配置化组合 P4：集合 / 顺序 / 启用由配置说了算）。
 //! - [`config_origins`]：每个模块条目由**哪一层**配置声明（面板展示用）。
+//! - [`ensure_modules_base`]：缺失时生成 `modules-base.toml`（内置模块基线），
+//!   让"宿主带了什么、什么顺序"从隐式变成可读可改。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -427,6 +429,106 @@ pub fn dump_config(config_path: &Path) -> Result<Option<String>, echo_module_loa
     Ok(Some(text))
 }
 
+/// 基线文件（`modules-base.toml`）的文件名，与装载器共用同一个常量。
+pub const BASE_FILE_NAME: &str = echo_module_loader::BASE_FILE_NAME;
+
+/// 基线文件缺失时，按**当前目录**（编译进 Core 的这批模块）生成一份。
+///
+/// ## 为什么要生成，而不是让用户手写
+///
+/// 内置模块的集合此前是隐式的：`modules.toml` 不提它们，它们照样挂载。
+/// 结果是"一个部署到底装了什么、什么顺序"只能去面板里翻——而**顺序**恰恰
+/// 是能在面板里调不了的（面板只有开关）。基线文件把这份集合变成可读可改
+/// 的文本。
+///
+/// 手写不现实：十几个模块的 id 又长又容易拼错，升级后新增的模块没人会
+/// 记得补。所以由宿主生成，内容就是"当前目录，全部启用，按目录顺序"——
+/// 与不写这份文件时的行为**逐字等价**，纯声明。
+///
+/// ## 只在缺失时写
+///
+/// 用户改过的、删掉的都保持原样：删掉等于回到隐式行为（下次启动不会再
+/// 长出来？——会长出来，但它的内容仍然是"什么都不改变"，所以删了也没有
+/// 副作用，只是文件回来而已；真要永久关掉基线，写 `enabled = false` 的
+/// 那一行，而不是删文件）。
+///
+/// 写盘失败只 warn：一个诊断性的配置文件不该阻断启动。
+///
+/// ## 为什么 `name` 写成注释
+///
+/// `[[module]]` 的 `name` 字段对 `kind = "builtin"` **不生效**（标题来自
+/// 模块自己的 manifest）。写成键会让人以为改它就能改面板标题——已经有人
+/// 这么误会过。写成注释既有可读性，又不会被误认为配置。
+pub fn ensure_modules_base(config_path: &Path, entries: &[(String, String)]) {
+    let path = config_path.with_file_name(BASE_FILE_NAME);
+    if path.exists() {
+        return;
+    }
+    // 用 raw 字符串：正文里有反引号包着的 `enabled = false` 与引号，逐行
+    // 转义写出来只会更容易出错（第一版就漏了一个引号，编译期才炸）。
+    let mut text = String::from(
+        r#"# 模块基线：编译进 Core 的模块的声明（由 Core 在缺失时生成，可自由修改）。
+#
+# 这一份只回答「宿主带了哪些模块、按什么顺序挂载、默认开不开」。
+# 追加的东西（外部仓模块、子进程模块）写在同目录的 `modules.toml`。
+#
+# 语义：
+#   - 这里没提到的内置模块**照样挂载**（升级后新增的模块不会因为这份文件
+#     过时而消失）——想关掉必须显式写 enabled = false；
+#   - 行的先后就是挂载顺序；
+#   - [module.config] 在 mount 时下发给该模块（内置模块因此能改配置不改代码）。
+#     同目录 `modules.toml` 里同 id 的行会**整行覆盖**这里的一条（位置不变，
+#     且不继承这里的 config——覆盖就要写全套）；
+#   - kind = kernel 的模块是运行地基，写 enabled = false 会导致启动失败并点名
+#     （而不是静默跳过）。
+
+"#,
+    );
+    for (id, name) in entries {
+        text.push_str(&format!("# {name}\n[[module]]\nid = \"{id}\"\nkind = \"builtin\"\nenabled = true\n\n"));
+    }
+    if let Err(error) = std::fs::write(&path, text) {
+        tracing::warn!(path = %path.display(), %error, "write modules-base.toml failed; builtin baseline stays implicit");
+        return;
+    }
+    tracing::info!(
+        path = %path.display(),
+        count = entries.len(),
+        "modules-base.toml generated (builtin baseline; edit it to change order or disable a builtin module)"
+    );
+}
+
+/// 合成模块树：`modules.toml`（profile）+ 同目录的 `modules-base.toml`（基线）。
+///
+/// 判据是**两个文件任一存在**，不是只看 profile。基线本身就是一份能单独生效
+/// 的声明：用户删掉 profile、只想留一份基线时，基线必须仍然被读到——否则
+/// "删掉 modules.toml 回到隐式行为"会变成"基线的开关全部失效"，两个说法
+/// 矛盾，而后者更难查（配置还在，就是不生效）。
+///
+/// 返回 `None` 只表示**两个文件都没有**（外部模块特性休眠，与改造前一致）。
+fn load_tree(config_path: &Path) -> Option<echo_module_loader::LoadedTree> {
+    let profile = config_path.with_file_name("modules.toml");
+    let base = config_path.with_file_name(BASE_FILE_NAME);
+    let path = if profile.exists() {
+        profile
+    } else if base.exists() {
+        // 没有 profile 时直接以基线为入口：装载器会因为"文件名等于基线"而
+        // 跳过自动应用，正好读一次、不重复。
+        base
+    } else {
+        return None;
+    };
+    match echo_module_loader::load(&path) {
+        Ok(tree) => Some(tree),
+        Err(error) => {
+            // 与启动路径同款：坏文件 warn 后按"无配置"继续（内置模块照旧
+            // 全挂载），把可读错误留给用户从日志里看到具体哪一行坏了。
+            tracing::warn!(path = %path.display(), %error, "modules config load failed; builtin plan falls back to defaults");
+            None
+        }
+    }
+}
+
 /// `modules.toml` 里 `kind = "builtin"` 的行 → 内置模块的**挂载计划**。
 ///
 /// 只挑 `kind = "builtin"`：`stdio` 行走子进程启动路径（[`start_with_specs`]），
@@ -445,24 +547,14 @@ pub fn dump_config(config_path: &Path) -> Result<Option<String>, echo_module_loa
 /// [`agent_module_loop::modules::resolve_mount_order`] 的说明。
 pub fn builtin_mount_plan(config_path: &Path) -> Vec<agent_module_loop::modules::MountStep> {
     use echo_module_loader::EntryKind;
-    let path = config_path.with_file_name("modules.toml");
-    if !path.exists() {
+    let Some(tree) = load_tree(config_path) else {
         return Vec::new();
-    }
-    match echo_module_loader::load(&path) {
-        Ok(tree) => tree
-            .entries
-            .iter()
-            .filter(|entry| entry.kind == EntryKind::Builtin)
-            .map(|entry| agent_module_loop::modules::MountStep::new(entry.id.clone(), entry.enabled))
-            .collect(),
-        Err(error) => {
-            // 与启动路径同款：坏文件 warn 后按"无配置"继续（内置模块照旧
-            // 全挂载），把可读错误留给用户从日志里看到具体哪一行坏了。
-            tracing::warn!(path = %path.display(), %error, "modules.toml load failed; builtin mount plan falls back to defaults");
-            Vec::new()
-        }
-    }
+    };
+    tree.entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Builtin)
+        .map(|entry| agent_module_loop::modules::MountStep::new(entry.id.clone(), entry.enabled))
+        .collect()
 }
 
 /// `modules.toml` 里内置行（`kind = "builtin"`）的 `[module.config]` → 配置表。
@@ -479,24 +571,16 @@ pub fn builtin_mount_plan(config_path: &Path) -> Vec<agent_module_loop::modules:
 /// （与 [`config_origins`] 同款：配置缺失不该阻断启动）。
 pub fn builtin_configs(config_path: &Path) -> Vec<(String, serde_json::Value)> {
     use echo_module_loader::EntryKind;
-    let path = config_path.with_file_name("modules.toml");
-    if !path.exists() {
+    let Some(tree) = load_tree(config_path) else {
         return Vec::new();
-    }
-    match echo_module_loader::load(&path) {
-        Ok(tree) => tree
-            .entries
-            .iter()
-            .filter(|entry| entry.kind == EntryKind::Builtin)
-            // `config` 缺省是空对象；没有键的行不必登记（注册表缺省即 Null）。
-            .filter(|entry| entry.config.as_object().is_some_and(|m| !m.is_empty()))
-            .map(|entry| (entry.id.clone(), entry.config.clone()))
-            .collect(),
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "modules.toml load failed; builtin module configs unavailable");
-            Vec::new()
-        }
-    }
+    };
+    tree.entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Builtin)
+        // `config` 缺省是空对象；没有键的行不必登记（注册表缺省即 Null）。
+        .filter(|entry| entry.config.as_object().is_some_and(|m| !m.is_empty()))
+        .map(|entry| (entry.id.clone(), entry.config.clone()))
+        .collect()
 }
 
 /// `modules.toml` 里每个条目由**哪一层**声明 → `(模块 id, 来源描述)`。
@@ -513,35 +597,27 @@ pub fn builtin_configs(config_path: &Path) -> Vec<(String, serde_json::Value)> {
 /// 文件不存在 / 解析失败 → 空表（与 [`builtin_mount_plan`] 同款降级：
 /// 展示信息缺失不该阻断启动）。
 pub fn config_origins(config_path: &Path) -> Vec<(String, String)> {
-    let path = config_path.with_file_name("modules.toml");
-    if !path.exists() {
+    let Some(tree) = load_tree(config_path) else {
         return Vec::new();
-    }
-    match echo_module_loader::load(&path) {
-        Ok(tree) => {
-            let profile_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("modules.toml")
-                .to_string();
-            tree.entries
-                .iter()
-                .map(|entry| {
-                    let origin = if entry.layer_source == profile_name {
-                        // 本文件行内条目：直接报文件名，不必说第几层。
-                        entry.layer_source.clone()
-                    } else {
-                        format!("{} · layer {}", entry.layer_source, entry.layer)
-                    };
-                    (entry.id.clone(), origin)
-                })
-                .collect()
-        }
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "modules.toml load failed; module config origins unavailable");
-            Vec::new()
-        }
-    }
+    };
+    let profile_name = config_path
+        .with_file_name("modules.toml")
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("modules.toml")
+        .to_string();
+    tree.entries
+        .iter()
+        .map(|entry| {
+            let origin = if entry.layer_source == profile_name {
+                // 本文件行内条目：直接报文件名，不必说第几层。
+                entry.layer_source.clone()
+            } else {
+                format!("{} · layer {}", entry.layer_source, entry.layer)
+            };
+            (entry.id.clone(), origin)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -804,6 +880,84 @@ mod tests {
         host.register_and_mount(Arc::new(module)).expect("mount ok");
 
         assert_eq!(seen.lock().unwrap().as_deref(), Some("127.0.0.1:9999"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 内置模块基线（modules-base.toml）────────────────────────────
+
+    /// 缺失时生成，且生成的内容**通过装载器回放**得到同样的内置行。
+    ///
+    /// 断言走一遍 `builtin_mount_plan`（真正的消费方）而不是只比字符串：
+    /// 生成的文件如果格式不对，在这里就会变成"计划是空的"，而不是等到
+    /// 部署后才发现内置模块的开关不生效。
+    #[test]
+    fn ensure_modules_base_generates_a_loadable_baseline() {
+        let dir = unique_dir("base-generate");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let config = dir.join("echo-agent-core.toml");
+        let entries = vec![
+            ("echo-agent.tools".to_string(), "内置工具集".to_string()),
+            ("echo-agent.skills".to_string(), "技能目录".to_string()),
+        ];
+
+        ensure_modules_base(&config, &entries);
+
+        let path = dir.join(BASE_FILE_NAME);
+        assert!(path.is_file(), "缺失时必须生成");
+        let text = std::fs::read_to_string(&path).expect("read baseline");
+        // 名字进注释、不进 `name =`：那个字段对 builtin 行不生效（面板标题
+        // 来自模块自己的 manifest），写成键会让人以为改它能改标题。
+        assert!(text.contains("# 内置工具集"), "名字应以注释形式出现");
+        assert!(!text.contains("name ="), "内置行的 name 字段不生效，不该写成键");
+
+        let plan = builtin_mount_plan(&config);
+        let ids: Vec<&str> = plan.iter().map(|step| step.id.as_str()).collect();
+        assert_eq!(ids, vec!["echo-agent.tools", "echo-agent.skills"]);
+        assert!(plan.iter().all(|step| step.enabled), "生成的基线全部启用");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 已存在就**不动**——用户的编辑不该被启动流程覆盖。
+    #[test]
+    fn ensure_modules_base_never_overwrites() {
+        let dir = unique_dir("base-keep");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let config = dir.join("echo-agent-core.toml");
+        let path = dir.join(BASE_FILE_NAME);
+        std::fs::write(&path, "# 手写的基线\n[[module]]\nid = \"x\"\nkind = \"builtin\"\nname = \"x\"\nenabled = false\n")
+            .expect("write baseline");
+
+        ensure_modules_base(&config, &[("echo-agent.tools".to_string(), "内置工具集".to_string())]);
+
+        let text = std::fs::read_to_string(&path).expect("read baseline");
+        assert_eq!(text, "# 手写的基线\n[[module]]\nid = \"x\"\nkind = \"builtin\"\nname = \"x\"\nenabled = false\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 基线里的行会被 `builtin_mount_plan` 看见（装载器把同目录的基线当第 0 层）。
+    #[test]
+    fn baseline_rows_join_the_mount_plan() {
+        let dir = unique_dir("base-plan");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let config = dir.join("echo-agent-core.toml");
+        std::fs::write(
+            dir.join(BASE_FILE_NAME),
+            "[[module]]\nid = \"echo-agent.tools\"\nkind = \"builtin\"\nname = \"t\"\nenabled = false\n",
+        )
+        .expect("write baseline");
+        std::fs::write(
+            dir.join("modules.toml"),
+            "[[module]]\nid = \"ext.qq\"\nkind = \"stdio\"\nname = \"qq\"\ncommand = \"/bin/true\"\n",
+        )
+        .expect("write profile");
+
+        let plan = builtin_mount_plan(&config);
+        assert_eq!(plan.len(), 1, "只有基线里的 builtin 行进计划");
+        assert_eq!(plan[0].id, "echo-agent.tools");
+        assert!(!plan[0].enabled, "基线写 enabled = false 必须生效");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

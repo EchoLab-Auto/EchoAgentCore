@@ -1634,16 +1634,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             ));
         }
 
-        // 模块清单的来源层（面板展示「这行配置来自 modules.toml 的哪一层」）：
-        // 配置未提及的模块保持空串 = 编译内置的缺省行为。
-        module_host.set_config_origins(modules_runtime::config_origins(&args.config_path()));
-        // 配置下发（2026-11）：`modules.toml` 里 `kind = "builtin"` 行的
-        // `[module.config]` 按 id 送进注册表，`mount` 时注入
-        // `MountContext.config`——内置模块因此能"改配置不改代码"，且各拿
-        // 各的那一份（不必自己去解析分层合成结果）。
-        // 必须在任何 mount 之前：`mount` 取的是当时登记的值。
-        module_host.set_configs(modules_runtime::builtin_configs(&args.config_path()));
-
         let version = env!("CARGO_PKG_VERSION");
         // 配置化组合（P4）：内置模块的**构造**留在代码里（mount 闭包要
         // 捕获运行期句柄：端口 / token / 实例句柄 / broker…），但**集合、
@@ -1756,6 +1746,46 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             };
             catalog.push(crate::builtin_modules::external_module(version, &entry));
         }
+
+        // ── 内置模块基线（`modules-base.toml`）──
+        //
+        // 缺失时按**当前目录**生成：内置模块的集合与顺序此前是隐式的
+        // （配置不提也照样挂载），结果是"这份部署到底装了什么、什么顺序"
+        // 只能去面板里翻，而顺序在面板里调不了。写进文件就变成可读可改。
+        //
+        // 只收 `BUILTIN_MODULE_IDS`（编译进 Core 的这批）：外部仓模块与
+        // 子进程模块归 `modules.toml` 追加——那是"部署方装了什么"，与
+        // "宿主带了什么"不是一回事。实例模块（由 `[instances.<平台>]`
+        // 派生）同属部署配置，也不进基线。
+        {
+            let baseline: Vec<(String, String)> = catalog
+                .iter()
+                .filter(|module| {
+                    agent_module_loop::modules::BUILTIN_MODULE_IDS
+                        .contains(&module.manifest().id.as_str())
+                })
+                .map(|module| {
+                    (
+                        module.manifest().id.clone(),
+                        module.manifest().name.clone(),
+                    )
+                })
+                .collect();
+            modules_runtime::ensure_modules_base(&args.config_path(), &baseline);
+        }
+
+        // 模块清单的来源层（面板展示「这行配置来自 modules.toml 的哪一层」）：
+        // 配置未提及的模块保持空串 = 编译内置的缺省行为。
+        //
+        // 这两处登记**必须在任何 mount 之前**（`mount` 取的是当时登记的值），
+        // 也必须排在基线生成之后——否则第一次启动读到的是还没有基线文件的
+        // 那一版树，`config_origins` 会少一层来源，要到重启才对上。
+        module_host.set_config_origins(modules_runtime::config_origins(&args.config_path()));
+        // 配置下发（2026-11）：`modules.toml` 里 `kind = "builtin"` 行的
+        // `[module.config]` 按 id 送进注册表，`mount` 时注入
+        // `MountContext.config`——内置模块因此能"改配置不改代码"，且各拿
+        // 各的那一份（不必自己去解析分层合成结果）。
+        module_host.set_configs(modules_runtime::builtin_configs(&args.config_path()));
 
         // ── 按计划挂载（配置化组合 P4 的落点）──
         // 计划来自 modules.toml 里 kind = "builtin" 的行：出现的按行序挂载、
