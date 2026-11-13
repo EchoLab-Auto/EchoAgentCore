@@ -2,8 +2,8 @@
 id: settings-agents
 title: "设置 · 智能体"
 group: 前端
-x: 3520
-y: 2600
+x: 2528
+y: 552
 ---
 
 # 设置 · 智能体

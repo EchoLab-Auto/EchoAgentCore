@@ -2,8 +2,8 @@
 id: qq-gating
 title: "QQ 实例门控"
 group: Core
-x: 7680
-y: 1200
+x: 4008
+y: 216
 ---
 
 # QQ 实例门控设计

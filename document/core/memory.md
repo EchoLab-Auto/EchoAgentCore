@@ -2,8 +2,8 @@
 id: memory
 title: "会话记忆"
 group: Core
-x: 1280
-y: 1200
+x: 348
+y: 384
 ---
 
 # 会话记忆

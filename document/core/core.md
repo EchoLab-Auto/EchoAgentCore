@@ -2,8 +2,8 @@
 id: core
 title: "Core 后端"
 group: Core
-x: 960
-y: 640
+x: 48
+y: 48
 link: ["frame | 框架（内核）", "modules | 模块化设计 | b>t"]
 ---
 

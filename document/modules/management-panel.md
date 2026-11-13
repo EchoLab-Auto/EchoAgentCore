@@ -2,8 +2,8 @@
 id: management-panel
 title: "管理面模块"
 group: Core
-x: 6720
-y: 1200
+x: 3348
+y: 216
 ---
 
 # 管理面模块

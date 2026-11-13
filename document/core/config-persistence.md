@@ -2,8 +2,8 @@
 id: config-persistence
 title: "配置持久化"
 group: Core
-x: 1920
-y: 1200
+x: 948
+y: 384
 ---
 
 # 配置持久化

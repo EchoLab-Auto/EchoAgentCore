@@ -2,8 +2,8 @@
 id: instance-tasks
 title: "Panel 实例管理 · 任务 · Shell"
 group: 前端
-x: 4480
-y: 2320
+x: 1452
+y: 384
 ---
 
 # Panel 实例管理 · 任务 · Shell

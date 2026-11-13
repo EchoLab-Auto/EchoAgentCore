@@ -2,8 +2,8 @@
 id: icons
 title: "Panel 图标体系"
 group: 前端
-x: 1600
-y: 2040
+x: 648
+y: 216
 ---
 
 # 图标体系

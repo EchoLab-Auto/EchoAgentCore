@@ -2,8 +2,8 @@
 id: selfupdate
 title: "自更新模块"
 group: Core
-x: 7360
-y: 1200
+x: 3708
+y: 216
 ---
 
 # 自更新模块

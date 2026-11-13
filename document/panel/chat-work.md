@@ -2,8 +2,8 @@
 id: chat-work
 title: "工作行（工具 / 推理 / 子代理）"
 group: 前端
-x: 6240
-y: 2880
+x: 5136
+y: 720
 link: ["chat-tools | 工具卡与图标行", "chat-reasoning | 推理块"]
 ---
 

@@ -2,8 +2,8 @@
 id: session
 title: "会话模块"
 group: Core
-x: 6080
-y: 1200
+x: 2748
+y: 216
 ---
 
 # 会话模块

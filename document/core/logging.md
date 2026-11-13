@@ -2,8 +2,8 @@
 id: logging
 title: "日志与可观测性"
 group: Core
-x: 2240
-y: 1200
+x: 1248
+y: 384
 ---
 
 # 日志与可观测性

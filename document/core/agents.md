@@ -2,8 +2,8 @@
 id: agents
 title: "多 Agent 与会话"
 group: Core
-x: 960
-y: 1200
+x: 48
+y: 384
 link: ["agent-loop | Agent 循环"]
 ---
 

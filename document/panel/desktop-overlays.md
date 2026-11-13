@@ -2,8 +2,8 @@
 id: desktop-overlays
 title: "桌面端模态与覆盖层"
 group: 前端
-x: 960
-y: 2320
+x: 48
+y: 384
 ---
 
 # 桌面端模态与覆盖层

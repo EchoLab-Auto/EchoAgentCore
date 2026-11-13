@@ -2,8 +2,8 @@
 id: settings-tools
 title: "设置 · 工具"
 group: 前端
-x: 2880
-y: 2600
+x: 1928
+y: 552
 ---
 
 # 设置 · 工具

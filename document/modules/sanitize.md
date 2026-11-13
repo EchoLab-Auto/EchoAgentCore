@@ -2,8 +2,8 @@
 id: sanitize
 title: "脱敏（安全不变量）"
 group: Core
-x: 5760
-y: 1200
+x: 2448
+y: 216
 link: []
 ---
 

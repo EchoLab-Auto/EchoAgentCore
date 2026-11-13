@@ -2,8 +2,8 @@
 id: agent-loop
 title: "Agent 循环"
 group: Core
-x: 960
-y: 1480
+x: 48
+y: 552
 ---
 
 # Agent 循环

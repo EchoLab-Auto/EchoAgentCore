@@ -2,8 +2,8 @@
 id: settings-skills
 title: "设置 · 技能"
 group: 前端
-x: 2560
-y: 2600
+x: 1628
+y: 552
 ---
 
 # 设置 · 技能

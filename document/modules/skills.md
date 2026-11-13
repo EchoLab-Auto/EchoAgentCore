@@ -2,8 +2,8 @@
 id: skills
 title: "技能系统"
 group: Core
-x: 4800
-y: 1200
+x: 1548
+y: 216
 ---
 
 # 技能系统

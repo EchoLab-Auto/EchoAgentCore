@@ -2,8 +2,8 @@
 id: transcript
 title: "显示层模块"
 group: Core
-x: 6400
-y: 1200
+x: 3048
+y: 216
 ---
 
 # 显示层模块

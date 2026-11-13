@@ -2,8 +2,8 @@
 id: kernel
 title: "运行地基（kernel 模块）"
 group: Core
-x: 3200
-y: 1200
+x: 48
+y: 216
 link: []
 ---
 

@@ -2,8 +2,8 @@
 id: chat-rail
 title: "双侧边栏（chat-rail）"
 group: 前端
-x: 7360
-y: 2600
+x: 4704
+y: 552
 ---
 
 # 双侧边栏（chat-rail）

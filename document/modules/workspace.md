@@ -2,8 +2,8 @@
 id: workspace
 title: "工作区会话模块"
 group: Core
-x: 4160
-y: 1200
+x: 948
+y: 216
 ---
 
 # 工作区会话模块

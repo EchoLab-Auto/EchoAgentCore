@@ -2,8 +2,8 @@
 id: mobile-layout
 title: "移动端布局"
 group: 前端
-x: 1280
-y: 2040
+x: 348
+y: 216
 link: ["mobile-overlays | 模态与覆盖层"]
 ---
 

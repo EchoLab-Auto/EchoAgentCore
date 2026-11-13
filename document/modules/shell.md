@@ -2,8 +2,8 @@
 id: shell
 title: "Shell 会话模块"
 group: Core
-x: 3840
-y: 1200
+x: 648
+y: 216
 ---
 
 # Shell 会话模块

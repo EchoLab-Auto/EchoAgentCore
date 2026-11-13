@@ -2,8 +2,8 @@
 id: settings-modules
 title: "设置 · 模块"
 group: 前端
-x: 3200
-y: 2600
+x: 2228
+y: 552
 ---
 
 # 设置 · 模块

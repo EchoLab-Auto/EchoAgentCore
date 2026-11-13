@@ -2,8 +2,8 @@
 id: desktop-layout
 title: "桌面端布局"
 group: 前端
-x: 960
-y: 2040
+x: 48
+y: 216
 link: ["desktop-overlays | 模态与覆盖层"]
 ---
 

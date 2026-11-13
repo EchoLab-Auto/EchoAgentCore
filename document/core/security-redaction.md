@@ -2,8 +2,8 @@
 id: security-redaction
 title: "敏感信息隔离（脱敏服务）"
 group: Core
-x: 2560
-y: 1200
+x: 1548
+y: 384
 ---
 
 # 敏感信息隔离（脱敏服务）

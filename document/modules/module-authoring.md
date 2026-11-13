@@ -2,8 +2,8 @@
 id: module-authoring
 title: "模块开发指南"
 group: Core
-x: 8000
-y: 1200
+x: 4308
+y: 216
 ---
 
 # 模块开发指南（外部进程模块）
