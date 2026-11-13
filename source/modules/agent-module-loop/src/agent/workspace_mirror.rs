@@ -61,16 +61,11 @@ impl WorkspaceSnapshot {
     pub fn active_pair(&self) -> Option<(WorkspaceSessionInfo, WorkspaceConversationInfo)> {
         let active_id = self.active.as_deref()?;
         let session = self.sessions.iter().find(|s| s.id == active_id)?;
-        let conversations = if session.conversations.is_empty() {
-            vec![WorkspaceConversationInfo {
-                id: "main".into(),
-                name: "主对话".into(),
-                legacy: true,
-                api_profile: None,
-            }]
-        } else {
-            session.conversations.clone()
-        };
+        // 补位规则**归模块**：`conversations_view` 是那条规则的唯一实现
+        // （空列表 → 存量主对话 `main` / `legacy: true`）。此前这里抄了一份，
+        // 两份一致全靠注释提醒——模块改补位逻辑时宿主不会跟上，也不会报错。
+        let conversations =
+            agent_module_workspace::store::conversations_view(session);
         let conversation = self
             .active_conversation
             .as_deref()
