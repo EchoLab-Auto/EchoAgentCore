@@ -204,7 +204,7 @@ impl SkillRegistry {
     pub fn set_contributed(&mut self, owner: &str, skills: Vec<Skill>) {
         if let Some(previous) = self.contributed.remove(owner) {
             for name in previous {
-                self.skills.remove(&name);
+                self.drop_if_unclaimed(&name);
             }
         }
         let mut names: Vec<String> = Vec::with_capacity(skills.len());
@@ -223,9 +223,24 @@ impl SkillRegistry {
             return false;
         };
         for name in names {
-            self.skills.remove(&name);
+            self.drop_if_unclaimed(&name);
         }
         true
+    }
+
+    /// 从表里删掉一个技能——**除非还有别的 owner 声明着它**。
+    ///
+    /// ## 为什么必须查重
+    ///
+    /// 同一个技能可以被多个 owner 上报：QQ 模块的每个实例是独立进程，各自
+    /// 带同一份 `qq-transport`；某个实例重启时它会先消失再出现。若撤销不做
+    /// 引用检查，A 实例下线就会把 B 实例还在用的技能从表里删掉——症状是
+    /// 「另一个实例正常运行时技能神秘消失」，且只在特定重启时序下复现。
+    fn drop_if_unclaimed(&mut self, name: &str) {
+        if self.contributed.values().any(|names| names.iter().any(|n| n == name)) {
+            return;
+        }
+        self.skills.remove(name);
     }
 
     /// 当前有贡献技能的 `owner` 清单（名称排序）。
@@ -651,5 +666,67 @@ mod tests {
         assert!(registry.get("qq-management").unwrap().metadata.enabled);
         // 未知包 no-op
         assert_eq!(registry.set_package_enabled("nope", false), 0);
+    }
+}
+
+#[cfg(test)]
+mod contributed_owner_tests {
+    use super::*;
+
+    fn skill(name: &str, package: Option<&str>) -> Skill {
+        let mut skill = Skill::direct(name, "desc", Vec::new(), false, "test", "正文");
+        skill.metadata.package = package.map(str::to_string);
+        skill
+    }
+
+    /// QQ 的四个实例（各自独立进程）带同一份技能：一个实例下线不能把技能
+    /// 从表里删掉——另外三个还在上报它。
+    #[test]
+    fn one_owner_leaving_keeps_the_skill_another_still_claims() {
+        let mut registry = SkillRegistry::new();
+        registry.set_contributed("instance-qq-qq", vec![skill("qq-transport", None)]);
+        registry.set_contributed("instance-qq-base", vec![skill("qq-transport", None)]);
+        assert!(registry.get("qq-transport").is_some());
+
+        registry.remove_contributed("instance-qq-qq");
+        assert!(
+            registry.get("qq-transport").is_some(),
+            "还有实例声明着它，不该被删"
+        );
+
+        registry.remove_contributed("instance-qq-base");
+        assert!(registry.get("qq-transport").is_none(), "最后一个来源走了才删");
+    }
+
+    /// 替换语义下同样要查重：A 重新上报时少了一个技能，但 B 也声明着它。
+    #[test]
+    fn owner_replacement_keeps_a_skill_another_owner_still_claims() {
+        let mut registry = SkillRegistry::new();
+        registry.set_contributed("a", vec![skill("shared", None), skill("only-a", None)]);
+        registry.set_contributed("b", vec![skill("shared", None)]);
+
+        registry.set_contributed("a", vec![skill("only-a", None)]);
+
+        assert!(registry.get("shared").is_some(), "b 还在声明 shared");
+        assert!(registry.get("only-a").is_some(), "a 重新上报的仍在");
+    }
+
+    /// 无贡献时包标签不影响手工登记的技能。
+    #[test]
+    fn fresh_registry_has_no_owners() {
+        let registry = SkillRegistry::new();
+        assert!(registry.contributed_owners().is_empty());
+        assert_eq!(registry.len(), 0);
+    }
+
+    /// 贡献来的技能带 package 标签，包级门控才找得到它。
+    #[test]
+    fn package_of_contributed_skill_stays_visible_to_gating() {
+        let mut registry = SkillRegistry::new();
+        registry.set_contributed("m", vec![skill("s", Some("echo-agent.instance.qq"))]);
+        assert_eq!(
+            registry.package_names("echo-agent.instance.qq"),
+            vec!["s".to_string()]
+        );
     }
 }

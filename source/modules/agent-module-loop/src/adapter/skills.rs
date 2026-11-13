@@ -35,12 +35,42 @@ pub trait ModuleHandleSkills {
 
 impl ModuleHandleSkills for ModuleHandle {
     fn contributed_skills(&self) -> (String, Vec<Skill>) {
-        let skills = self
+        let skills: Vec<Skill> = self
             .contributions()
             .into_iter()
             .filter_map(|contribution| skill_from_custom(&contribution).map(into_skill))
             .collect();
-        (self.module_id().to_string(), skills)
+        (owner_of(&self.module_id().to_string(), &skills), skills)
+    }
+}
+
+/// 归属键：这批技能**属于谁**（撤销时整批撤的单位）。
+///
+/// ## 为什么不是直接拿模块 id
+///
+/// 平台模块的每个实例是**独立进程**，各自 `Register` 同一份技能：QQ 模块
+/// 跑 4 个实例（qq / qq-2 / base / EchoCode），module id 是
+/// `instance-qq-qq`、`instance-qq-base`… 各不相同。用 id 当归属会得到 4 个
+/// 伪 owner：
+///
+/// - 面板/日志里同一份技能像来自 4 个来源（误导）；
+/// - 某个实例重启时它那一份"消失再出现"，注册表来回抖；
+/// - 撤销要靠引用计数兜底（见 `SkillRegistry::drop_if_unclaimed`）——
+///   那是必要的最后防线，但归属本身就不该分裂。
+///
+/// 判据是**这批技能声明的 package 是否一致**：一致（`echo-agent.instance.qq`）
+/// 就说明它们同属一个包，包 id 是比进程更稳的归属标识；不一致或没声明时
+/// 退回 module id（内置模块的 subagent / prodoc 走这条，它们本来就只有一个
+/// 来源）。
+fn owner_of(module_id: &str, skills: &[Skill]) -> String {
+    let mut packages = skills.iter().filter_map(|s| s.metadata.package.as_deref());
+    let Some(first) = packages.next() else {
+        return module_id.to_string();
+    };
+    if packages.all(|package| package == first) {
+        first.to_string()
+    } else {
+        module_id.to_string()
     }
 }
 
@@ -124,5 +154,40 @@ mod tests {
         let skill = into_skill(dto);
         assert_eq!(skill.metadata.name, "plain");
         assert_eq!(skill.instructions, "只有正文。");
+    }
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+
+    fn skill(package: Option<&str>) -> Skill {
+        let mut skill = Skill::direct("x", "d", Vec::new(), false, "c", "正文");
+        skill.metadata.package = package.map(str::to_string);
+        skill
+    }
+
+    /// 同一平台模块的多个实例（不同 module id）带同一份技能 → 归到一个
+    /// owner，注册表不会来回抖。
+    #[test]
+    fn same_package_across_instances_yields_one_owner() {
+        let skills = vec![skill(Some("echo-agent.instance.qq"))];
+        assert_eq!(owner_of("instance-qq-qq", &skills), "echo-agent.instance.qq");
+        assert_eq!(owner_of("instance-qq-qq-2", &skills), "echo-agent.instance.qq");
+    }
+
+    /// 没声明 package（内置模块的常见情形）→ 用 module id。
+    #[test]
+    fn missing_package_falls_back_to_module_id() {
+        assert_eq!(owner_of("echo-agent.subagent", &[skill(None)]), "echo-agent.subagent");
+        assert_eq!(owner_of("echo-agent.prodoc", &[]), "echo-agent.prodoc");
+    }
+
+    /// package 不一致 = 一个模块带多个包 → 只能按模块 id 归（拆开撤没意义：
+    /// 模块要么在要么不在）。
+    #[test]
+    fn mixed_packages_fall_back_to_module_id() {
+        let skills = vec![skill(Some("a")), skill(Some("b"))];
+        assert_eq!(owner_of("m", &skills), "m");
     }
 }
