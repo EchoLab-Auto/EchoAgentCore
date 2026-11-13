@@ -806,6 +806,19 @@ BUILTIN_SKILLS_DIR="$DATA_DIR/skills-builtin"
 USER_SKILLS_DIR="$DATA_DIR/skills"
 install -d -m 755 "$BUILTIN_SKILLS_DIR" "$USER_SKILLS_DIR"
 cp -a "$SOURCE_DIR/skills/." "$BUILTIN_SKILLS_DIR/"
+# 反向清理（2026-11，与 update.sh 同一段逻辑）：`cp -a` 只会覆盖/新增，
+# **不会删**——重装到一个已存在的部署上，旧版本留下的技能目录会一直留着并
+# 继续被加载（实测：仓库已把 qq 等四个技能迁给模块，部署里它们仍存活）。
+# 判据只看还含 SKILL.md 的目录：那是发现逻辑会加载的东西，其它残留不归这里管。
+for _skill_dst in "$BUILTIN_SKILLS_DIR"/*/; do
+    [[ -d "$_skill_dst" ]] || continue
+    _skill_name=$(basename -- "$_skill_dst")
+    [[ -f "$SOURCE_DIR/skills/$_skill_name/SKILL.md" ]] && continue
+    [[ -n "$(find "$_skill_dst" -name SKILL.md -print -quit 2>/dev/null)" ]] || continue
+    rm -rf "$_skill_dst"
+    echo "    pruned stale factory skill: $_skill_name"
+done
+unset _skill_dst _skill_name
 
 # 旧配置的 management_access_token（--overwrite-config 重写时沿用——
 # 换令牌会让 Panel/对端全部失联，重写配置不应顺带换凭证）。

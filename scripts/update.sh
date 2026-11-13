@@ -505,7 +505,25 @@ if [[ "$UPDATE_SCOPE" != modules && -d "$BUILTIN_SKILLS_DIR" && -d "$SOURCE_DIR/
         fi
         rm -rf "$_skill_dst/.git"
     done
-    unset _skill_src _skill_name _skill_dst
+    # 反向清理（2026-11）：上面只同步「源里仍然存在」的技能——源里**删掉**的
+    # 技能根本不进循环，于是旧部署的只读层会永远留着它。实测后果：Core 已
+    # 把 qq-transport / qq-management / subagent-delegation / skill-echo-prodoc
+    # 迁给各自模块，部署里这四个目录在 skills-builtin/ 存活了 9 天，Panel 照旧
+    # 列出并触发它们（容器里连 QQ 模块都没装）。
+    #
+    # 判据：只看**还含 SKILL.md 的目录**。那正是技能发现逻辑会加载的东西
+    # （`SkillRegistry::discover` 递归找 SKILL.md）；其它残留（备份、临时文件）
+    # 不归本脚本管，删了可能伤人。
+    for _skill_dst in "$BUILTIN_SKILLS_DIR"/*/; do
+        [[ -d "$_skill_dst" ]] || continue
+        _skill_name=$(basename -- "$_skill_dst")
+        [[ -f "$SOURCE_DIR/skills/$_skill_name/SKILL.md" ]] && continue
+        [[ -n "$(find "$_skill_dst" -name SKILL.md -print -quit 2>/dev/null)" ]] || continue
+        rm -rf "$_skill_dst"
+        echo "    pruned stale factory skill: $_skill_name"
+    done
+    unset _skill_dst _skill_name
+    unset _skill_src
 fi
 
 if [[ "$UPDATE_SCOPE" != modules ]]; then
