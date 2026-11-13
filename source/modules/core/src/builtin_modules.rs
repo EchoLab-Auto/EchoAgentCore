@@ -256,13 +256,16 @@ pub(crate) fn instance_module(version: &str, platform: &str) -> Arc<dyn Module> 
             &name,
             version,
             "instance",
-            platform,
             description,
         )
         // 实例模块化收尾（P1.9，2026-10）：实现由独立进程提供，这里只是
         // 门控壳。必须显式声明，否则面板按 builtin=true 把它显示成
         // 「内部模块」。
-        .with_runtime(ModuleRuntime::Subprocess),
+        .with_runtime(ModuleRuntime::Subprocess)
+        // 分类标签：实现不在本进程里，归「外部」——面板据此分组。
+        // 与 `builtin`（来源）和 `runtime`（实现在哪跑）是三个正交维度，
+        // 这里三者恰好都指向"外部"，但改一个不该影响另一个。
+        .with_tag(crate::module_tag::OUTSIDE),
         move |mctx| {
             // 启停控制是可选的：没有实例句柄的部署（不跑平台）照样能挂上。
             let control = mctx.service(&crate::host_services::INSTANCE_CONTROL);
@@ -292,18 +295,17 @@ pub(crate) fn instance_module(version: &str, platform: &str) -> Arc<dyn Module> 
 /// 重启按钮对这类条目回「请重启 Core」。
 pub(crate) fn external_module(version: &str, entry: &ExternalEntry) -> Arc<dyn Module> {
     Arc::new(BuiltinModule::new(
-        // `builtin = false`：来源维度上它不是编译进本二进制的（面板的来源徽标
-        // 读这个字段，分组读 `runtime`——两者正交，别互相顶替）。
+        // `builtin = false`：来源维度上它不是编译进本二进制的。
         ModuleManifest::builtin(
             &entry.id,
             &entry.name,
             version,
             "tool",
-            &entry.id,
             format!("外部模块（modules.toml，{}）", entry.kind),
         )
         .with_runtime(ModuleRuntime::Subprocess)
-        .with_builtin_flag(false),
+        .with_builtin_flag(false)
+        .with_tag(crate::module_tag::OUTSIDE),
         |_ctx| Ok(vec![]),
     ))
 }
@@ -654,7 +656,7 @@ mod catalog_shape_tests {
     fn additional_modules_share_identity_validation_and_command_checks() {
         use echo_module::{BuiltinModule, ModuleManifest};
         let extra: Arc<dyn Module> = Arc::new(BuiltinModule::new(
-            ModuleManifest::builtin("example.web", "Web", "0", "panel", "web", "external"),
+            ModuleManifest::builtin("example.web", "Web", "0", "panel", "external"),
             |_| Ok(Vec::new()),
         ));
         let catalog = catalog_with("0.0.0-test", [extra]).unwrap();
@@ -705,14 +707,14 @@ mod tests {
     fn duplicate_command_declarations_are_rejected() {
         let one = Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("a.one", "a", "0", "tool", "a", "a"),
+                ModuleManifest::builtin("a.one", "a", "0", "tool", "a"),
                 |_| Ok(vec![]),
             )
             .with_commands(["Shared"]),
         );
         let two = Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("a.two", "b", "0", "tool", "b", "b"),
+                ModuleManifest::builtin("a.two", "b", "0", "tool", "b"),
                 |_| Ok(vec![]),
             )
             .with_commands(["Shared"]),
@@ -734,6 +736,46 @@ mod tests {
             ids.contains(&agent_module_session::MODULE_ID),
             "会话模块未登记：{ids:?}"
         );
+    }
+
+    /// 目录里每个模块都必须带分类标签，且编译内置的那批全是 `inner`。
+    ///
+    /// 为什么要在装配期守：面板按 `tag` 分组，空标签会掉进「未标注」组——
+    /// 表现为"这个模块既不在内部也不在外部"，比缺一个字段难查得多。
+    #[test]
+    fn every_catalog_module_carries_a_tag() {
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        for module in &catalog {
+            let m = module.manifest();
+            assert!(
+                !m.tag.is_empty(),
+                "模块 {} 没有 tag（面板会把它归入「未标注」）",
+                m.id
+            );
+            assert_eq!(
+                m.tag,
+                crate::module_tag::INNER,
+                "编译进二进制的模块 {} 应当标 inner",
+                m.id
+            );
+        }
+    }
+
+    /// 子进程壳（外部条目 / 平台实例）标 `outside`——它们的实现不在本进程里。
+    #[test]
+    fn subprocess_shells_are_tagged_outside() {
+        let external = external_module(
+            "0",
+            &ExternalEntry {
+                id: "ext.demo".into(),
+                name: "demo".into(),
+                kind: "stdio".into(),
+            },
+        );
+        assert_eq!(external.manifest().tag, crate::module_tag::OUTSIDE);
+
+        let instance = instance_module("0", "qq");
+        assert_eq!(instance.manifest().tag, crate::module_tag::OUTSIDE);
     }
 
     /// 内嵌 Panel 模块必须出现在**带外部模块**的目录里（2026-11）。
@@ -762,7 +804,7 @@ mod tests {
     fn reserved_command_declarations_are_rejected() {
         let module = Arc::new(
             BuiltinModule::new(
-                ModuleManifest::builtin("a.bad", "bad", "0", "tool", "bad", "bad"),
+                ModuleManifest::builtin("a.bad", "bad", "0", "tool", "bad"),
                 |_| Ok(vec![]),
             )
             .with_commands(["RequestModulesList"]),

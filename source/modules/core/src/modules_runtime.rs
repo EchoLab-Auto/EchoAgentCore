@@ -868,7 +868,6 @@ mod tests {
                 "1",
                 "management",
                 "",
-                "",
             ),
             move |mctx: &echo_module::MountContext| {
                 *slot.lock().unwrap() = mctx.config_str("address").map(str::to_string);

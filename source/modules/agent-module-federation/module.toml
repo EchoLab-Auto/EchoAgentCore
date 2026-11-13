@@ -6,9 +6,11 @@
 id = "echo-agent.federation"
 name = "联邦"
 kind = "federation"
-entry = "federation"
 description = "Core↔Core 对等链路：远程工具 / 跨机委派 / 跨机只读查询 / 会话迁移"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # echo-agent.host.federation：联邦端口（注册表 + 出站连接），宿主注册。
 requires = [

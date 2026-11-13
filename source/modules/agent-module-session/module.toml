@@ -6,9 +6,11 @@
 id = "echo-agent.session"
 name = "会话"
 kind = "session"
-entry = "session"
 description = "事件溯源 trunk：append-only 事件日志、按会话投影、持久化、压缩编排与写命令域"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # echo-agent.host.session_commands：命令域的宿主接缝（清理/归档/压缩），宿主注册。
 requires = [

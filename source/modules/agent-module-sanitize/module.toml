@@ -6,7 +6,9 @@
 id = "echo-agent.security.sanitize"
 name = "脱敏"
 kind = "security"
-entry = "security"
 description = "敏感信息隔离：LLM 出口 / 工具出口 / 出站 / 入站的统一脱敏卡口"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 

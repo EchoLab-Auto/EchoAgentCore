@@ -9,6 +9,8 @@
 id = "echo-agent.kernel.protocol"
 name = "协议"
 kind = "kernel"
-entry = "protocol"
 description = "管理面线契约：命令 / 事件的 serde 形状与帧格式（零领域逻辑）"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"

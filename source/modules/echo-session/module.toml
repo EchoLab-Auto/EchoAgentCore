@@ -6,6 +6,8 @@
 id = "echo-agent.kernel.session"
 name = "事件溯源"
 kind = "kernel"
-entry = "session"
 description = "SessionEvent 事件集 / EventLog / derive_messages 投影 / compaction"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"

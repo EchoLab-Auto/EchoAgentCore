@@ -1243,7 +1243,6 @@ mod tests {
                 "配置探针",
                 "0.0.0-test",
                 "tool",
-                "cfg-probe",
                 "记录 mount 时拿到的配置",
             ),
             seen,
@@ -1259,7 +1258,7 @@ mod tests {
     ) {
         let seen = Arc::new(parking_lot::Mutex::new(None));
         let module = Arc::new(ScopeProbeModule {
-            manifest: echo_module::ModuleManifest::builtin(id, id, "0.0.0", kind, id, "test probe"),
+            manifest: echo_module::ModuleManifest::builtin(id, id, "0.0.0", kind, "test probe"),
             seen_tools: Arc::clone(&seen),
         });
         (module as Arc<dyn echo_module::Module>, seen)
@@ -1728,7 +1727,7 @@ mod tests {
     ) {
         host.registry
             .register(Arc::new(echo_module::BuiltinModule::new(
-                echo_module::ModuleManifest::builtin(id, id, "1", "tool", id, "")
+                echo_module::ModuleManifest::builtin(id, id, "1", "tool", "")
                     .with_runtime(runtime)
                     .with_builtin_flag(builtin),
                 |_| Ok(vec![]),
@@ -1874,7 +1873,7 @@ mod tests {
         use std::sync::atomic::Ordering;
         Arc::new(
             echo_module::BuiltinModule::new(
-                echo_module::ModuleManifest::builtin(id, id, "1", "tool", "", ""),
+                echo_module::ModuleManifest::builtin(id, id, "1", "tool", ""),
                 move |_| {
                     mounted.fetch_add(1, Ordering::SeqCst);
                     Ok(vec![])
@@ -1977,7 +1976,7 @@ mod tests {
         host.set_event_sink(Arc::new(move |event| sink_seen.lock().unwrap().push(event)));
         host.set_mount_ctx(echo_module::MountContext::new());
         host.register_and_mount(Arc::new(echo_module::BuiltinModule::new(
-            echo_module::ModuleManifest::builtin("ev.p", "p", "1", "tool", "", ""),
+            echo_module::ModuleManifest::builtin("ev.p", "p", "1", "tool", ""),
             |mctx: &echo_module::MountContext| {
                 mctx.emit("tool.done", serde_json::json!({"ok": true}));
                 Ok(vec![])
@@ -2005,7 +2004,7 @@ mod tests {
         let host = ModuleHost::new();
         host.set_mount_ctx(echo_module::MountContext::new());
         host.register_and_mount(Arc::new(echo_module::BuiltinModule::new(
-            echo_module::ModuleManifest::builtin("ev.bare", "b", "1", "tool", "", ""),
+            echo_module::ModuleManifest::builtin("ev.bare", "b", "1", "tool", ""),
             |mctx: &echo_module::MountContext| {
                 mctx.emit("nobody.listens", serde_json::Value::Null);
                 Ok(vec![])
@@ -2025,7 +2024,7 @@ mod tests {
         let h = hits.clone();
         host.register_and_mount(Arc::new(
             echo_module::BuiltinModule::new(
-                echo_module::ModuleManifest::builtin("ev.sub", "s", "1", "tool", "", ""),
+                echo_module::ModuleManifest::builtin("ev.sub", "s", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_subscriptions([echo_module::ALL_EVENTS])
@@ -2063,7 +2062,7 @@ mod tests {
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
         let module = echo_module::BuiltinModule::new(
-            echo_module::ModuleManifest::builtin(id, id, "1", "tool", "", ""),
+            echo_module::ModuleManifest::builtin(id, id, "1", "tool", ""),
             |_| Ok(vec![]),
         )
         .with_subscriptions(subs.to_vec())
@@ -2179,7 +2178,7 @@ mod tests {
         let (d, o, h) = (depth.clone(), observed_max.clone(), host.clone());
         host.register_and_mount(Arc::new(
             echo_module::BuiltinModule::new(
-                echo_module::ModuleManifest::builtin("obs.re", "r", "1", "tool", "", ""),
+                echo_module::ModuleManifest::builtin("obs.re", "r", "1", "tool", ""),
                 |_| Ok(vec![]),
             )
             .with_subscriptions([echo_module::ALL_EVENTS])
@@ -2236,7 +2235,7 @@ mod tests {
         let host = ModuleHost::new();
         host.set_mount_ctx(echo_module::MountContext::new());
         host.register_and_mount(Arc::new(echo_module::BuiltinModule::new(
-            echo_module::ModuleManifest::builtin("plain", "p", "1", "tool", "", ""),
+            echo_module::ModuleManifest::builtin("plain", "p", "1", "tool", ""),
             |_| Ok(vec![]),
         )))
         .expect("mount ok");

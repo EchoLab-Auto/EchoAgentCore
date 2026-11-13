@@ -6,6 +6,8 @@
 id = "echo-agent.kernel.config"
 name = "配置存储"
 kind = "kernel"
-entry = "config"
 description = "TOML 原子读改写（tmp+rename，不认识任何段语义）"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"

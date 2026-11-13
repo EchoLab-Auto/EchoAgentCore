@@ -6,9 +6,11 @@
 id = "echo-agent.management.panel"
 name = "管理面"
 kind = "management"
-entry = "panel"
 description = "Panel management WS 桥接（合并模式下同时承接联邦入站）"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # echo-agent.host.management：WS 桥接的宿主接缝，宿主注册。
 requires = [

@@ -6,9 +6,11 @@
 id = "echo-agent.skills.dir"
 name = "技能目录"
 kind = "skill"
-entry = "skills_dir"
 description = "SKILL.md 技能目录（热重载）"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # 两个 host 键：技能注册表与提示词存储，宿主注册。
 requires = [

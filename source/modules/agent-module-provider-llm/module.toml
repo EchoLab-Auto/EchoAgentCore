@@ -6,9 +6,11 @@
 id = "echo-agent.provider.llm"
 name = "LLM Provider"
 kind = "provider"
-entry = "llm"
 description = "LLM 提供方：provider 工厂 + 计量/脱敏装饰器 + 供应商池规则与 API 命令域"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # echo-agent.host.provider：provider 命令域的宿主接缝；
 # loop：挂载早期就要拿到 turn 驱动（构造 TurnRunner 一侧的对称依赖）。

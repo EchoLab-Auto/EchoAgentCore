@@ -1889,7 +1889,6 @@ fn data_module_stale_detects_manifest_diff() {
         "Weather",
         "1.0.0",
         "tool",
-        "weather",
         "old desc",
     );
     let desc = ModuleDescriptor::from(&manifest);
@@ -4764,7 +4763,7 @@ async fn agent_emit_delivers_to_subscribed_modules() {
     let sink = seen.clone();
     host.register_and_mount(Arc::new(
         echo_module::BuiltinModule::new(
-            echo_module::ModuleManifest::builtin("obs.tool", "o", "1", "tool", "", ""),
+            echo_module::ModuleManifest::builtin("obs.tool", "o", "1", "tool", ""),
             |_| Ok(vec![]),
         )
         .with_subscriptions(["ToolResult"])

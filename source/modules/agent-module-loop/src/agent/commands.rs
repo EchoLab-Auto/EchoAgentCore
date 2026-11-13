@@ -655,7 +655,7 @@ impl Agent {
                     version: d.version,
                     kind: d.kind,
                     description: d.description,
-                    entry: d.entry,
+                    tag: d.tag,
                     author: d.author,
                     builtin: d.builtin,
                     runtime: d.runtime,

@@ -6,9 +6,11 @@
 id = "echo-agent.shell"
 name = "Shell 会话"
 kind = "tool"
-entry = "shell"
 description = "后台 bash 会话（bash-start / bash-exec / bash-stop）+ Shell 面板命令域"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # tools.builtin：shell 工具挂在工具集那份注册表上（跨模块依赖，显式可见）。
 # echo-agent.host.shell：命令域宿主接缝，宿主注册。

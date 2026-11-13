@@ -6,9 +6,11 @@
 id = "echo-agent.transcript"
 name = "显示层"
 kind = "interaction"
-entry = "transcript"
 description = "显示投影：时间线（实时）+ 会话视图命令域（快照 / 上下文 / 翻页 / 历史）"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # echo-agent.host.session_view：视图命令域的宿主接缝，宿主注册。
 requires = [

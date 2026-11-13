@@ -5,9 +5,11 @@
 id = "echo-agent.loop.single"
 name = "循环"
 kind = "loop"
-entry = "loop"
 description = "同一会话的 turn 串行排队：后续输入等待前一轮结束，一条会话只有一条时间线"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # llm：构造 TurnRunner 需要 LLM provider（与 provider 模块声明的 loop 是一条边的
 # 两端——互相持有的原因见 `loop_module.rs` 的文档）。

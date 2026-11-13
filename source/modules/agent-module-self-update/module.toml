@@ -6,9 +6,11 @@
 id = "echo-agent.selfupdate"
 name = "自更新"
 kind = "orchestration"
-entry = "selfupdate"
 description = "自更新：触发 updater 单元（oneshot，脱离本进程构建→替换→重启）+ 读状态文件"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # echo-agent.host.selfupdate.events：进度事件汇，宿主注册。
 requires = [

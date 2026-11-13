@@ -4,8 +4,9 @@
 # `manifest()`），所以改这里的标题、描述、依赖都不必改 Rust。
 #
 # 键的含义：
-#   id / name / kind / entry / description  面板与路由读的字段
+#   id / name / kind / description           身份（面板与路由读这些）
 #   builtin                                 编译进宿主（区别于外部仓/子进程）
+#   tag                                     分类标签 inner / outside（面板分组用）
 #   requires                                挂载前必须已在服务表里的**服务键**
 #   optional_requires                       软依赖（缺失不阻止挂载）
 #   provides                                本模块 provide 到服务表的键
@@ -16,9 +17,11 @@
 id = "echo-agent.tools.builtin"
 name = "内置工具集"
 kind = "tool"
-entry = "builtin_tools"
 description = "平台无关的内置工具（计算/搜索/清单/编码/模块实例管理）"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
 
 # loop：工具执行要拿到 turn 驱动（工具在回合内跑）。
 # 两个 host 键：命令域的宿主接缝（实例管理 / 工具管理面），宿主注册。

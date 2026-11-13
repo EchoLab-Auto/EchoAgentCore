@@ -1113,8 +1113,12 @@ pub struct ModuleInfo {
     pub kind: String,
     #[serde(default)]
     pub description: String,
+    /// 分类标签（`inner` / `outside`）：面板据此**分组展示**。
+    ///
+    /// 与 `kind` 正交——`kind` 说"哪类能力"，`tag` 说"从哪来"。旧 Core
+    /// 缺失该字段 = 空串，面板归入「未标注」。
     #[serde(default)]
-    pub entry: String,
+    pub tag: String,
     #[serde(default)]
     pub author: String,
 

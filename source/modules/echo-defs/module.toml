@@ -6,6 +6,8 @@
 id = "echo-agent.kernel.defs"
 name = "词汇与接缝"
 kind = "kernel"
-entry = "defs"
 description = "定义层：9 个能力接缝 trait 与全部跨边界词汇（零 echo-* 依赖）"
 builtin = true
+# 分类标签（不是能力类别）：随 Core 发布 → inner。
+# 决定面板的分组，与 `kind`（决定门控作用域）正交。
+tag = "inner"
