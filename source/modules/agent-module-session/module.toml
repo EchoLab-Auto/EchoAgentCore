@@ -1,0 +1,20 @@
+# 会话 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 代码用 `include_str!` 读这个文件构造 manifest（见 `src/lib.rs`），
+# 改标题/依赖/提供的键都不必改 Rust。
+
+id = "echo-agent.session"
+name = "会话"
+kind = "session"
+entry = "session"
+description = "事件溯源 trunk：append-only 事件日志、按会话投影、持久化、压缩编排与写命令域"
+builtin = true
+
+# echo-agent.host.session_commands：命令域的宿主接缝（清理/归档/压缩），宿主注册。
+requires = [
+    "echo-agent.host.session_commands",
+]
+# echo-agent.session.factory：会话工厂，transcript 之外的消费方按它建会话实例。
+provides = [
+    "echo-agent.session.factory",
+]

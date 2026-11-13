@@ -1,0 +1,11 @@
+# 词汇与接缝 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 本 crate 零 `echo-*` 依赖（铁律），因此只暴露 `MANIFEST_TOML` 字符串，
+# 由组合根解析成 manifest。
+
+id = "echo-agent.kernel.defs"
+name = "词汇与接缝"
+kind = "kernel"
+entry = "defs"
+description = "定义层：9 个能力接缝 trait 与全部跨边界词汇（零 echo-* 依赖）"
+builtin = true

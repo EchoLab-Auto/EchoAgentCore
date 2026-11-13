@@ -1842,6 +1842,28 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         for diagnostic in &diagnostics {
             warn!(%diagnostic, "builtin mount plan");
         }
+        // 再按**模块自己声明的** provides / requires 排一次：配置的行序不知道
+        // "shell 要用工具集注册表"这类事实（它写在各自的 `module.toml` 里）。
+        // 无约束的模块保持上面的顺序，所以人工行序仍然有效。
+        let provides_of = |id: &str| -> Vec<String> {
+            catalog
+                .iter()
+                .find(|module| module.manifest().id == id)
+                .map(|module| module.provides())
+                .unwrap_or_default()
+        };
+        let requires_of = |id: &str| -> Vec<String> {
+            catalog
+                .iter()
+                .find(|module| module.manifest().id == id)
+                .map(|module| module.inject().required)
+                .unwrap_or_default()
+        };
+        let (order, dependency_diagnostics) =
+            agent_module_loop::modules::order_by_service_dependencies(order, provides_of, requires_of);
+        for diagnostic in &dependency_diagnostics {
+            warn!(%diagnostic, "module service dependency");
+        }
         // 就绪等待（echo-fabric-arch v0.6）：每个模块挂载前先等它的
         // `inject` 就绪，最多 2s。现网正常启动时依赖早已注册，第一次检查
         // 就命中（开销 = 一次 contains）；只有在组合根装配顺序将来被打乱、

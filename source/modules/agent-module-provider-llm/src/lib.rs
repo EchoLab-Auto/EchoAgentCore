@@ -59,6 +59,9 @@ pub use metering::{wrap_metering, UsageRecorder};
 pub use redacting::wrap_redacting;
 
 /// 模块 id（`modules.toml` / Panel 模块清单同一口径）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.provider.llm";
 
 /// provider 实例的服务键（**别名**，真源在定义层）。
@@ -118,24 +121,14 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
     let host = ServiceSlot::<Arc<dyn commands::ProviderCommandHost>>::new();
     let bind = host.clone();
     let serve = host.clone();
-    let manifest = ModuleManifest::builtin(
-        MODULE_ID,
-        "LLM Provider",
-        version,
-        "provider",
-        "llm",
-        "LLM 提供方：provider 工厂 + 计量/脱敏装饰器 + 供应商池规则与 API 命令域",
-    );
+    let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("agent-module-provider-llm 的 module.toml 解析失败");
     Arc::new(
         BuiltinModule::new(manifest, move |mctx| {
             // 缺宿主 = 挂载失败（比"挂着但每条命令都回不出东西"好）。
             let keep = bind.bind(mctx, &host_keys::PROVIDER_HOST)?;
             Ok(vec![keep])
         })
-        .with_inject(Inject::new([
-            host_keys::PROVIDER_HOST.name().to_string(),
-            LOOP_SERVICE_KEY.to_string(),
-        ]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve = serve.clone();

@@ -44,18 +44,15 @@ pub use remote_tool::{
 pub use router::{remote_tool_candidates, ExecutorPolicy, InvokeRouter, PendingInvoke};
 
 /// 模块 id（宿主既有的联邦模块 id 与本常量同源字面量）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.federation";
 
 /// 模块清单。
 pub fn manifest(version: &str) -> echo_module::ModuleManifest {
-    echo_module::ModuleManifest::builtin(
-        MODULE_ID,
-        "联邦",
-        version,
-        "federation",
-        "federation",
-        "Core↔Core 对等链路：远程工具 / 跨机委派 / 跨机只读查询 / 会话迁移",
-    )
+    echo_module::ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("agent-module-federation 的 module.toml 解析失败")
 }
 
 /// 构造模块：命令域（7 条联邦 / 自更新命令）+ persona 门控。
@@ -94,7 +91,6 @@ pub fn module(version: &str) -> std::sync::Arc<dyn echo_module::Module> {
             disposers.shrink_to_fit();
             Ok(disposers)
         })
-        .with_inject(Inject::new([host_keys::PORTS.name().to_string()]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let ports = serve_ports.clone();

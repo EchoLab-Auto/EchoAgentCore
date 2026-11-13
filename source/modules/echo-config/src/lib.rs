@@ -202,4 +202,8 @@ mod tests {
 ///
 /// 与 `echo-defs` 同理：本 crate 零 `echo-*` 依赖（TOML I/O 不该知道任何
 /// 宿主词汇），manifest 因此由组合根用 `push_builtin_identity` 声明。
+/// 模块声明文件——本 crate 零 `echo-*` 依赖，因此只暴露字符串，
+/// 由组合根解析成 manifest。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.kernel.config";

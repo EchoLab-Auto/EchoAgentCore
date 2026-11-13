@@ -321,33 +321,26 @@ fn push_builtin_identity(
     version: &str,
     id: &str,
 ) -> anyhow::Result<()> {
-    let (name, kind, route, description) = match id {
-        agent_module_loop::modules::SUBAGENT_MODULE_ID => (
-            "Subagent 委派",
-            "tool",
-            "subagent",
-            "委派独立子任务给隔离上下文的子 agent：spawn_subagent 工具 + 完成后 <subagent_event> hook 回灌主 agent",
+    // 身份来自各 crate 的 `module.toml`（`include_str!` 编进二进制）。
+    //
+    // 零 `echo-*` 依赖的两个 crate（`echo-defs` / `echo-config`）不能自己构造
+    // `ModuleManifest`——它们连 `echo-module` 都不认识。所以它们只暴露
+    // `MANIFEST_TOML` 字符串，解析在这里做：**声明归 crate，解析归组合根**，
+    // 同一份 TOML 只有一个。
+    let text = match id {
+        agent_module_loop::modules::SUBAGENT_MODULE_ID => agent_module_subagent::MANIFEST_TOML,
+        echo_defs::MODULE_ID => echo_defs::MANIFEST_TOML,
+        echo_config::MODULE_ID => echo_config::MANIFEST_TOML,
+        agent_module_management::PROTOCOL_MODULE_ID => {
+            agent_module_management::PROTOCOL_MANIFEST_TOML
+        }
+        other => anyhow::bail!(
+            "push_builtin_identity 不认识模块 `{other}`：它的 manifest 应当由自己的 crate 构造"
         ),
-        // 零 `echo-*` 依赖的两个 crate（铁律）：manifest 只能在这里声明。
-        echo_defs::MODULE_ID => (
-            "词汇与接缝",
-            "kernel",
-            "defs",
-            "定义层：9 个能力接缝 trait 与全部跨边界词汇（零 echo-* 依赖）",
-        ),
-        echo_config::MODULE_ID => (
-            "配置存储",
-            "kernel",
-            "config",
-            "TOML 原子读改写（tmp+rename，不认识任何段语义）",
-        ),
-        _ => (id, "tool", id, "内置模块"),
     };
-    push_builtin(
-        catalog,
-        ModuleManifest::builtin(id, name, version, kind, route, description),
-        |_ctx| Ok(vec![]),
-    )
+    let manifest = ModuleManifest::from_toml(text, version)
+        .map_err(|error| anyhow::anyhow!("模块 `{id}` 的 module.toml 解析失败：{error}"))?;
+    push_builtin(catalog, manifest, |_ctx| Ok(vec![]))
 }
 
 /// 声明了**宿主保留命令**的模块是死代码：命令泵在分发前就把它挡掉了

@@ -1,0 +1,11 @@
+# 事件溯源 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 本 crate 零 `echo-*` 依赖（铁律），因此只暴露 `MANIFEST_TOML` 字符串，
+# 由组合根解析成 manifest（见 `source/modules/core/src/builtin_modules.rs`）。
+
+id = "echo-agent.kernel.session"
+name = "事件溯源"
+kind = "kernel"
+entry = "session"
+description = "SessionEvent 事件集 / EventLog / derive_messages 投影 / compaction"
+builtin = true

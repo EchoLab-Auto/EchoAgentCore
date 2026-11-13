@@ -255,6 +255,111 @@ pub fn disabled_kernel_modules(catalog_ids: &[String], plan: &[MountStep]) -> Op
 /// 只影响挂载计划，不改变 `ModuleManifest` 或全局 ToggleModule 语义。
 pub const DEFAULT_DISABLED_MODULE_IDS: [&str; 0] = [];
 
+/// 按模块**自己声明的** provides / requires 做稳定拓扑排序。
+///
+/// ## 为什么需要它
+///
+/// `resolve_mount_order` 只按 `modules.toml` 的行序排 —— 而模块之间的真实依赖
+/// （"shell 的工具挂在工具集注册表上"）写在各自的 `module.toml` 里，配置文件的
+/// 行序并不知道。结果是：用户把 shell 拖到 tools 前面，或者干脆没在
+/// `modules.toml` 里提任何内置模块（最常见），顺序就由**目录注册序**碰运气决定。
+/// 碰对了没人注意，碰错了表现为启动期多等一轮 `mount_when_ready`（每个模块
+/// 2s/计划长度），最坏情况下依赖链长时超时失败。
+///
+/// 排序规则：
+/// - 边 = 「A 的 `requires` 里有 `k`」且「B 的 `provides` 含 `k`」→ B 先于 A；
+/// - **稳定**：无约束的模块保持传入顺序（行序仍是有意义的人工偏好）；
+/// - 打不平的环**不报错**，只进 diagnostics —— 服务依赖图允许互相持有
+///   （provider 要 `loop`、`loop` 要 `llm` 就是一对），那种情况下顺序不影响
+///   正确性：`mount_when_ready` 的第二轮会兜住。真正的装配 bug 由服务缺失
+///   报出来，比在这里猜环更准。
+///
+/// 只认**模块之间**的键：`echo-agent.host.*` 由宿主注册，不在 catalog 里，
+/// 自然不产生边。
+pub fn order_by_service_dependencies(
+    order: Vec<MountStep>,
+    provides_of: impl Fn(&str) -> Vec<String>,
+    requires_of: impl Fn(&str) -> Vec<String>,
+) -> (Vec<MountStep>, Vec<String>) {
+    let mut diagnostics = Vec::new();
+    // 键 → 提供它的模块（同键多提供者只认第一个，其余记诊断：静默取一个会让人
+    // 以为"改了顺序就换了实现"）。
+    let mut provider_of: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (index, step) in order.iter().enumerate() {
+        for key in provides_of(&step.id) {
+            if let Some(previous) = provider_of.insert(key.clone(), index) {
+                diagnostics.push(format!(
+                    "service `{key}` is provided by both `{}` and `{}` (first wins)",
+                    order[previous].id, step.id
+                ));
+            }
+        }
+    }
+
+    let count = order.len();
+    let mut deps: Vec<std::collections::BTreeSet<usize>> =
+        vec![std::collections::BTreeSet::new(); count];
+    for (index, step) in order.iter().enumerate() {
+        for key in requires_of(&step.id) {
+            if let Some(&provider) = provider_of.get(&key) {
+                if provider != index {
+                    deps[index].insert(provider);
+                }
+            }
+        }
+    }
+
+    let mut indegree = vec![0usize; count];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (index, node_deps) in deps.iter().enumerate() {
+        for &dependency in node_deps {
+            indegree[index] += 1;
+            dependents[dependency].push(index);
+        }
+    }
+
+    // 就绪集合按**原位置**升序取出：这就是"稳定"的来源（同层保持人工行序）。
+    let mut ready: std::collections::BinaryHeap<std::cmp::Reverse<usize>> = (0..count)
+        .filter(|&index| indegree[index] == 0)
+        .map(std::cmp::Reverse)
+        .collect();
+    let mut sequence: Vec<usize> = Vec::with_capacity(count);
+    while let Some(std::cmp::Reverse(index)) = ready.pop() {
+        sequence.push(index);
+        for &dependent in &dependents[index] {
+            indegree[dependent] -= 1;
+            if indegree[dependent] == 0 {
+                ready.push(std::cmp::Reverse(dependent));
+            }
+        }
+    }
+
+    if sequence.len() != count {
+        // 环：剩下的按原序追加，交运行期的 mount_when_ready 兜。
+        let placed: std::collections::HashSet<usize> = sequence.iter().copied().collect();
+        let stuck: Vec<String> = (0..count)
+            .filter(|index| !placed.contains(index))
+            .map(|index| order[index].id.clone())
+            .collect();
+        diagnostics.push(format!(
+            "service dependency cycle among {:?} — keeping declaration order (runtime readiness check will settle it)",
+            stuck
+        ));
+        for index in 0..count {
+            if !placed.contains(&index) {
+                sequence.push(index);
+            }
+        }
+    }
+
+    let mut slots: Vec<Option<MountStep>> = order.into_iter().map(Some).collect();
+    let ordered = sequence
+        .into_iter()
+        .filter_map(|index| slots[index].take())
+        .collect();
+    (ordered, diagnostics)
+}
+
 pub fn resolve_mount_order(
     catalog_ids: &[String],
     plan: &[MountStep],
@@ -2143,6 +2248,92 @@ mod tests {
                 message: "x".into(),
             }),
             0
+        );
+    }
+}
+
+#[cfg(test)]
+mod dependency_order_tests {
+    use super::*;
+
+    fn steps(ids: &[&str]) -> Vec<MountStep> {
+        ids.iter()
+            .map(|id| MountStep::new((*id).to_string(), true))
+            .collect()
+    }
+
+    fn ids(order: &[MountStep]) -> Vec<&str> {
+        order.iter().map(|step| step.id.as_str()).collect()
+    }
+
+    /// 提供者必须排在消费者之前——即使配置里写反了。
+    #[test]
+    fn provider_moves_before_consumer() {
+        let order = steps(&["shell", "tools"]);
+        let (ordered, diagnostics) = order_by_service_dependencies(
+            order,
+            |id| match id {
+                "tools" => vec!["tools.builtin".into()],
+                "shell" => vec!["shell".into()],
+                _ => vec![],
+            },
+            |id| match id {
+                "shell" => vec!["tools.builtin".into()],
+                _ => vec![],
+            },
+        );
+        assert_eq!(ids(&ordered), vec!["tools", "shell"], "提供者应当前移");
+        assert!(diagnostics.is_empty(), "正常排序不该有诊断：{diagnostics:?}");
+    }
+
+    /// 无依赖关系的模块保持传入顺序（人工行序仍然有效）。
+    #[test]
+    fn unrelated_modules_keep_their_order() {
+        let order = steps(&["c", "a", "b"]);
+        let (ordered, _) = order_by_service_dependencies(order, |_| vec![], |_| vec![]);
+        assert_eq!(ids(&ordered), vec!["c", "a", "b"]);
+    }
+
+    /// 只有模块之间才连边：宿主注册的键（`echo-agent.host.*`）不产生边。
+    #[test]
+    fn host_provided_keys_do_not_constrain_order() {
+        let order = steps(&["shell", "tools"]);
+        let (ordered, diagnostics) = order_by_service_dependencies(
+            order,
+            |_| vec![],
+            |id| match id {
+                "shell" => vec!["echo-agent.host.shell".into()],
+                _ => vec![],
+            },
+        );
+        assert_eq!(ids(&ordered), vec!["shell", "tools"]);
+        assert!(diagnostics.is_empty());
+    }
+
+    /// 互相依赖（provider ⇄ loop 那种）不报错，只记诊断，顺序保持不变。
+    ///
+    /// 运行期的 `mount_when_ready` 会兜住这类环——在这里判死会让一对合法的
+    /// 互持变成启动失败。
+    #[test]
+    fn cycle_is_reported_but_not_fatal() {
+        let order = steps(&["provider", "loop"]);
+        let (ordered, diagnostics) = order_by_service_dependencies(
+            order,
+            |id| match id {
+                "provider" => vec!["llm".into()],
+                "loop" => vec!["loop".into()],
+                _ => vec![],
+            },
+            |id| match id {
+                "provider" => vec!["loop".into()],
+                "loop" => vec!["llm".into()],
+                _ => vec![],
+            },
+        );
+        assert_eq!(ordered.len(), 2, "环不该丢模块");
+        assert!(
+            diagnostics.iter().any(|d| d.contains("cycle")),
+            "环必须被记下来：{diagnostics:?}"
         );
     }
 }

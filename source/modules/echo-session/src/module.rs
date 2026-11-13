@@ -38,15 +38,11 @@ pub const MODULE_ID: &str = "echo-agent.kernel.session";
 pub const KIND: &str = "kernel";
 
 /// 模块清单。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub fn manifest(version: &str) -> ModuleManifest {
-    ModuleManifest::builtin(
-        MODULE_ID,
-        "事件溯源",
-        version,
-        KIND,
-        "session",
-        "SessionEvent 事件集 / EventLog / derive_messages 投影 / compaction",
-    )
+    ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("事件溯源模块的 module.toml 解析失败")
 }
 
 /// 构造模块：**纯身份声明**（`mount` 返回空 disposer）。

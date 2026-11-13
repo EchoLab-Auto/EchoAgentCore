@@ -1,0 +1,14 @@
+# 协议（kernel.protocol）—— 模块声明（**单一真值**：身份）
+#
+# 与 `module.toml`（管理面）是两个模块：协议是**线契约**（命令/事件的 serde
+# 形状 + 帧），管理面是 WS 桥接。放在同一个 crate 里是因为它们共享同一份
+# 协议定义，但挂载单元是两个。
+#
+# 由组合根解析成 manifest（`source/modules/core/src/builtin_modules.rs`）。
+
+id = "echo-agent.kernel.protocol"
+name = "协议"
+kind = "kernel"
+entry = "protocol"
+description = "管理面线契约：命令 / 事件的 serde 形状与帧格式（零领域逻辑）"
+builtin = true

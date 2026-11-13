@@ -65,6 +65,9 @@ use echo_defs::sanitize::Redactor;
 use echo_module::{BuiltinModule, Module, ModuleManifest};
 
 /// 模块 id（宿主 `modules::SECURITY_SANITIZE_MODULE_ID` 与本常量同源字面量）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.security.sanitize";
 
 /// 服务键：脱敏器（`Arc<dyn Redactor>`）。
@@ -113,14 +116,8 @@ pub fn build(spec: &RedactorSpec) -> Arc<dyn Redactor> {
 /// `kind = "security"`：`modules/scope.rs` 的 `KIND_SCOPE` 把它登记为
 /// `Process`——安全能力不是人格级开关。
 pub fn manifest(version: &str) -> ModuleManifest {
-    ModuleManifest::builtin(
-        MODULE_ID,
-        "脱敏",
-        version,
-        "security",
-        "security",
-        "敏感信息隔离：LLM 出口 / 工具出口 / 出站 / 入站的统一脱敏卡口",
-    )
+    ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("agent-module-sanitize 的 module.toml 解析失败")
 }
 
 /// 构造模块：**纯身份**（`mount` 返回空 disposer）。

@@ -17,6 +17,9 @@ pub const SINGLE_MODULE_ID: &str = "echo-agent.loop.single";
 pub const REMOVED_PARALLEL_MODULE_ID: &str = "echo-agent.loop.parallel";
 
 /// 本模块族贡献的服务键（`Ctx` 服务定位命名空间，与 runner 注册键同值）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const SERVICE_KEY: &str = "loop";
 
 /// 循环模块的声明（id / 名称 / 描述的唯一事实来源）。
@@ -52,9 +55,11 @@ pub fn modules(version: &str) -> Vec<Arc<dyn Module>> {
     declarations()
         .into_iter()
         .map(|(id, name, description)| {
-            let manifest = ModuleManifest::builtin(id, name, version, "loop", "loop", description);
+            let _ = (id, name, description);
+            let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
+                .expect("循环模块的 module.toml 解析失败");
             let module: Arc<dyn Module> =
-                Arc::new(BuiltinModule::new(manifest, mount_runner).with_inject(inject.clone()));
+                Arc::new(BuiltinModule::new(manifest, mount_runner));
             module
         })
         .collect()

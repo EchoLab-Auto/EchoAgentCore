@@ -82,4 +82,8 @@ pub use tool::{Tool, ToolDefinition, ToolError};
 ///
 /// 2026-11 之前本 crate 没有身份——它是"只是库"的中间层。取消那个二分之后，
 /// 每个 crate 都以模块形态出现在 Panel 里，包括只有 trait 与纯函数的它。
+/// 模块声明文件——本 crate 零 `echo-*` 依赖，因此只暴露字符串，
+/// 由组合根解析成 manifest。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.kernel.defs";

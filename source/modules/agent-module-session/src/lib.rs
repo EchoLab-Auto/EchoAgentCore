@@ -59,6 +59,9 @@ pub use commands::{SessionCommandHandler, SessionCommandHost};
 pub use store::TrunkStore;
 
 /// 模块 id（`core.toml` 的 `enabled_modules` / 面板清单同一口径）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.session";
 
 /// 会话工厂的服务键（宿主按此解析；其它模块一般不直接用它）。
@@ -110,16 +113,10 @@ pub fn factory_key() -> ServiceKey<Arc<dyn SessionFactory>> {
 /// 会话**——trunk 由宿主在构造 persona 时按需 create（部署里可能一个 persona
 /// 都不启用，提前加载只会制造空文件）。
 pub fn module(version: &str) -> Arc<dyn Module> {
-    use echo_module::{Inject, ServiceSlot};
+    use echo_module::ServiceSlot;
 
-    let manifest = ModuleManifest::builtin(
-        MODULE_ID,
-        "会话",
-        version,
-        "session",
-        "session",
-        "事件溯源 trunk：append-only 事件日志、按会话投影、持久化、压缩编排与写命令域",
-    );
+    let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("agent-module-session 的 module.toml 解析失败");
     // 命令域要的宿主接缝：mount 时绑定（宿主在装配期填），处理命令时取用。
     let command_host = ServiceSlot::<Arc<dyn SessionCommandHost>>::new();
     let (bind_host, serve_host) = (command_host.clone(), command_host.clone());
@@ -140,7 +137,6 @@ pub fn module(version: &str) -> Arc<dyn Module> {
             Ok(vec![keep_factory, keep_host])
         })
         // 接缝是可选注入：宿主没绑也能挂（命令落兜底分支）。
-        .with_inject(Inject::new([SESSION_COMMAND_HOST_KEY.name().to_string()]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve_host = serve_host.clone();

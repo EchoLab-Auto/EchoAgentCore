@@ -1,0 +1,16 @@
+# 管理面 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 代码用 `include_str!` 读这个文件构造 manifest（见 `src/lib.rs`），
+# 改标题/依赖/提供的键都不必改 Rust。
+
+id = "echo-agent.management.panel"
+name = "管理面"
+kind = "management"
+entry = "panel"
+description = "Panel management WS 桥接（合并模式下同时承接联邦入站）"
+builtin = true
+
+# echo-agent.host.management：WS 桥接的宿主接缝，宿主注册。
+requires = [
+    "echo-agent.host.management",
+]

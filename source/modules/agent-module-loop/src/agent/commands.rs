@@ -634,18 +634,6 @@ impl Agent {
     /// `SESSION_FACTORY_SERVICE`、`agent-module-loop` 的 `SERVICE_KEY` 等），
     /// Core 与模块之间的契约。大多数模块不提供任何服务（只消费宿主接缝），
     /// 返回空。
-    fn provides_services_for(id: &str) -> Vec<String> {
-        let keys: &[&str] = match id {
-            "echo-agent.session" => &["echo-agent.session.factory"],
-            "echo-agent.loop.single" => &["loop"],
-            "echo-agent.shell" => &["shell"],
-            "echo-agent.tools.builtin" => &["tools.builtin"],
-            "echo-agent.provider.llm" => &[],
-            _ => &[],
-        };
-        keys.iter().map(|k| k.to_string()).collect()
-    }
-
     /// Emit the full module list (`BackendEvent::ModulesList`).
     pub async fn emit_modules_list(&self) {
         let modules: Vec<crate::event::ModuleInfo> = self
@@ -683,7 +671,10 @@ impl Agent {
                     args: d.args,
                     env_keys: d.env_keys,
                     required_services: d.required_services,
-                    provides_services: Self::provides_services_for(&id),
+                    // 真实来源：模块清单的 `provides`（模块自己声明）。
+                    // 此前这里读一张硬编码表（4 个模块），与真实 `provide`
+                    // 调用是两处独立源——新增模块没人会记得补。
+                    provides_services: d.provided_services,
                     optional_services: d.optional_services,
                     pending_services: d.pending_services,
                     subscribed_events: d.subscribed_events,

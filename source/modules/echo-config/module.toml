@@ -1,0 +1,11 @@
+# 配置存储 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 本 crate 零 `echo-*` 依赖（铁律），因此只暴露 `MANIFEST_TOML` 字符串，
+# 由组合根解析成 manifest。
+
+id = "echo-agent.kernel.config"
+name = "配置存储"
+kind = "kernel"
+entry = "config"
+description = "TOML 原子读改写（tmp+rename，不认识任何段语义）"
+builtin = true

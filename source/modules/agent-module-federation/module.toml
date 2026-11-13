@@ -1,0 +1,16 @@
+# 联邦 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 代码用 `include_str!` 读这个文件构造 manifest（见 `src/lib.rs`），
+# 改标题/依赖/提供的键都不必改 Rust。
+
+id = "echo-agent.federation"
+name = "联邦"
+kind = "federation"
+entry = "federation"
+description = "Core↔Core 对等链路：远程工具 / 跨机委派 / 跨机只读查询 / 会话迁移"
+builtin = true
+
+# echo-agent.host.federation：联邦端口（注册表 + 出站连接），宿主注册。
+requires = [
+    "echo-agent.host.federation",
+]

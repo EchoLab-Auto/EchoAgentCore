@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 pub use crate::session::{CommandGuard, ShellHandle};
 
-use echo_module::{BuiltinModule, Inject, Module, ModuleManifest, MountContext, ServiceSlot};
+use echo_module::{BuiltinModule, Module, ModuleManifest, MountContext, ServiceSlot};
 use agent_module_tools::ToolRegistry;
 #[allow(ambiguous_glob_reexports)]
 pub use session::*;
@@ -84,16 +84,12 @@ impl ShellToolProvider for ShellTools {
     }
 }
 
-/// 模块清单（id / 名称 / 类别 / 路由键与宿主既有字面量一致）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
+/// 模块清单：从 [`MANIFEST_TOML`] 解析，只把版本号留给宿主注入。
 pub fn manifest(version: &str) -> ModuleManifest {
-    ModuleManifest::builtin(
-        MODULE_ID,
-        "Shell 会话",
-        version,
-        "tool",
-        "shell",
-        "后台 bash 会话（bash-start / bash-exec / bash-stop）+ Shell 面板命令域",
-    )
+    ModuleManifest::from_toml(MANIFEST_TOML, version).expect("Shell 会话模块的 module.toml 解析失败")
 }
 
 /// 构造模块：`mount` 把 provider 挂到 [`SERVICE_KEY`]，并绑定命令域接缝。
@@ -120,10 +116,9 @@ pub fn module(version: &str) -> Arc<dyn Module> {
             disposers.push(bind.bind(mctx, &host_keys::SHELL_HOST)?);
             Ok(disposers)
         })
-        .with_inject(Inject::new([
-            agent_module_tools::SERVICE_KEY.to_string(),
-            host_keys::SHELL_HOST.name().to_string(),
-        ]))
+        // 依赖（tools.builtin + host.shell）声明在 `module.toml` 的 `requires`
+        // 里——其中 `tools.builtin` 是**跨模块**依赖，现在在清单里一眼可见，
+        // 不必跟到 tools crate 的常量定义。
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve = serve.clone();
@@ -229,5 +224,38 @@ mod tests {
             "旧名 shell_exec 仍然存在：{:?}",
             registry.names()
         );
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+
+    /// 清单是身份的唯一真值，`MODULE_ID` 只是给 `const` 上下文用的别名。
+    #[test]
+    fn toml_id_matches_the_const_alias() {
+        let m = manifest("0.0.0-test");
+        assert_eq!(m.id, MODULE_ID, "module.toml 的 id 与 MODULE_ID 不一致");
+    }
+
+    /// 跨模块依赖（`tools.builtin`）必须在清单里——它是这条边唯一的声明处。
+    #[test]
+    fn cross_module_dependency_is_declared() {
+        let m = manifest("0.0.0-test");
+        assert_eq!(
+            module("0.0.0-test").inject().required,
+            m.requires,
+            "代码里的注入声明盖过了清单"
+        );
+        assert!(
+            m.requires.contains(&agent_module_tools::SERVICE_KEY.to_string()),
+            "shell 的工具挂在工具集注册表上，这条依赖必须在清单里可见"
+        );
+    }
+
+    #[test]
+    fn provides_is_declared_and_matches_the_service_key() {
+        let m = manifest("0.0.0-test");
+        assert_eq!(m.provides, vec![SERVICE_KEY.to_string()]);
     }
 }

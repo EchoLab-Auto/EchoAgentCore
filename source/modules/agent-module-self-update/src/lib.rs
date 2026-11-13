@@ -32,6 +32,9 @@ pub mod commands;
 pub mod host_keys;
 
 /// 模块 id（`modules.toml` / Panel 模块清单同一口径）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.selfupdate";
 
 /// 构造模块：认领两条自更新命令。
@@ -47,24 +50,13 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
     >::new();
     let bind = events.clone();
     let serve = events.clone();
-    let manifest = ModuleManifest::builtin(
-        MODULE_ID,
-        "自更新",
-        version,
-        // kind = `orchestration`：进程级基础设施能力。**刻意不用
-        // `management`**——Panel 会把 management 类模块放进**人格级**"启用
-        // 模块"勾选区，而自更新按人格启停是个假开关（挂载是进程级的，命令
-        // 分发不看人格白名单）。
-        "orchestration",
-        "selfupdate",
-        "自更新：触发 updater 单元（oneshot，脱离本进程构建→替换→重启）+ 读状态文件",
-    );
+    let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("agent-module-self-update 的 module.toml 解析失败");
     Arc::new(
         BuiltinModule::new(manifest, move |mctx| {
             let keep = bind.bind(mctx, &host_keys::EVENTS)?;
             Ok(vec![keep])
         })
-        .with_inject(Inject::new([host_keys::EVENTS.name().to_string()]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve = serve.clone();

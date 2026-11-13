@@ -63,15 +63,15 @@ strip = "symbols"
 [workspace.dependencies]
 echo-defs = { path = "source/modules/echo-defs" }
 echo-config = { path = "source/modules/echo-config" }
-echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.16.1" }
+echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.17.0" }
 echo-session = { path = "source/modules/echo-session" }
 
 echo-protocol = { package = "agent-module-management", path = "source/modules/agent-module-management" }
 echo-test-utils = { path = "source/test/utils" }
-echo-module = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.16.1" }
-echo-module-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.16.1" }
-echo-module-host = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.16.1" }
-echo-module-loader = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.16.1" }
+echo-module = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.17.0" }
+echo-module-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.17.0" }
+echo-module-host = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.17.0" }
+echo-module-loader = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.17.0" }
 agent-module-provider-llm = { path = "source/modules/agent-module-provider-llm" }
 agent-module-skills = { path = "source/modules/agent-module-skills" }
 agent-module-federation = { path = "source/modules/agent-module-federation" }

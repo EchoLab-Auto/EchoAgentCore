@@ -53,8 +53,14 @@ use tracing::{debug, info, warn};
 pub const DEFAULT_FEDERATION_LISTEN: &str = "0.0.0.0:3133";
 
 /// 模块 id（`modules.toml` / Panel 模块清单同一口径）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.management.panel";
 /// 协议词汇的兼容身份（原 echo-protocol crate 的管理面显示 id）。
+/// 协议模块的声明（与 `MANIFEST_TOML` 是两个模块，见文件内注释）。
+pub const PROTOCOL_MANIFEST_TOML: &str = include_str!("../module.protocol.toml");
+
 pub const PROTOCOL_MODULE_ID: &str = "echo-agent.kernel.protocol";
 
 /// Broadcasts agent events to every connected Panel.
@@ -1851,14 +1857,8 @@ pub fn module(version: &str) -> std::sync::Arc<dyn echo_module::Module> {
     let bind_mgmt = management.clone();
     let bind_serve_mgmt = management.clone();
 
-    let manifest = ModuleManifest::builtin(
-        MODULE_ID,
-        "管理面",
-        version,
-        "management",
-        "panel",
-        "Panel management WS 桥接（合并模式下同时承接联邦入站）",
-    );
+    let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("agent-module-management 的 module.toml 解析失败");
     std::sync::Arc::new(
         BuiltinModule::new(manifest, move |mctx| {
             let keep_mgmt = bind_mgmt.bind(mctx, &host_keys::MANAGEMENT_HOST)?;
@@ -1909,6 +1909,5 @@ pub fn module(version: &str) -> std::sync::Arc<dyn echo_module::Module> {
                 echo_context::Disposer::from_fn(move || abort.abort()),
             ])
         })
-        .with_inject(Inject::new([host_keys::MANAGEMENT_HOST.name().to_string()])),
     )
 }

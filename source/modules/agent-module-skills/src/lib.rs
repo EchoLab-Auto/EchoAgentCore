@@ -32,18 +32,15 @@ use std::sync::Arc;
 use thiserror::Error;
 
 /// 模块 id（宿主 `modules::SKILLS_DIR_MODULE_ID` 与本常量同源字面量）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.skills.dir";
 
 /// 模块清单（id / 名称 / 类别 / 路由键与宿主既有字面量一致）。
 pub fn manifest(version: &str) -> echo_module::ModuleManifest {
-    echo_module::ModuleManifest::builtin(
-        MODULE_ID,
-        "技能目录",
-        version,
-        "skill",
-        "skills_dir",
-        "SKILL.md 技能目录（热重载）",
-    )
+    echo_module::ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("agent-module-skills 的 module.toml 解析失败")
 }
 
 /// 构造模块：技能表 + 命令域（8 条 `*Skill*` 命令）。
@@ -93,10 +90,6 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
                 .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?;
             Ok(vec![keep, store_keep, runtime_keep])
         })
-        .with_inject(Inject::new([
-            host_keys::SKILLS_HOST.name().to_string(),
-            host_keys::PROMPT_STORE.name().to_string(),
-        ]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve_runtime = serve_runtime.clone();

@@ -42,6 +42,9 @@ pub mod session_view;
 pub mod timeline;
 
 /// 模块 id。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
 pub const MODULE_ID: &str = "echo-agent.transcript";
 
 /// 会话视图宿主接缝的服务键（与 management 期保持一致：`echo-agent.host.session_view`）。
@@ -53,14 +56,8 @@ pub static SESSION_VIEW_HOST_KEY: ServiceKey<Arc<dyn session_view::SessionViewHo
 
 /// 构造本模块（catalog 用）。
 pub fn module(version: &str) -> Arc<dyn Module> {
-    let manifest = ModuleManifest::builtin(
-        MODULE_ID,
-        "显示层",
-        version,
-        "interaction",
-        "transcript",
-        "显示投影：时间线（实时）+ 会话视图命令域（快照 / 上下文 / 翻页 / 历史）",
-    );
+    let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("agent-module-transcript 的 module.toml 解析失败");
     let view = ServiceSlot::<Arc<dyn session_view::SessionViewHost>>::new();
     let (bind_view, serve_view) = (view.clone(), view.clone());
     Arc::new(
@@ -68,7 +65,6 @@ pub fn module(version: &str) -> Arc<dyn Module> {
             let keep = bind_view.bind(mctx, &SESSION_VIEW_HOST_KEY)?;
             Ok(vec![keep])
         })
-        .with_inject(Inject::new([SESSION_VIEW_HOST_KEY.name().to_string()]))
         .with_commands(session_view::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve_view = serve_view.clone();

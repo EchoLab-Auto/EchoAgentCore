@@ -1,0 +1,32 @@
+# 内置工具集 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 代码用 `include_str!` 读这个文件构造 manifest（见 `src/module.rs` 的
+# `manifest()`），所以改这里的标题、描述、依赖都不必改 Rust。
+#
+# 键的含义：
+#   id / name / kind / entry / description  面板与路由读的字段
+#   builtin                                 编译进宿主（区别于外部仓/子进程）
+#   requires                                挂载前必须已在服务表里的**服务键**
+#   optional_requires                       软依赖（缺失不阻止挂载）
+#   provides                                本模块 provide 到服务表的键
+#
+# 注意 requires 写的是**服务键**而不是模块 id：`loop` 由循环模块提供，
+# `echo-agent.host.*` 由宿主注册。谁提供哪个键见各模块自己的 provides。
+
+id = "echo-agent.tools.builtin"
+name = "内置工具集"
+kind = "tool"
+entry = "builtin_tools"
+description = "平台无关的内置工具（计算/搜索/清单/编码/模块实例管理）"
+builtin = true
+
+# loop：工具执行要拿到 turn 驱动（工具在回合内跑）。
+# 两个 host 键：命令域的宿主接缝（实例管理 / 工具管理面），宿主注册。
+requires = [
+    "loop",
+    "echo-agent.host.tools.instance",
+    "echo-agent.host.tools.registry",
+]
+
+# shell 模块的 requires 引用这个键：工具集是 shell 工具的前提。
+provides = ["tools.builtin"]

@@ -1,0 +1,16 @@
+# 显示层 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 代码用 `include_str!` 读这个文件构造 manifest（见 `src/lib.rs`），
+# 改标题/依赖/提供的键都不必改 Rust。
+
+id = "echo-agent.transcript"
+name = "显示层"
+kind = "interaction"
+entry = "transcript"
+description = "显示投影：时间线（实时）+ 会话视图命令域（快照 / 上下文 / 翻页 / 历史）"
+builtin = true
+
+# echo-agent.host.session_view：视图命令域的宿主接缝，宿主注册。
+requires = [
+    "echo-agent.host.session_view",
+]

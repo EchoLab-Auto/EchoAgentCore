@@ -138,16 +138,19 @@ pub fn core_self_stop_guard() -> crate::CommandGuard {
     })
 }
 
-/// 模块清单（id / 名称 / 类别 / 路由键与宿主既有字面量一致）。
+/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
+///
+/// `include_str!` 而不是运行期读盘：清单是**编译期常量**，散落在部署目录里
+/// 会让"同一个二进制在不同机器上行为不同"，而模块身份不该随部署变。
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+
+/// 模块清单：从 [`MANIFEST_TOML`] 解析，只把版本号留给宿主注入。
+///
+/// 解析失败 = 内嵌资源坏了 = 构建期 bug。这里 `expect` 是刻意的：
+/// 带着半个清单跑起来的后果（面板少一个模块、依赖校验形同虚设）比启动时
+/// 直接失败难查得多。
 pub fn manifest(version: &str) -> ModuleManifest {
-    ModuleManifest::builtin(
-        MODULE_ID,
-        "内置工具集",
-        version,
-        "tool",
-        "builtin_tools",
-        "平台无关的内置工具（计算/搜索/清单/编码/模块实例管理）",
-    )
+    ModuleManifest::from_toml(MANIFEST_TOML, version).expect("内置工具集的 module.toml 解析失败")
 }
 
 /// 构造模块：`mount` 把 provider 挂到 [`SERVICE_KEY`]。
@@ -160,7 +163,7 @@ pub fn manifest(version: &str) -> ModuleManifest {
 /// persona 门控**不在这里**：挂载/卸载是一件事，"这个使用者看不看得到它"是
 /// 另一件事，宿主监听 `module.mounted` / `module.unmounted` 统一拨。
 pub fn module(version: &str) -> Arc<dyn Module> {
-    use echo_module::{Inject, ServiceSlot};
+    use echo_module::ServiceSlot;
 
     let instance = ServiceSlot::<Arc<dyn crate::instance_commands::InstanceCommandHost>>::new();
     let tools = ServiceSlot::<Arc<dyn crate::tool_commands::ToolsCommandHost>>::new();
@@ -183,11 +186,8 @@ pub fn module(version: &str) -> Arc<dyn Module> {
             disposers.push(bind_tools.bind(mctx, &crate::host_keys::TOOLS_HOST)?);
             Ok(disposers)
         })
-        .with_inject(Inject::new([
-            LOOP_SERVICE_KEY.to_string(),
-            crate::host_keys::INSTANCE_HOST.name().to_string(),
-            crate::host_keys::TOOLS_HOST.name().to_string(),
-        ]))
+        // 依赖（loop + 两个 host 接缝）声明在 `module.toml` 的 `requires` 里：
+        // 框架用 `Inject::from_manifest` 取，这里不再重复一遍。
         // 命令域：`*Instance*` + 工具管理面两条域由本模块处理
         // （宿主 `apply_command` 在落内置 match 之前问一次模块）。
         //
@@ -390,5 +390,44 @@ mod tests {
             d.dispose();
         }
         assert!(resolve_provider(&ctx).is_none(), "卸载后服务键必须消失");
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+
+    /// `module.toml` 是身份的唯一真值，`MODULE_ID` 只是给 `const` 上下文用的
+    /// 别名（`BUILTIN_MODULE_IDS` 是常量数组，装不下运行期解析的值）。
+    ///
+    /// 这条测试就是"两份不许漂移"的锚点：改 TOML 忘了改常量，或者反过来，
+    /// 立刻红。
+    #[test]
+    fn toml_id_matches_the_const_alias() {
+        let m = manifest("0.0.0-test");
+        assert_eq!(m.id, MODULE_ID, "module.toml 的 id 与 MODULE_ID 不一致");
+    }
+
+    /// 依赖声明只有一个来源：清单。代码里不再调 `with_inject`。
+    ///
+    /// 若有人重新引入 `with_inject`，`inject()` 就会返回覆盖值而与清单脱钩——
+    /// 这条断言把它变成红灯。
+    #[test]
+    fn dependencies_come_from_the_manifest_only() {
+        let m = manifest("0.0.0-test");
+        let module = module("0.0.0-test");
+        let inject = module.inject();
+        assert_eq!(inject.required, m.requires, "代码里的注入声明盖过了清单");
+        assert!(
+            inject.required.contains(&LOOP_SERVICE_KEY.to_string()),
+            "loop 是工具执行的前提，必须声明"
+        );
+    }
+
+    /// 提供的服务键声明在清单里，且与 `provide` 用的常量一致。
+    #[test]
+    fn provides_is_declared_and_matches_the_service_key() {
+        let m = manifest("0.0.0-test");
+        assert_eq!(m.provides, vec![SERVICE_KEY.to_string()]);
     }
 }

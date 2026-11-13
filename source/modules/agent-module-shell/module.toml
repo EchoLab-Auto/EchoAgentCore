@@ -1,0 +1,21 @@
+# Shell 会话 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 代码用 `include_str!` 读这个文件构造 manifest（见 `src/lib.rs` 的
+# `manifest()`），改标题/依赖不必改 Rust。
+
+id = "echo-agent.shell"
+name = "Shell 会话"
+kind = "tool"
+entry = "shell"
+description = "后台 bash 会话（bash-start / bash-exec / bash-stop）+ Shell 面板命令域"
+builtin = true
+
+# tools.builtin：shell 工具挂在工具集那份注册表上（跨模块依赖，显式可见）。
+# echo-agent.host.shell：命令域宿主接缝，宿主注册。
+requires = [
+    "tools.builtin",
+    "echo-agent.host.shell",
+]
+
+# 本模块 provide 的工具 provider 键。
+provides = ["shell"]

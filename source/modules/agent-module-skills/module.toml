@@ -1,0 +1,22 @@
+# 技能目录 —— 模块声明（**单一真值**：身份 + 依赖 + 提供）
+#
+# 代码用 `include_str!` 读这个文件构造 manifest（见 `src/lib.rs`），
+# 改标题/依赖/提供的键都不必改 Rust。
+
+id = "echo-agent.skills.dir"
+name = "技能目录"
+kind = "skill"
+entry = "skills_dir"
+description = "SKILL.md 技能目录（热重载）"
+builtin = true
+
+# 两个 host 键：技能注册表与提示词存储，宿主注册。
+requires = [
+    "echo-agent.host.skills",
+    "echo-agent.host.prompt_store",
+]
+# 技能运行时与提示词刷新器：其它模块读技能清单走这两个键。
+provides = [
+    "echo-agent.host.prompt_refresher.skills",
+    "echo-agent.skills.runtime",
+]
