@@ -74,6 +74,15 @@ impl SkillsRuntime {
         if *current == reloaded {
             return Ok(false);
         }
+        // 「技能到底从哪来」是排查主线（少一个技能 = 提示词里少了整段规则，
+        // 而且没有任何报错）。按来源分别计数，一眼看出是文件层还是模块层空。
+        let owners: Vec<String> = reloaded.contributed_owners();
+        tracing::info!(
+            total = reloaded.len(),
+            contributed_owners = ?owners,
+            skills = ?reloaded.names(),
+            "skills registry reloaded"
+        );
         *current = reloaded;
         drop(current);
         self.prompt.store.replace("skills", Vec::new());
