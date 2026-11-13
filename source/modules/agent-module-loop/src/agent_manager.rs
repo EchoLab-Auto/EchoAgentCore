@@ -72,6 +72,26 @@ impl std::fmt::Debug for RunningAgent {
 }
 
 /// Owns all persona agents and routes frontend commands to the right one.
+/// 归一 + 去重 + 去空串：把用户写的名单变成消费方可直接查的形态。
+///
+/// **模块 id 走 `canonical_module_id`**（旧实例前缀归一为现役形态），工具名
+/// 无归一规则、原样去重即可。两者共用这个函数是因为"清理噪音"这部分一样：
+/// 配置里手写的空串与重复项不该变成前端的行为差异。
+///
+/// 顺序保持首次出现的位置（`Vec` 而非 `BTreeSet`）：名单顺序对前端无意义，
+/// 但保持稳定能让快照对比不被无谓重排干扰。
+fn dedup_non_empty<'a>(items: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in items {
+        let id = crate::modules::canonical_module_id(raw.trim());
+        if id.is_empty() || out.contains(&id) {
+            continue;
+        }
+        out.push(id);
+    }
+    out
+}
+
 pub struct AgentManager {
     default_id: String,
     /// All team member definitions (including disabled ones), for rebuild.
@@ -492,6 +512,16 @@ impl AgentManager {
                 enabled_modules: p.enabled_modules.clone(),
                 enabled_tools: p.enabled_tools.clone(),
                 enabled_skills: p.enabled_skills.clone(),
+                // 结论式名单（见 `TeamInfo` 的字段文档）：把"用户写的配置"
+                // 归一成"消费方可以直接查的形态"。
+                //
+                // 归一只做**值的形态**，不改判据：空仍表示"不限制"。真正的
+                // 收益是消除一处静默漂移——旧实例前缀（`echo-agent.adapter.<p>`）
+                // 在 Core 侧会被 `profile_allows_module` 归一后才比较，而前端
+                // 此前拿到的是**原始配置**，做字面量比较时不认旧 id。同一个
+                // 模块，后端认为对这个人格生效、前端认为不生效，两边都不报错。
+                available_modules: dedup_non_empty(p.enabled_modules.iter()),
+                available_tools: dedup_non_empty(p.enabled_tools.iter()),
                 memory_limit_tokens: p.memory_limit_tokens,
                 context_window_tokens: p.context_window_tokens,
                 api_profile: p.api_profile.clone(),
@@ -763,5 +793,38 @@ mod tests {
         );
         // carol 未运行：无实例，但定义已更新。
         assert!(mgr.get("carol").is_none());
+    }
+}
+
+#[cfg(test)]
+mod team_info_conclusion_fields {
+    use super::*;
+
+    /// 结论字段必须反映 Core 的归一规则，而不是原样转发配置。
+    #[test]
+    fn available_modules_are_canonicalized_and_deduped() {
+        let raw: Vec<String> = vec![
+            "echo-agent.adapter.qq".into(), // 旧实例前缀
+            "echo-agent.instance.qq".into(), // 归一后与上一条相同
+            "".into(),                       // 空串（手写配置里的噪音）
+            "  echo-agent.skills.dir  ".into(), // 前后空格
+            "echo-agent.skills.dir".into(),  // 重复
+        ];
+        let out = dedup_non_empty(raw.iter());
+        assert_eq!(
+            out,
+            vec![
+                "echo-agent.instance.qq".to_string(),
+                "echo-agent.skills.dir".to_string()
+            ],
+            "旧前缀必须归一、空串与重复必须去掉"
+        );
+    }
+
+    /// 空名单保持为空——消费方按「空 = 未限制」解读（协议契约）。
+    #[test]
+    fn empty_list_stays_empty() {
+        let raw: Vec<String> = Vec::new();
+        assert!(dedup_non_empty(raw.iter()).is_empty());
     }
 }

@@ -1104,6 +1104,52 @@ pub struct TeamInfo {
     pub enabled_tools: Vec<String>,
     #[serde(default)]
     pub enabled_skills: Vec<String>,
+    /// **该人格实际启用的模块 id（判定结果，不是配置输入）**。
+    ///
+    /// 与 [`Self::enabled_modules`] 的分工：那个是用户在配置里写的白名单
+    /// （可能含旧 id、可能是空 = 全启用），这个是 Core 按自己的规则算完之后
+    /// 的结论（旧前缀已归一为现役形态）。
+    ///
+    /// ## 为什么必须下发结果
+    ///
+    /// 前端要判断「某个模块对这个人格是否生效」（决定实例面板、管理面入口、
+    /// subagent 入口的显隐）。此前它拿 `enabled_modules` 自己做字面量比较，
+    /// 于是两处漂移**都不报错**：
+    ///
+    /// | 场景 | Core | 前端字面量比较 |
+    /// |---|---|---|
+    /// | 名单写旧 id `echo-agent.adapter.qq` | 认（已归一） | 不认 |
+    /// | 名单为空 = 全部启用 | 全部启用 | 全部启用（这条恰好一致） |
+    ///
+    /// 后端权威的归一规则（`canonical_module_id`）只该有一份实现。
+    ///
+    /// **空数组 = 该人格未限制模块**（与 [`Self::enabled_modules`] 的空语义
+    /// 一致，这是**协议契约**：Core 与消费方都按它解读）。
+    ///
+    /// 换句话说：本字段改变的是**值的形态**（旧 id 已归一、重复已去掉），
+    /// 不是**判据**。消费方仍然要认识"空 = 不限制"这一条——它不是 Core 的
+    /// 内部规则，而是这条线格式自身的语义。
+    #[serde(default)]
+    pub available_modules: Vec<String>,
+    /// **该人格实际可用的工具名（判定结果）。**
+    ///
+    /// 与 [`Self::enabled_tools`] / [`Self::disabled_tools`] 的分工同上：
+    /// 那两个是配置输入，这个是结论。前端判断「工具行要不要显示折叠箭头」
+    /// 「清单面板是否可用」时直接查这个表。
+    ///
+    /// **空数组 = 该人格未限制工具**（协议契约，同上）。
+    ///
+    /// **不含进程级全局禁用**：那一层是实时状态（`ToggleTool` 会改），由
+    /// `ToolsList` 的 [`ToolInfo::enabled`] 携带。前端判断"这个工具现在能不
+    /// 能用"时两者相与——两个都是结论，前端不需要认识名单语义。
+    ///
+    /// 与 [`Self::enabled_tools`] 的差别只在**形态**（去重、去空串），加这个
+    /// 字段的目的是让消费方不必直接读用户配置：配置里可能写空格、写重复、
+    /// 未来可能加归一规则，那些都不该成为前端的行为差异。
+    ///
+    /// [`ToolInfo::enabled`]: crate::protocol::ToolInfo
+    #[serde(default)]
+    pub available_tools: Vec<String>,
     /// Per-agent trunk token budget (None = 继承全局 [agent].memory_limit_tokens)。
     #[serde(default)]
     pub memory_limit_tokens: Option<usize>,
