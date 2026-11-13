@@ -148,7 +148,7 @@ dependencies = [
 [[package]]
 name = "agent-module-prodoc"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#63f99894838c12aa9ae574fb3900d8bb60384658"
+source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#cdbe3ec5cf1b35720d97a3db6f9f5b200ec8640e"
 dependencies = [
  "echo-module",
  "serde",
@@ -262,7 +262,7 @@ dependencies = [
 [[package]]
 name = "agent-module-subagent"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#dc42d09c9f647058b6fd26257bac21623dd9f9e9"
+source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#1ff4f5587fd4b4a8a2a043f1aa6f73f5e30ced1a"
 dependencies = [
  "agent-module-federation",
  "agent-module-tools",
