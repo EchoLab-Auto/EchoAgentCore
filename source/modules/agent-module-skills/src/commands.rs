@@ -71,6 +71,14 @@ pub trait SkillsCommandHost: Send + Sync {
         refresher: echo_defs::prompt::SharedPromptRefresher,
         controller: Arc<dyn echo_defs::prompt::NamedCapabilityController>,
     );
+    /// 外部模块贡献的技能（`owner` = 模块 id）。
+    ///
+    /// 默认空实现：没有外部模块的宿主（纯文件技能）代码路径完全不变。
+    /// 有模块的宿主从 [`crate::host_keys::SKILL_CONTRIBUTION_SOURCE`] 读一次
+    /// 转手即可——技能模块不直接摸模块运行时。
+    fn contributed_skills(&self) -> Vec<(String, Vec<crate::Skill>)> {
+        Vec::new()
+    }
 }
 
 /// 命令处理器。

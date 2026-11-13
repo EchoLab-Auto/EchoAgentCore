@@ -87,6 +87,12 @@ pub(crate) struct HostWiring {
     /// 联邦句柄（**不看合并与否**）：管理面用它记录入站连接的 `Host`，
     /// 邀请串据此宣告「别人实际连我用的地址」（2026-11；None = 联邦关闭）。
     pub federation_observer: Option<Arc<Federation>>,
+    /// 外部模块贡献的技能来源（None = 进程里没有模块运行时）。
+    ///
+    /// 由组合根在模块启动**之后**才拿得到——而 `HostWiring` 正是在那之后
+    /// 组装的，所以这里是 `Option` 而不是"先塞空实现后回填"。
+    pub skill_contributions:
+        Option<Arc<dyn agent_module_skills::host_keys::SkillContributionSource>>,
 }
 
 /// 工作区模块的跨机查询接缝：把三个语义方法映射到联邦查询出口。
@@ -202,6 +208,20 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         Arc::new(AgentSkillsCommandHost::new(wiring.agent.clone()))
             as Arc<dyn agent_module_loop::skill::commands::SkillsCommandHost>,
     );
+
+    // ── 外部模块的技能贡献（qq / subagent / prodoc …）──
+    //
+    // 键挂在根作用域，人格作用域沿 `Ctx` 父链读同一份：技能表是 per-persona
+    // 的（`PERSONA_SCOPED_KINDS` 把 `kind = "skill"` 的模块按人格各挂一份），
+    // 而贡献是进程级的，只有这一层能同时看见两边。
+    if let Some(source) = wiring.skill_contributions.clone() {
+        put(
+            &mut keep,
+            ctx,
+            &agent_module_skills::host_keys::SKILL_CONTRIBUTION_SOURCE,
+            source,
+        );
+    }
 
     // ── 工作区 ──
     //

@@ -73,6 +73,39 @@ fn push_builtin(
 ///
 /// 与 [`push_builtin`] 的分工：后者只给 manifest + mount 闭包，构造器的额外
 /// 能力（`with_commands` / `with_text_blocks` / …）用不上。
+/// 编译内置模块贡献的技能（`owner` = 模块 id）。
+///
+/// ## 为什么与 stdio 模块分开走
+///
+/// 外部模块（qq）经握手帧 `Register` 上报贡献，宿主从 `ModuleHandle` 读出；
+/// 内置模块没有那套协议——它们和宿主编在同一个二进制里，贡献就是几个
+/// `&'static str` 常量。两条路在 [`crate::modules_runtime::ModuleSkillContributions`]
+/// 汇合，技能表只看见一份 `(owner, skills)`。
+///
+/// ## 为什么正文由各自 crate 提供
+///
+/// 技能内容是**模块的领域知识**（subagent 怎么用、ProDoc 文档怎么写），
+/// 只有对应的 crate 能保证它跟实现同步。这里只负责解析成宿主技能类型
+/// ——解析器属于技能模块，别的 crate 不必认识 SKILL.md 格式。
+pub fn skill_contributions() -> Vec<(String, Vec<echo_defs::skill::Skill>)> {
+    vec![
+        (
+            agent_module_loop::modules::SUBAGENT_MODULE_ID.to_string(),
+            vec![agent_module_skills::loader::parse_skill_text(
+                agent_module_subagent::SKILL_MARKDOWN,
+                "subagent-delegation",
+            )],
+        ),
+        (
+            agent_module_prodoc::MODULE_ID.to_string(),
+            vec![agent_module_skills::loader::parse_skill_text(
+                agent_module_prodoc::SKILL_MARKDOWN,
+                "prodoc-format",
+            )],
+        ),
+    ]
+}
+
 fn push_module(catalog: &mut Vec<Arc<dyn Module>>, module: Arc<dyn Module>) -> anyhow::Result<()> {
     let id = module.manifest().id.clone();
     validate_module_id(&id)?;
@@ -689,6 +722,57 @@ mod catalog_shape_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 内置模块的技能必须真的解析出来——`SKILL_MARKDOWN` 是编译期常量，
+    /// 一旦有人把 crate 里的 skills/ 目录改坏（或忘了带进发布包），
+    /// 症状是「技能静默消失」，不是编译错误。
+    #[test]
+    fn builtin_modules_contribute_their_skills() {
+        let contributions = skill_contributions();
+        let names: Vec<(String, Vec<String>)> = contributions
+            .iter()
+            .map(|(owner, skills)| {
+                (
+                    owner.clone(),
+                    skills.iter().map(|s| s.metadata.name.clone()).collect(),
+                )
+            })
+            .collect();
+        assert!(
+            names.contains(&(
+                "echo-agent.subagent".to_string(),
+                vec!["subagent-delegation".to_string()]
+            )),
+            "subagent 的技能没解析出来：{names:?}"
+        );
+        assert!(
+            names.contains(&(
+                "echo-agent.prodoc".to_string(),
+                vec!["prodoc-format".to_string()]
+            )),
+            "prodoc 的技能没解析出来：{names:?}"
+        );
+        // 包标签必须落在技能上，否则禁用模块时技能不会跟着消失。
+        for (_, skills) in &contributions {
+            for skill in skills {
+                assert!(
+                    skill.metadata.package.is_some(),
+                    "技能 {} 缺 package 标签，包级门控会漏掉它",
+                    skill.metadata.name
+                );
+                assert!(
+                    !skill.instructions.is_empty(),
+                    "技能 {} 正文为空",
+                    skill.metadata.name
+                );
+                assert!(
+                    !skill.instructions.starts_with("---"),
+                    "技能 {} 的 frontmatter 没被剥掉，会原样进提示词",
+                    skill.metadata.name
+                );
+            }
+        }
+    }
 
     /// 派生 id 的空段必须被拦下（真实踩到过：无 `[instances]` 配置时出现
     /// 一个叫 `echo-agent.instance.` 的幽灵模块）。

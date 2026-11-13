@@ -134,6 +134,24 @@ impl SkillsCommandHost for AgentSkillsCommandHost {
     fn emit(&self, event: BackendEvent) {
         self.origin.emit(event);
     }
+    fn contributed_skills(&self) -> Vec<(String, Vec<agent_module_skills::Skill>)> {
+        // 走根作用域而不是 `self`：技能贡献来自**进程级**模块（qq / subagent
+        // / prodoc），而本适配器是 per-persona 的——每个人格的技能表都要看到
+        // 同一份贡献。根作用域的 `Ctx` 沿父链找服务，人格作用域只是它的子。
+        //
+        // 服务缺席是常态而不是错误：没配 `modules.toml` 的部署根本没有外部
+        // 模块，此时技能表只来自文件目录（原行为）。
+        self.origin
+            .module_host()
+            .root_scope()
+            .and_then(|scope| {
+                scope
+                    .ctx()
+                    .service(&agent_module_skills::host_keys::SKILL_CONTRIBUTION_SOURCE)
+            })
+            .map(|source| source.contributed_skills())
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

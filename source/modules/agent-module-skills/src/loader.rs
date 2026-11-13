@@ -28,6 +28,25 @@ pub fn load_skill(path: &Path) -> Result<Skill, SkillError> {
 }
 
 fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
+    let fallback = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("unnamed")
+        .to_string();
+    Ok(parse_parts(text, &fallback))
+}
+
+/// 从 **SKILL.md 文本**解析技能。
+///
+/// 模块贡献的技能走这条路：正文 `include_str!` 在模块二进制里，磁盘上没有
+/// 对应文件——既没有路径可读，也没有目录名可以给 `name` 兜底，兜底名由调用
+/// 方给（就是贡献里的 `name`）。
+pub fn parse_skill_text(text: &str, fallback_name: &str) -> Skill {
+    parse_parts(text, fallback_name)
+}
+
+fn parse_parts(text: &str, fallback_name: &str) -> Skill {
     let (frontmatter, body) = split_frontmatter(text);
     let (
         mut name,
@@ -84,14 +103,9 @@ fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
         }
     }
     if name.is_empty() {
-        name = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("unnamed")
-            .to_string();
+        name = fallback_name.to_string();
     }
-    Ok(Skill {
+    Skill {
         metadata: SkillMetadata {
             name,
             description,
@@ -103,7 +117,7 @@ fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
             package,
         },
         instructions: body.trim().to_string(),
-    })
+    }
 }
 
 /// Split `--- frontmatter ---` from the body.

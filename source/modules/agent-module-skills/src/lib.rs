@@ -26,13 +26,12 @@ pub mod loader;
 pub mod prompt;
 pub mod runtime;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use thiserror::Error;
 
 /// 模块 id（宿主 `modules::SKILLS_DIR_MODULE_ID` 与本常量同源字面量）。
-/// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
 pub const MANIFEST_TOML: &str = include_str!("../module.toml");
 
 pub const MODULE_ID: &str = "echo-agent.skills.dir";
@@ -123,6 +122,16 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SkillRegistry {
     skills: HashMap<String, Skill>,
+    /// 外部模块贡献的成员索引：`owner`（模块 id）→ 技能名（名称排序）。
+    ///
+    /// 内容仍存 `skills` 单表，这里只存**归属**：`all()` / `get()` / `names()`
+    /// 不必为两层各写一遍。分开记的原因在 `reload`——目录重载会把注册表整体
+    /// 替换成「文件里有什么」，贡献层得能按 owner 分辨出来并重放，否则面板点
+    /// 一次「重载技能」就把 qq / subagent / prodoc 的技能全丢了。
+    ///
+    /// 用 `BTreeMap` 而不是 `HashMap`：同一份注册表的 `PartialEq` 会参与
+    /// `reload` 的「没变化就早退」判定，随机迭代顺序不该影响结论。
+    contributed: BTreeMap<String, Vec<String>>,
 }
 
 impl SkillRegistry {
@@ -182,6 +191,53 @@ impl SkillRegistry {
 
     pub fn register(&mut self, skill: Skill) {
         self.skills.insert(skill.metadata.name.clone(), skill);
+    }
+
+    /// 整体替换某个 `owner`（外部模块 id）贡献的技能集。
+    ///
+    /// 语义是**替换而不是追加**：模块重启后上报的是它当前的完整技能清单，
+    /// 上一轮有、这一轮没有的技能必须消失——追加会让已下线的技能永远留在
+    /// 提示词里。`owner` 自己也不存在时等价于纯新增。
+    ///
+    /// 贡献层覆盖同名文件层技能：模块是声明式的权威来源（`skills/
+    /// qq-transport/` 这类历史遗留目录在迁移期与模块贡献重名时，以模块为准）。
+    pub fn set_contributed(&mut self, owner: &str, skills: Vec<Skill>) {
+        if let Some(previous) = self.contributed.remove(owner) {
+            for name in previous {
+                self.skills.remove(&name);
+            }
+        }
+        let mut names: Vec<String> = Vec::with_capacity(skills.len());
+        for skill in skills {
+            names.push(skill.metadata.name.clone());
+            self.skills.insert(skill.metadata.name.clone(), skill);
+        }
+        names.sort();
+        names.dedup();
+        self.contributed.insert(owner.to_string(), names);
+    }
+
+    /// 撤销某个 `owner` 的全部贡献技能；返回是否确有其事。
+    pub fn remove_contributed(&mut self, owner: &str) -> bool {
+        let Some(names) = self.contributed.remove(owner) else {
+            return false;
+        };
+        for name in names {
+            self.skills.remove(&name);
+        }
+        true
+    }
+
+    /// 当前有贡献技能的 `owner` 清单（名称排序）。
+    ///
+    /// `reload` 用它算「这一轮没再上报的 owner」——那些来源已经没了，技能要撤。
+    pub fn contributed_owners(&self) -> Vec<String> {
+        self.contributed.keys().cloned().collect()
+    }
+
+    /// 某个 `owner` 贡献了多少个技能。
+    pub fn contributed_count(&self, owner: &str) -> usize {
+        self.contributed.get(owner).map(Vec::len).unwrap_or(0)
     }
 
     pub fn get(&self, name: &str) -> Option<&Skill> {

@@ -49,6 +49,43 @@ pub struct ModuleRuntime {
     launch_configs: std::collections::HashMap<String, serde_json::Value>,
 }
 
+/// 技能贡献来源：把已启动模块的 `Register` 贡献交给技能表。
+///
+/// 持 `ModuleHandle` 的**克隆**而不是 `Arc<ModuleRuntime>`：句柄本身是
+/// `Arc<Shared>` 的包装，克隆廉价，而 `ModuleRuntime` 不是 `Clone`——用句柄
+/// 也让"每次调用读最新贡献"这件事自然成立（热替换后 `Register` 会重发）。
+pub struct ModuleSkillContributions {
+    handles: Vec<echo_module_host::ModuleHandle>,
+    /// 编译内置模块的技能（无 stdio 句柄，内容随 Core 二进制）。
+    builtin: Vec<(String, Vec<echo_defs::skill::Skill>)>,
+}
+
+impl ModuleSkillContributions {
+    /// `started` 为 `None` = 进程里没有外部模块运行时（没配 `modules.toml`），
+    /// 此时只剩 `builtin` 一层。
+    pub fn new(
+        started: Option<&StartedModules>,
+        builtin: Vec<(String, Vec<echo_defs::skill::Skill>)>,
+    ) -> Self {
+        Self {
+            handles: started.map(|s| s.handles.clone()).unwrap_or_default(),
+            builtin,
+        }
+    }
+}
+
+impl agent_module_skills::host_keys::SkillContributionSource for ModuleSkillContributions {
+    fn contributed_skills(&self) -> Vec<(String, Vec<echo_defs::skill::Skill>)> {
+        use agent_module_loop::adapter::ModuleHandleSkills;
+        self.handles
+            .iter()
+            .map(|handle| handle.contributed_skills())
+            .chain(self.builtin.iter().cloned())
+            .filter(|(_, skills)| !skills.is_empty())
+            .collect()
+    }
+}
+
 /// `modules.toml` 静态条目（用于在模块清单里显示**外部模块**）。
 #[derive(Debug, Clone)]
 pub struct StaticModuleEntry {
@@ -354,6 +391,18 @@ impl ModuleRuntime {
     /// 全部已启动模块的远程工具模块实例（未注册工具贡献的模块贡献空表）。
     pub fn tools(&self) -> Vec<Arc<RemoteTool>> {
         agent_module_loop::adapter::tools_of(&self.started)
+    }
+
+    /// 全部已启动模块贡献的**技能**，`owner` = 模块 id。
+    ///
+    /// 与 [`Self::tools`] 同一来源（`ModuleHandle::contributions`），差别只在
+    /// 解码的目标类型：工具要包成 `Tool` trait 对象再注册，技能是纯数据，
+    /// 直接交给技能表按 owner 替换。
+    ///
+    /// 每次调用都是**实时**读句柄：模块热替换后 `Register` 会重新上报，被禁
+    /// / 启动失败的模块不在 `handles` 里，因此不需要额外失效逻辑。
+    pub fn skills(&self) -> Vec<(String, Vec<echo_defs::skill::Skill>)> {
+        agent_module_loop::adapter::skills_of(&self.started)
     }
 
     /// 全部已启动模块的模块实例贡献的远程模块实例（P1，2026-10 实例模块化）。

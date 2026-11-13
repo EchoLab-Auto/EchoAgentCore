@@ -1674,6 +1674,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 观测出处：合并与否都给——独立监听时 Panel 连的端口正是
                 // 管理端口，邀请串要宣告「它用的那个地址」（2026-11）。
                 federation_observer: Some(merge_fed.clone()),
+                // 技能贡献来源：外部模块（`Register` 帧）+ 内置模块（编译期
+                // 常量）。外部模块要 `module_runtime` 启动之后才有，而
+                // `HostWiring` 正好组装在那之后；内置模块与环境无关，所以这个
+                // 来源**无条件注册**——没配 modules.toml 的部署也要有 subagent
+                // 与 prodoc 的技能。
+                skill_contributions: Some(std::sync::Arc::new(
+                    crate::modules_runtime::ModuleSkillContributions::new(
+                        module_runtime.as_ref().map(|runtime| &runtime.started),
+                        crate::builtin_modules::skill_contributions(),
+                    ),
+                )
+                    as std::sync::Arc<
+                        dyn agent_module_skills::host_keys::SkillContributionSource,
+                    >),
             },
         );
 

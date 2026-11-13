@@ -12,6 +12,8 @@ use echo_module_host::api::Contribution;
 pub const TOOL_KIND: &str = "echo-agent.tool";
 /// 聊天平台实例的自定义贡献分类。
 pub const INSTANCE_KIND: &str = "echo-agent.instance";
+/// 外部模块贡献技能（SKILL.md 能力包）的自定义贡献分类。
+pub const SKILL_KIND: &str = "echo-agent.skill";
 
 fn default_category() -> String {
     "module".to_string()
@@ -164,6 +166,53 @@ pub struct IncomingMessage {
     pub files: Vec<Value>,
 }
 
+
+/// 外部模块贡献的**技能**（SKILL.md 形态的能力包）。
+///
+/// 与 [`ToolContribution`] 同构：模块在自己的 `Register` 里上报，宿主侧
+/// 转成 `echo_defs::skill::Skill` 注册进技能表。能力随**提供它的模块**走，
+/// 而不是堆在 core 的 `skills/` 目录里——QQ 的两个技能归 QQ 模块，
+/// subagent 的归 subagent 模块，prodoc 的归 prodoc 模块。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillContribution {
+    /// 技能名（也是 `Custom.name`，同时是 `SkillMetadata::name`）。
+    pub name: String,
+    #[serde(default)]
+    /// Tier-1 一句话说明（进系统提示词清单）。
+    pub description: String,
+    #[serde(default)]
+    /// 触发词：消息命中任一即加载完整指令。
+    pub keywords: Vec<String>,
+    #[serde(default)]
+    /// 是否每个会话都注入（身份/铁律类技能）。
+    pub always: bool,
+    #[serde(default)]
+    /// 系统提示词技能：内容进 base 区而不是技能区。
+    pub system: bool,
+    #[serde(default)]
+    /// 面板分组标签。
+    pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 所属包 id（模块 id 或跨类型包标签）。包级门控按它聚合技能。
+    pub package: Option<String>,
+    /// **SKILL.md 全文**（含可选 frontmatter）。
+    ///
+    /// 传正文而不是目录路径：模块装在哪个路径是本机事实，联邦/跨机部署时
+    /// 宿主根本读不到。技能内容随模块二进制一起走，模块发版即技能发版。
+    pub body: String,
+}
+
+impl SkillContribution {
+    /// 编码成框架的领域中立贡献。
+    pub fn into_custom(self) -> Contribution {
+        Contribution::Custom {
+            kind: SKILL_KIND.to_string(),
+            name: self.name.clone(),
+            payload: serde_json::to_value(self).expect("skill contribution is serializable"),
+        }
+    }
+}
+
 /// 解码一条自定义工具贡献；不属于本分类或 DTO 不合法时不认领。
 pub fn tool_from_custom(contribution: &Contribution) -> Option<ToolContribution> {
     let Contribution::Custom { kind, payload, .. } = contribution else {
@@ -172,6 +221,28 @@ pub fn tool_from_custom(contribution: &Contribution) -> Option<ToolContribution>
     (kind == TOOL_KIND)
         .then(|| serde_json::from_value(payload.clone()).ok())
         .flatten()
+}
+
+/// 解码一条自定义技能贡献；不属于本分类或 DTO 不合法时不认领。
+///
+/// `Custom.name` 必须与 `payload.name` 一致（同实例贡献的纪律）：名字是
+/// **技能表的键**，两个字段各说各话会让「面板上看到的技能」与「提示词里
+/// 注入的技能」错位，且这种错位只在触发时才发现。
+pub fn skill_from_custom(contribution: &Contribution) -> Option<SkillContribution> {
+    let Contribution::Custom {
+        kind,
+        payload,
+        name,
+        ..
+    } = contribution
+    else {
+        return None;
+    };
+    if kind != SKILL_KIND {
+        return None;
+    }
+    let skill: SkillContribution = serde_json::from_value(payload.clone()).ok()?;
+    (name.is_empty() || *name == skill.name).then_some(skill)
 }
 
 /// 解码一条自定义模块实例贡献。
