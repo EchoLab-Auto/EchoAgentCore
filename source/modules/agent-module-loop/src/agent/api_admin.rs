@@ -588,7 +588,10 @@ impl Agent {
             "to": to,
         });
         match host
-            .dispatch_raw("WorkspaceRenameApiProfile", payload)
+            .dispatch_raw(
+                agent_module_workspace::commands::RENAME_API_PROFILE,
+                payload,
+            )
             .await
         {
             None => Ok(0),

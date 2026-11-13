@@ -162,7 +162,10 @@ impl Agent {
             // turn（2026-10 作用域普查结论）。`None` = 模块未挂载，静默跳过
             // （与迁移前"没有 store 就 return"同语义）。
             if let Some(Err(message)) = host
-                .dispatch_raw("WorkspaceSetConversationApiProfile", payload)
+                .dispatch_raw(
+                    agent_module_workspace::commands::SET_CONVERSATION_API_PROFILE,
+                    payload,
+                )
                 .await
             {
                 agent.emit(BackendEvent::Notice {
