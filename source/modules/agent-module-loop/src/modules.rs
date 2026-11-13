@@ -37,9 +37,17 @@ pub use agent_module_tools::MODULE_ID as TOOLS_BUILTIN_MODULE_ID;
 pub const MANAGEMENT_PANEL_MODULE_ID: &str = "echo-agent.management.panel";
 /// 工作区会话管理模块（workspace）：Panel 侧多会话/多目录管理 + git 状态，
 /// 模型侧 `workspace` 工具与激活会话的系统提示注入。
-pub const WORKSPACE_MODULE_ID: &str = "echo-agent.workspace";
+///
+/// **别名而不是字面量**：模块仓自己声明了这个 id（`agent-module-workspace`
+/// 的 `MODULE_ID`），词表归模块。此前这里写死同一字符串——模块改 id 时宿主
+/// 不会编译失败，只会在运行期表现为「模块挂上了但门控认不出它」，且
+/// `document/modules/workspace.md` 早已声称这里是别名（文档与代码不一致）。
+pub use agent_module_workspace::MODULE_ID as WORKSPACE_MODULE_ID;
+
 /// Subagent 委派模块 id（包 id 同名：`spawn_subagent` 工具 + subagent 技能随包门控）。
-pub const SUBAGENT_MODULE_ID: &str = "echo-agent.subagent";
+///
+/// 同 [`WORKSPACE_MODULE_ID`]：别名，词表归模块。
+pub use agent_module_subagent::MODULE_ID as SUBAGENT_MODULE_ID;
 /// 循环模块（声明已外迁到 [`agent_module_loop`]，解耦计划 Phase 3 ⑦）。
 ///
 /// 这里留**兼容别名**，配置与门控读的是同一批字面量，不另存一份。

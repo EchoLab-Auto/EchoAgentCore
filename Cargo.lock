@@ -262,7 +262,7 @@ dependencies = [
 [[package]]
 name = "agent-module-subagent"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#1ff4f5587fd4b4a8a2a043f1aa6f73f5e30ced1a"
+source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#51dd3515a0600f4eaba82f0c9885ac02288bbe9d"
 dependencies = [
  "agent-module-federation",
  "agent-module-tools",
@@ -319,7 +319,7 @@ dependencies = [
 [[package]]
 name = "agent-module-workspace"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#3054c3c7420885f5ac0cb2b4ed69fb5e91827226"
+source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#6ef5e8ed6185446da8a405a17b4cd1bc5016088a"
 dependencies = [
  "echo-context",
  "echo-module",
