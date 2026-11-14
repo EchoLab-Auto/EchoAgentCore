@@ -196,6 +196,30 @@ impl SessionApiStore {
         let path = path.as_path();
         let payload = {
             let entries = self.lock_read();
+            // **抹除留痕**（2026-11）：本文件是"内存全量覆盖"，一旦有第二个
+            // 持有同一路径的实例（部署期新旧进程、重复构造的 Agent），它的
+            // flush 会把别人写的条目整片抹掉，而现场没有任何痕迹——实测就
+            // 出现过"某个会话的覆盖凭空消失、日志干干净净"。
+            //
+            // 这里只做观测：盘上有而内存没有 = 即将被抹掉的那几条。不阻止
+            // （阻止会让 `clear` 失效），但要能从日志里看出是哪一次丢的。
+            if let Ok(raw) = std::fs::read_to_string(path) {
+                if let Ok(previous) = serde_json::from_str::<Entries>(&raw) {
+                    let dropped: Vec<&str> = previous
+                        .keys()
+                        .filter(|key| !entries.contains_key(*key))
+                        .map(String::as_str)
+                        .collect();
+                    if !dropped.is_empty() {
+                        tracing::warn!(
+                            path = %path.display(),
+                            dropped = ?dropped,
+                            kept = entries.len(),
+                            "会话级 API 覆盖整体重写时抹掉了盘上已有条目（多实例共写或误清除）"
+                        );
+                    }
+                }
+            }
             match serde_json::to_vec_pretty(&*entries) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -417,6 +441,52 @@ mod tests {
         ]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].profile, "one");
+    }
+
+
+    /// `attach`（真实启动路径）必须读回盘上已有条目。
+    ///
+    /// 组合根的装配顺序是 `Agent::new`（纯内存空表）→ `session_api_path(...)`
+    /// → `attach`。重启后覆盖能不能活下来，全看这一步。
+    #[test]
+    fn attach_loads_existing_entries() {
+        let path = temp_path("attach");
+        let _ = std::fs::remove_file(&path);
+        {
+            let seeding = SessionApiStore::open(&path);
+            seeding.set("local:workspace:ws/v:u", "opencode");
+        }
+        // 晚绑定：先纯内存，再挂文件。
+        let store = SessionApiStore::in_memory();
+        assert!(store.path().is_none());
+        store.attach(&path);
+        assert_eq!(store.path().as_deref(), Some(path.as_path()));
+        assert_eq!(
+            store.get("local:workspace:ws/v:u").as_deref(),
+            Some("opencode"),
+            "attach 必须把盘上条目读进内存，否则重启后徽标回落成 persona 值"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 晚绑定前内存里已有的条目**优先**于盘上的旧值。
+    ///
+    /// 顺序理由：内存代表"本次进程已经做出的决定"，盘上只是上次进程的意图。
+    #[test]
+    fn attach_keeps_in_memory_decisions() {
+        let path = temp_path("attach-merge");
+        let _ = std::fs::remove_file(&path);
+        {
+            let seeding = SessionApiStore::open(&path);
+            seeding.set("s", "old");
+            seeding.set("only-on-disk", "kimi");
+        }
+        let store = SessionApiStore::in_memory();
+        store.set("s", "new");
+        store.attach(&path);
+        assert_eq!(store.get("s").as_deref(), Some("new"));
+        assert_eq!(store.get("only-on-disk").as_deref(), Some("kimi"));
+        let _ = std::fs::remove_file(&path);
     }
 
 }
