@@ -399,6 +399,73 @@ pub struct PendingLogin {
     client: reqwest::Client,
 }
 
+/// 登录前的**网络可达性预检**。
+///
+/// # 为什么必须有
+///
+/// 实测过一整轮：授权 URL 打不开，返回 `403 unsupported_country_region_territory`。
+/// 如果等到用户走完浏览器授权、回调回来才在换令牌那一步报错，那段时间全白费，
+/// 而且错误出现在"最后一步"，很容易被当成代码 bug。
+///
+/// 预检直接打 token 端点：这不是"猜哪些国家支持"（那份名单随政策变），而是
+/// **问上游本人**。判据是响应体里的错误码：
+///
+/// | 响应 | 含义 |
+/// |---|---|
+/// | 含 `unsupported_country_region_territory` | 地区被拒 → 必须换出口 |
+/// | 其它任何错误（`invalid_request` / `invalid_grant` / 400/405…） | 地区**通过**，只是这个假 code 无效 |
+///
+/// 也就是说我们只把"地区被拒"当成失败，其余一律视为通过——这样上游改了
+/// 错误码也不会误判。
+pub async fn preflight() -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|error| format!("build http client failed: {error}"))?;
+    // 只探测"地区门"，不真的换令牌：code 填一个假值，期望它被拒（那说明
+    // 地区是通过的）。
+    let response = client
+        .post(TOKEN_URL)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", "preflight-probe"),
+            ("client_id", CLIENT_ID),
+        ])
+        .send()
+        .await
+        .map_err(|error| {
+            format!(
+                "预检请求发不出去：{error}\n\
+                 这条通道必须能直连 openai.com。如果 Core 需要代理：\n  \
+                 systemctl --user edit echo-agent-core   # 加 Environment=HTTPS_PROXY=...\n  \
+                 或临时：HTTPS_PROXY=http://127.0.0.1:7897 echo-agent-core login-chatgpt"
+            )
+        })?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    classify_preflight(status.as_u16(), &body)
+}
+
+/// 预检结论的判定（纯函数，便于单测）。
+///
+/// 只把"地区被拒"当失败：其余任何响应都说明网络层已到达上游。
+pub(crate) fn classify_preflight(status: u16, body: &str) -> Result<(), String> {
+    if body.contains("unsupported_country_region_territory") {
+        return Err(format!(
+            "网络预检失败：OpenAI 拒绝当前出口地区（HTTP {status}）。\n\
+             登录前必须换到一个支持的出口。自检办法：\n  \
+             curl -x $HTTPS_PROXY https://chatgpt.com/cdn-cgi/trace | grep loc=\n\
+             `loc=` 需要是 US / JP / KR / SG 这类，`loc=HK` 与 `loc=CN` 都会被拒。\n\
+             给 Core 配代理（服务不继承 shell 环境变量）：\n  \
+             systemctl --user edit echo-agent-core\n    [Service]\n    \
+             Environment=HTTPS_PROXY=http://127.0.0.1:7897"
+        ));
+    }
+    // 任何非"地区"错误都算通过——上游总得回点什么（400/405/invalid_request）。
+    let _ = status;
+    Ok(())
+}
+
 /// 起一次登录：绑定回调端口并给出授权 URL。
 ///
 /// 绑定失败（端口被占）时**直接报错**，不换端口：`redirect_uri` 是随 client
@@ -920,6 +987,36 @@ mod tests {
         assert!(!rendered.contains("super-secret-access-value"));
         assert!(!rendered.contains("super-secret-refresh"));
         assert!(rendered.contains("chars"), "{rendered}");
+    }
+
+    /// 预检只把"地区被拒"判为失败——这是上一轮实测到的唯一真实失败形态。
+    #[test]
+    fn preflight_flags_geo_block() {
+        let error = classify_preflight(
+            403,
+            r#"{"error":{"code":"unsupported_country_region_territory"}}"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("拒绝当前出口地区"), "{error}");
+        assert!(error.contains("loc="), "应给出自检办法：{error}");
+        assert!(error.contains("systemctl --user edit"), "应给出服务端配法");
+    }
+
+    /// 其余任何响应都算"地区通过"：假 code 本来就该被拒（400/invalid_grant），
+    /// 那是通过网络的证明，不是地区问题。
+    #[test]
+    fn preflight_accepts_non_geo_errors() {
+        for (status, body) in [
+            (400, r#"{"error":"invalid_grant"}"#),
+            (400, r#"{"error":"invalid_request","error_description":"bad code"}"#),
+            (405, ""),
+            (200, "{}"),
+        ] {
+            assert!(
+                classify_preflight(status, body).is_ok(),
+                "status={status} body={body} 不该被判为地区失败"
+            );
+        }
     }
 
     /// 地区封锁必须是"配代理"这条可执行提示，而不是裸 HTTP 403。

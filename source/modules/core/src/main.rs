@@ -98,6 +98,22 @@ enum SubCommand {
     /// 被哪一层覆盖成了现在这样"，以及提交前确认合成树符合预期。
     /// modules.toml 不存在时说明特性休眠（退出码 0，不算错误）。
     DumpConfig,
+    /// 登录 ChatGPT 订阅（Plus / Pro），把 OAuth 令牌写进 Core 数据根。
+    ///
+    /// 登录后即可在 API 配置里用 `provider = "openai-chatgpt"` 的 profile
+    /// 走订阅额度（不需要 API key）。详见 `agent-module-provider-llm::chatgpt`。
+    ///
+    /// **非官方用法**：复刻的是官方 Codex CLI 的 OAuth 流程（端点与 client_id
+    /// 均取自官方二进制），OpenAI 未承诺支持第三方程序，随时可能失效。
+    #[command(name = "login-chatgpt")]
+    LoginChatgpt {
+        /// 只打印授权 URL 就退出，不等待回调。
+        ///
+        /// 用于「Core 在远端机器上」的场景：本地浏览器打开打印出来的 URL，
+        /// 回调仍会打到 Core 那台的 1455 端口（需要该端口可达）。
+        #[arg(long)]
+        print_url: bool,
+    },
     /// 热替换一个已装载的外部进程模块，不重启 Core。
     /// 新实例握手失败时旧实例继续服务。
     #[command(name = "module-upgrade")]
@@ -202,6 +218,9 @@ async fn main() -> Result<()> {
             SubCommand::DumpConfig => return dump_config_command(&args.config_path()),
             #[cfg(feature = "ts-bindings")]
             SubCommand::DumpProtocolTs { out } => return dump_protocol_ts_command(out.as_deref()),
+            SubCommand::LoginChatgpt { print_url } => {
+                return login_chatgpt_command(print_url).await
+            }
             SubCommand::ModuleUpgrade {
                 id,
                 binary,
@@ -220,6 +239,45 @@ async fn main() -> Result<()> {
     let path = args.config_path();
     let cfg = CoreConfig::load(&path)?;
     run_core(args, cfg).await
+}
+
+/// `echo-agent-core login-chatgpt`：走一遍 OAuth + PKCE 登录并落盘令牌。
+///
+/// 循环：起回调服务器 → 打印 URL（让用户在自己浏览器打开）→ 等回调 →
+/// 换令牌 → 落盘。**不自动打开浏览器**：Core 经常跑在无桌面的机器/容器里，
+/// `webbrowser` 在那只会静默失败；把 URL 打出来交给用户是最可靠的形态。
+async fn login_chatgpt_command(print_url: bool) -> Result<()> {
+    use agent_module_provider_llm::chatgpt::auth;
+
+    // 先预检再绑端口：地区被拒时没必要让用户走完浏览器授权才发现。
+    // 顺序也重要——预检失败时不会占住 1455（那是 codex CLI 也要用的端口）。
+    auth::preflight()
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
+    println!("网络预检通过（地区未被拒）。");
+
+    let pending = auth::begin_login()
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
+    println!("在浏览器里打开这个地址完成授权：\n\n{}\n", pending.url);
+    println!("回调地址：{}", auth::redirect_uri());
+    println!(
+        "（该地址由 OAuth 客户端注册决定，端口不能改；本机 codex CLI 登录时会占同一端口。）"
+    );
+    if print_url {
+        println!("\n--print-url：已打印，不等待回调。");
+        return Ok(());
+    }
+    println!("\n等待授权回调（最多 5 分钟）…");
+    let auth = pending.wait().await.map_err(|error| anyhow::anyhow!(error))?;
+    println!("登录成功。");
+    if !auth.email.is_empty() {
+        println!("账户：{}", auth.email);
+    }
+    println!("令牌已写入：{}", auth::auth_path().display());
+    println!("\n下一步：在 API 配置里加一个 provider = \"openai-chatgpt\" 的 profile");
+    println!("（model 填 Codex 可用模型，如 gpt-5-codex；api_key 留空）。");
+    Ok(())
 }
 
 /// `echo-agent-core dump-config`：打印 modules.toml 的分层合成结果。
