@@ -11,14 +11,52 @@ y: 3440
 > **定位**：本文是前后端线协议（management WebSocket 契约）的参考——契约归属与兼容规则、传输与信封（含事件扇出序号、Bootstrap、共享枚举）、命令、事件（含时间线增量同步）、归属与路由、管理通道与快照。读者：Core / Panel 双端开发者与协议维护者。
 > 相关文档：[架构总览](../overview/architecture.md)、[Panel 交互定义](../panel/interaction.md)、[桌面端布局](../panel/desktop-layout.md)、[联邦](../federation/federation.md)、[部署与自更新](../ops/deploy.md)。
 
-前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。令牌缺失/不匹配时在握手阶段返回**标准 HTTP 401**（客户端据此归类为认证失败并提示排查令牌——此前该拒绝路径因响应状态默认 200 被 tungstenite 静默丢弃，客户端只能看到「握手未完成」，令牌问题极难排查）。命令与事件定义在 `source/modules/agent-module-management`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
+前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。令牌缺失/不匹配时在握手阶段返回**标准 HTTP 401**（客户端据此归类为认证失败并提示排查令牌——此前该拒绝路径因响应状态默认 200 被 tungstenite 静默丢弃，客户端只能看到「握手未完成」，令牌问题极难排查）。命令与事件定义在 `source/modules/agent-module-management`（Core 侧直接使用该 crate；Panel 侧的类型是**它的生成物**，见下「TypeScript 绑定」）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
 
 ## 仓库拆分与契约归属
 
 - 仓库拆分为 **EchoAgentCore**（后端 agent 服务）与 **EchoAgentPanel**（前端）两个独立仓库，两端可独立构建、发布、演进，仅通过 `agent-module-management` 契约耦合
 - `agent-module-management` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`ThinkingMode` / `ReasoningEffort`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
-- Panel 是纯粹的「协议客户端」：不包含任何 agent 或 QQ 逻辑（Rust 中继按原文转发帧、不解析负载；线格式以 `web/src/protocol.ts` 镜像）；后端各 crate 通过 re-export 保持 `echo_agent::…` 路径兼容
+- Panel 是纯粹的「协议客户端」：不包含任何 agent 或 QQ 逻辑（Rust 中继按原文转发帧、不解析负载；线格式是生成物）；后端各 crate 通过 re-export 保持 `echo_agent::…` 路径兼容
 - 协议演进只服务 Panel ⇄ Core 两端；**全网同步更新（不做旧版本兼容）**——语义变更单侧收紧亦可，两端同版本部署（见 §兼容性规则）
+
+### TypeScript 绑定：生成，不手抄
+
+Panel 的线格式类型**不再手写**。`agent-module-management` 的协议类型带
+`#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]`，由 Core 的
+`dump-protocol-ts` 子命令导出成 `web/src/protocol.generated.ts`：
+
+```bash
+# Panel 仓
+npm run sync-protocol     # 生成（默认读 ~/.local/share/echo-agent-core/source）
+npm run check-protocol    # 只校验；build 前置，不一致拒绝构建
+```
+
+- **feature 默认关闭**：生产二进制不引入 `ts-rs`（`cargo tree` 可验）
+- 生成约定：`u64/i64` 生成为 `number`（走 JSON，`JSON.parse` 只产出 number）、
+  `serde_json::Value` 生成为 `unknown`（Core 不约束形状，消费方必须显式断言）
+- Panel 侧只剩三类手写内容：Core 表达不了的具象化类型、多 Core 归属标记
+  （`core` 字段由 Panel 自己注入）、线格式编解码函数
+- 契约测试在 Core（`protocol_ts_bindings`）：钉住信封 tag+content、内部标记
+  枚举、单元变体、untagged、无 `bigint`、导出清单不漏根类型
+
+### 边界决策：Panel 不该认识什么
+
+Panel 是协议客户端 + 呈现层。以下知识**只能来自 Core 或模块**，不得在 Panel
+里再写一份（每条都对应过一次静默漂移）：
+
+| 知识 | 来源 | Panel 曾自己实现过的后果 |
+|---|---|---|
+| 名单语义（白名单/黑名单/空=不限、旧前缀归一） | `TeamInfo.available_modules` / `available_tools`（Core 算好的结论） | 配置写旧 id 时后端认、前端不认 |
+| 包显示名 | 模块 manifest 的 `ModuleInfo.name` | Panel 表里 12 项手写，模块改名后继续显示旧名 |
+| 平台名（分组标题、排序） | `InstanceStatus.display_name` / `platform` | 非 QQ 部署上恒显示「QQ 实例」并把 QQ 排最前 |
+| 实例管理方法名 | 模块 `ui` 描述符声明的动作 | Panel 枚举 13 个 QQ 方法名，第三方平台只能改 Panel |
+| 能力门控作用域 | `ModuleInfo.gating` | Panel 维护 `PACKAGE_GATED_MODULE_IDS` 镜像，实测错过两轮 |
+
+**刻意不做的一件事：工具图标。** `ToolIcon.vue` 仍按工具名映射图标，其中含
+QQ 工具名。这是一处**纯呈现**耦合——后果仅是"新工具落到通用图标"，不影响任何
+判定；而换掉它要在线格式里加 `icon` 令牌、三个仓一起改，收益与成本不成比例。
+出现第二个平台时再评估。
 
 ### 兼容性规则
 
@@ -247,9 +285,9 @@ Panel 的 management WS 并存，帧类型为 `FedFrame`（工具调用 Invoke �
 Panel 侧的联邦管理命令（Frontend-only）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` / `RequestFederationDirectory` /
 `RequestFederationInvite` / `MigrateSession { session_id, team_id?, target_peer }`
-——Panel 侧全部镜像进 `web/src/protocol.ts`（补齐；unit 变体
-字符串形态，双侧各有形态契约测试：Core 本仓 `agent-module-management`、Panel
-`protocol-sync` 守护「禁止双重断言绕过」）；
+——这些都在 `protocol.generated.ts` 里（不需要 Panel 手抄；unit 变体
+按字符串形态生成）。形态契约测试：Core 本仓 `agent-module-management`
+（`protocol_ts_bindings`）+ Panel `protocol-sync`（禁止双重断言绕过）；
 事件 `FederationStatus`（token 脱敏为 `token_set`；含 per-peer
 `active_turns` 负载，在线 peer 实时拉取）/ `FederationInvite` /
 `SessionMigrated { session_id, target_peer, new_session_id?, message,
