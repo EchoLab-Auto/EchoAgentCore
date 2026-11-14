@@ -104,10 +104,14 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 ### 参数预检
 
 - 非法 JSON / 缺少必需字段时返回**纠正性错误**（说清"你发了什么、应该发什么"），让模型自我纠正而不是盲目重试
-- 实现在 `agent/tool_exec.rs`：`tool_arguments_error`（注册表 schema 查询 + 判定）/
-  `invalid_tool_arguments`（纯函数：比对 schema `required` 与实参，缺失列表 +
-  原始参数回显 + schema 一并写入文案——只说"command required" 会让模型原样重试，
-  形成空参调用退化循环）
+- **空/纯空白参数按 `{}` 处理**，不报 JSON 语法错误：这是两件事的共同形态——无参
+  工具的正常调用，与上游把参数整块丢掉（Responses 通道并发调用时可能只发完整值
+  事件、不发增量）。两种情况都该得到"缺必需参数"这条可自纠的错误；报"解析失败"
+  模型只会照原样重发同样的空参
+- 实现在 `source/modules/echo-defs/src/execute.rs`：`ToolExecutor::dispatch`
+  （空参数归一 + JSON 解析）/ `invalid_tool_arguments`（纯函数：比对 schema
+  `required` 与实参，缺失列表 + 原始参数回显 + schema 一并写入文案——只说
+  "command required" 会让模型原样重试，形成空参调用退化循环）
 - 异步编排工具（`spawn_subagent`）经 agent-module-loop 的 hook 通道直入管线、不经注册表
   预检，缺参由工具自身的纠正性文案兜底
 

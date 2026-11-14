@@ -234,6 +234,67 @@ impl ChatStreamAccumulator {
         }
     }
 
+    /// 用**完整值**填充某次工具调用的 arguments。
+    ///
+    /// 不是所有上游都按增量投递：实测同一条 ChatGPT 订阅通道，3 路并发调用
+    /// 时 `function_call_arguments.delta` **一条都不发**，参数只在
+    /// `arguments.done` / `item.done` / `response.output[]` 里各给一份完整值。
+    /// 只认 delta 的解析器拿到空字符串，执行层再当 JSON 解析就报 EOF——
+    /// 表现为"工具参数不是合法 JSON"，而模型其实给得完全正确。
+    ///
+    /// 判据必须幂等，否则 delta 与 done 同时到达会拼成 `{…}{…}`：
+    ///
+    /// - 当前为空 → 填入；
+    /// - 当前是新值的**严格前缀** → 覆盖（增量只到一半）；
+    /// - 与新值完全相同 → 不动（两种口径给同一份，是常态）；
+    /// - 其余（当前更长 / 内容互相矛盾）→ 保留当前并返回 `false`。
+    ///
+    /// 返回 `false` 时调用方应记一条 warn：这说明上游两种投递口径打架，
+    /// 静默取一边会让排查时看不到上游行为的漂移。
+    pub fn fill_tool_arguments(&mut self, index: usize, arguments: &str) -> bool {
+        let entry = self.tool_calls.entry(index).or_default();
+        if entry.arguments == arguments {
+            return true;
+        }
+        // 空前缀对任何字符串都成立，因此"当前为空"天然走覆盖分支。
+        if arguments.starts_with(entry.arguments.as_str()) {
+            entry.arguments.clear();
+            entry.arguments.push_str(arguments);
+            return true;
+        }
+        false
+    }
+
+    /// 用完整正文回填（`response.output_text.done` 形态），判据同上。
+    ///
+    /// 与工具参数的区别：正文增量是逐段推给界面的。这里**只**修 accumulator，
+    /// 不补发已显示的增量——补发会重复显示。作用因此止于"持久化的事件与
+    /// 下一轮上下文里的正文是完整的"。
+    pub fn fill_content(&mut self, text: &str) -> bool {
+        if self.content == text {
+            return true;
+        }
+        if text.starts_with(self.content.as_str()) {
+            self.content.clear();
+            self.content.push_str(text);
+            return true;
+        }
+        false
+    }
+
+    /// 用完整推理摘要回填（`response.reasoning_summary_text.done`），判据同上。
+    pub fn fill_reasoning(&mut self, text: &str) -> bool {
+        if self.reasoning == text {
+            return true;
+        }
+        if text.starts_with(self.reasoning.as_str()) {
+            self.reasoning.clear();
+            self.reasoning.push_str(text);
+            return true;
+        }
+        false
+    }
+
     /// 记录 provider 上报的 usage（可多次调用，后者覆盖前者）。
     pub fn set_usage(&mut self, usage: Usage) {
         self.usage = usage;
@@ -392,5 +453,106 @@ mod stream_accumulator_tests {
         assert_eq!(out.usage.prompt_tokens, 10);
         assert_eq!(out.usage.completion_tokens, 7);
         assert!(out.truncated());
+    }
+
+    /// 少了 delta、只来完整值 → 必须填得进去。
+    ///
+    /// 这是 2026-11 线上故障的最小复现：ChatGPT 订阅通道在 3 路并发调用时
+    /// 一条 `function_call_arguments.delta` 都不发，参数只在 `*.done` /
+    /// `item.done` / `response.output[]` 里。空累积器 + 只填完整值，得到空串，
+    /// 执行层的 JSON 解析就报 EOF。
+    #[test]
+    fn fill_arguments_accepts_a_complete_value_without_deltas() {
+        let mut acc = ChatStreamAccumulator::new();
+        assert!(acc.fill_tool_arguments(0, r#"{"path":"/tmp"}"#));
+        assert!(acc.fill_tool_arguments(1, r#"{"path":"/var"}"#));
+        let out = acc.finish();
+        assert_eq!(out.tool_calls.len(), 2);
+        assert_eq!(out.tool_calls[0].arguments, r#"{"path":"/tmp"}"#);
+        assert_eq!(out.tool_calls[1].arguments, r#"{"path":"/var"}"#);
+    }
+
+    /// delta 与 done 都给同一份 → 不能拼成 `{…}{…}`。
+    #[test]
+    fn fill_arguments_is_idempotent_beside_deltas() {
+        let mut acc = ChatStreamAccumulator::new();
+        acc.push(&ChatChunk {
+            content_delta: None,
+            reasoning_delta: None,
+            tool_call_delta: Some(ToolCallDelta {
+                index: 0,
+                id: Some("call_1".into()),
+                name: Some("read_file".into()),
+                arguments: Some(r#"{"path":"a.rs"}"#.into()),
+            }),
+        });
+        // 完整值先到（item.done），再重复一次（completed.output）——都不该叠加。
+        assert!(acc.fill_tool_arguments(0, r#"{"path":"a.rs"}"#));
+        assert!(acc.fill_tool_arguments(0, r#"{"path":"a.rs"}"#));
+        let out = acc.finish();
+        assert_eq!(out.tool_calls.len(), 1);
+        assert_eq!(out.tool_calls[0].arguments, r#"{"path":"a.rs"}"#);
+    }
+
+    /// delta 只到一半、完整值到了 → 用完整值覆盖（不是追加）。
+    #[test]
+    fn fill_arguments_completes_a_truncated_prefix() {
+        let mut acc = ChatStreamAccumulator::new();
+        acc.push(&ChatChunk {
+            content_delta: None,
+            reasoning_delta: None,
+            tool_call_delta: Some(ToolCallDelta {
+                index: 0,
+                id: None,
+                name: None,
+                arguments: Some(r#"{"path":"#.into()),
+            }),
+        });
+        assert!(acc.fill_tool_arguments(0, r#"{"path":"a.rs"}"#));
+        let out = acc.finish();
+        assert_eq!(out.tool_calls[0].arguments, r#"{"path":"a.rs"}"#);
+    }
+
+    /// 两种口径互相矛盾（当前更长 / 内容不同）→ 保留当前并报 false，
+    /// 让调用方记 warn。静默选一边等于把上游的行为漂移藏起来。
+    #[test]
+    fn fill_arguments_refuses_contradictory_values() {
+        let mut acc = ChatStreamAccumulator::new();
+        acc.push(&ChatChunk {
+            content_delta: None,
+            reasoning_delta: None,
+            tool_call_delta: Some(ToolCallDelta {
+                index: 0,
+                id: None,
+                name: None,
+                arguments: Some(r#"{"path":"a.rs"}"#.into()),
+            }),
+        });
+        assert!(
+            !acc.fill_tool_arguments(0, r#"{"path":"#),
+            "短值不该覆盖长值"
+        );
+        assert!(
+            !acc.fill_tool_arguments(0, r#"{"other":1}"#),
+            "同样长度但内容不同，也不该覆盖"
+        );
+        let out = acc.finish();
+        assert_eq!(out.tool_calls[0].arguments, r#"{"path":"a.rs"}"#);
+    }
+
+    /// 正文/推理的同型回填（`output_text.done` / `reasoning_summary_text.done`）。
+    #[test]
+    fn fill_content_and_reasoning_follow_the_same_rule() {
+        let mut acc = ChatStreamAccumulator::new();
+        acc.push(&chunk(Some("你"), Some("想")));
+        // 完整值是已累积内容的前缀延伸 → 覆盖成完整值。
+        assert!(acc.fill_content("你好"));
+        assert!(acc.fill_reasoning("想一想"));
+        // 重复（相等）与矛盾（当前不是新值前缀）都不改状态。
+        assert!(acc.fill_content("你好"));
+        assert!(!acc.fill_content("别的"));
+        let out = acc.finish();
+        assert_eq!(out.content.as_deref(), Some("你好"));
+        assert_eq!(out.reasoning_content.as_deref(), Some("想一想"));
     }
 }

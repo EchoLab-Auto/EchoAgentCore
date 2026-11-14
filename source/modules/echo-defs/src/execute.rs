@@ -248,7 +248,27 @@ impl ToolExecutor {
                 names.join(", ")
             ));
         }
-        let outcome = match serde_json::from_str::<Value>(&call.arguments) {
+        // 空参数是**两种**情况的共同形态：无参工具的正常调用，以及上游把参数
+        // 整块丢掉（Responses 通道在并发调用时可能只给完整值事件、不给增量；
+        // 解析层若只认增量就得到空串——见 `agent-module-provider-llm` 的
+        // `chatgpt::responses`）。两种情况下 `{}` 都比"JSON 语法错误"更接近
+        // 事实：真的没给参数，该报的是"缺必需参数"，模型据此补参数；报解析
+        // 失败它只会照原样重发同样的空参。
+        let raw_arguments = call.arguments.trim();
+        if raw_arguments.is_empty() {
+            tracing::warn!(
+                session = %cx.session_id,
+                tool = %call.name,
+                tool_call_id = %call.id,
+                "tool call arrived with empty arguments; treating as an empty object"
+            );
+        }
+        let parsed_source = if raw_arguments.is_empty() {
+            "{}"
+        } else {
+            call.arguments.as_str()
+        };
+        let outcome = match serde_json::from_str::<Value>(parsed_source) {
             Err(error) => Err(format!(
                 "error: 工具参数不是合法 JSON（{error}）。你发送的原始参数: {}。\
                  请修正为合法 JSON 后重新调用 {}。",
@@ -472,6 +492,56 @@ mod tests {
             .await;
         assert!(result.text.starts_with("error:"), "{}", result.text);
         assert!(result.text.contains("{not json"), "{}", result.text);
+    }
+
+    /// 空参数**不是** JSON 语法错误：按 `{}` 处理，报的是"缺必需参数"。
+    ///
+    /// 线上故障（2026-11-14）：3 路并发 `list_files` 的 arguments 全是空串，
+    /// 这里报出 `工具参数不是合法 JSON（EOF while parsing a value at line 1
+    /// column 0）`——模型看到的是一条无法自纠的错误（它"觉得自己发了参数"），
+    /// 于是照原样重试了整整两轮，6 次调用全部落在同一个坑里。
+    ///
+    /// 改成 `{}` 后归到既有的纠正性错误：点名缺哪个字段、附上 schema。
+    #[tokio::test]
+    async fn empty_arguments_are_treated_as_an_empty_object() {
+        let (ex, rec) = executor(true);
+        let result = ex
+            .run(&rec, &cx(), &ToolInvocation::new("c1", "echo", ""))
+            .await;
+        assert!(
+            !result.text.contains("不是合法 JSON"),
+            "空参数不该报 JSON 语法错误：{}",
+            result.text
+        );
+        assert!(
+            result.text.starts_with("error: 工具参数无效"),
+            "应归到「缺必需参数」：{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("text"),
+            "要指出缺哪个字段：{}",
+            result.text
+        );
+    }
+
+    /// 纯空白参数与空串同义（上游偶尔给空格）。
+    #[tokio::test]
+    async fn whitespace_only_arguments_are_treated_as_an_empty_object() {
+        let (ex, rec) = executor(true);
+        let result = ex
+            .run(&rec, &cx(), &ToolInvocation::new("c1", "echo", " \n\t "))
+            .await;
+        assert!(
+            !result.text.contains("不是合法 JSON"),
+            "纯空白不该报 JSON 语法错误：{}",
+            result.text
+        );
+        assert!(
+            result.text.starts_with("error: 工具参数无效"),
+            "{}",
+            result.text
+        );
     }
 
     /// 空工具名（上游丢 `function.name`）→ 可自纠的错误：点名可用工具，

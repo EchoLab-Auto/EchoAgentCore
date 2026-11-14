@@ -20,18 +20,26 @@
 //! `stream: true` 时是 SSE：每行 `event: <name>` + `data: <json>`。我们只认
 //! 下面几种（其余静默跳过——新事件类型随时会加，硬失败只会让上游一升级就断）：
 //!
+//! 增量形态：
+//!
 //! - `response.output_text.delta` → 正文增量
 //! - `response.reasoning_summary_text.delta` → 推理摘要增量
-//! - `response.output_item.added`（`function_call`）→ 工具调用开始
+//! - `response.output_item.added`（`function_call`）→ 工具调用开始（id / name）
 //! - `response.function_call_arguments.delta` → 工具参数增量
+//!
+//! 完整值形态（**上游不一定发上面的增量**，两种形态实测都会出现，
+//! 详见 [`apply_event`] 的函数注释）：
+//!
+//! - `response.output_text.done` → 正文全文
+//! - `response.reasoning_summary_text.done` → 推理摘要全文
+//! - `response.function_call_arguments.done` → 本次调用的参数全文
+//! - `response.output_item.done`（`function_call`）→ 同一份参数全文
+//! - `response.completed.response.output[]`（`function_call`）→ 同上
+//!
+//! 终态：
+//!
 //! - `response.completed` → usage / stop_reason
 //! - `response.failed` / `error` → 明确失败
-//!
-//! # 非流式
-//!
-//! `chat()` 直接复用 `chat_stream()` 并用 `ChatStreamAccumulator` 累加：
-//! 两条路径的解析逻辑因此只有一份。这不是偷懒——`/responses` 的非流式响应
-//! 只是把同一批 item 一次性给出来，分别实现会有两份容易走偏的映射。
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -259,46 +267,128 @@ impl ChatGptProvider {
     }
 }
 
+/// 投递一个增量：既进累加器（供终值），也推给消费方（供界面）。
+fn forward(
+    accumulator: &mut ChatStreamAccumulator,
+    tx: Option<&mpsc::UnboundedSender<ChatChunk>>,
+    chunk: ChatChunk,
+) {
+    accumulator.push(&chunk);
+    if let Some(tx) = tx {
+        // 接收端关闭（`chat()` 的收集器已完成）不算错误。
+        let _ = tx.send(chunk);
+    }
+}
+
+/// 事件里的工具序号：并行调用靠它区分，缺省 0（单调用是常态）。
+fn output_index(event: &Value) -> usize {
+    event
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize
+}
+
+/// 取非空字符串字段。上游用空串表示"此处无值"，与缺字段同义——两者都别当数据。
+fn non_empty<'a>(event: &'a Value, key: &str) -> Option<&'a str> {
+    event
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+}
+
+/// 回填一次工具调用的**完整**参数；与已累积的增量矛盾时保留增量并记 warn。
+fn fill_arguments(accumulator: &mut ChatStreamAccumulator, index: usize, arguments: &str) {
+    if !accumulator.fill_tool_arguments(index, arguments) {
+        tracing::warn!(
+            index,
+            incoming = %echo_defs::token::truncate(arguments, 120),
+            "chatgpt: 完整参数与已累积的增量互相矛盾，保留增量值"
+        );
+    }
+}
+
+/// `completed` / `incomplete` 的 `response.output[]` 里也带完整参数——最后一道保险。
+///
+/// `item.done` 与本处的内容实测一致（任一处接上都不丢），但两者任何一处缺了
+/// 都还有另一处兜着；而只认 delta 时两处都用不上。
+///
+/// 数组下标即 `output_index`：Responses 的 `output_index` 就是 `output` 数组
+/// 的下标（reasoning / message item 同样占位），不必另找映射。
+fn backfill_output(accumulator: &mut ChatStreamAccumulator, response: Option<&Value>) {
+    let Some(items) = response
+        .and_then(|response| response.get("output"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for (index, item) in items.iter().enumerate() {
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            continue;
+        }
+        if let Some(arguments) = non_empty(item, "arguments") {
+            fill_arguments(accumulator, index, arguments);
+        }
+    }
+}
+
 /// 把一个 SSE 事件折进累加器（并投递增量）。
 ///
 /// 未知 `type` 静默跳过：上游加新事件是常态，硬失败等于"上游一升级就断"。
+///
+/// # 为什么 delta 之外还必须认「完整值」事件
+///
+/// 上游并非总按增量投递，两种形态都会出现：
+///
+/// - 实测 A（2026-11 线上故障）：3 路并发 `list_files`，
+///   `function_call_arguments.delta` 出现 **0 次**，参数只在
+///   `arguments.done` / `item.done` / `completed.response.output[]` 里各给一份
+///   完整 JSON；
+/// - 实测 B（同通道，单调用 + 长参数）：delta 62 条，`done` 与 delta 聚合值
+///   完全相同。
+///
+/// 只认 delta 就会在形态 A 上丢掉全部参数，执行层再把空串当 JSON 解析 → 报
+/// `EOF while parsing a value`，看起来像模型乱发工具，其实是解析层丢的。
+///
+/// 因此：delta 走拼接，完整值走回填（判据见
+/// [`ChatStreamAccumulator::fill_tool_arguments`]，幂等；两种形态同时到达不会
+/// 拼成 `{…}{…}`）。
 fn apply_event(
     event: &Value,
     accumulator: &mut ChatStreamAccumulator,
     tx: Option<&mpsc::UnboundedSender<ChatChunk>>,
 ) -> Result<(), LlmError> {
-    let kind = event.get("type").and_then(Value::as_str).unwrap_or_default();
-    let mut emit = |chunk: ChatChunk| {
-        accumulator.push(&chunk);
-        if let Some(tx) = tx {
-            // 接收端关闭（`chat()` 的收集器已完成）不算错误。
-            let _ = tx.send(chunk);
-        }
-    };
+    let kind = event
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     match kind {
         "response.output_text.delta" => {
-            if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                if !delta.is_empty() {
-                    emit(ChatChunk {
+            if let Some(delta) = non_empty(event, "delta") {
+                forward(
+                    accumulator,
+                    tx,
+                    ChatChunk {
                         content_delta: Some(delta.to_string()),
                         reasoning_delta: None,
                         tool_call_delta: None,
-                    });
-                }
+                    },
+                );
             }
         }
         // 推理**摘要**（reasoning summary）：Responses API 不把原始思维链
         // 给客户端，只给摘要。映射到 reasoning_delta 是语义上最接近的一档
         // （面板的「思考」块显示的就是这个）。
         "response.reasoning_summary_text.delta" => {
-            if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                if !delta.is_empty() {
-                    emit(ChatChunk {
+            if let Some(delta) = non_empty(event, "delta") {
+                forward(
+                    accumulator,
+                    tx,
+                    ChatChunk {
                         content_delta: None,
                         reasoning_delta: Some(delta.to_string()),
                         tool_call_delta: None,
-                    });
-                }
+                    },
+                );
             }
         }
         "response.output_item.added" => {
@@ -310,38 +400,43 @@ fn apply_event(
             }
             // 工具序号用 `output_index`：同一个响应里可能有多个并行调用，
             // 而 `item.id` 是字符串、累加器要的是下标。
-            let index = event
-                .get("output_index")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            emit(ChatChunk {
-                content_delta: None,
-                reasoning_delta: None,
-                tool_call_delta: Some(ToolCallDelta {
-                    index,
-                    // `call_id` 是最终要回填给 `function_call_output` 的 id；
-                    // `id` 是 item id，上游两者都给，取 call_id。
-                    id: item
-                        .get("call_id")
-                        .or_else(|| item.get("id"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    name: item
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    arguments: None,
-                }),
-            });
+            let index = output_index(event);
+            forward(
+                accumulator,
+                tx,
+                ChatChunk {
+                    content_delta: None,
+                    reasoning_delta: None,
+                    tool_call_delta: Some(ToolCallDelta {
+                        index,
+                        // `call_id` 是最终要回填给 `function_call_output` 的 id；
+                        // `id` 是 item id，上游两者都给，取 call_id。
+                        id: item
+                            .get("call_id")
+                            .or_else(|| item.get("id"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        name: item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        // 这里的参数只能走**回填**，不能当 delta 拼接：`added`
+                        // 若带参数，通常会再随 delta 逐段重发，拼接会变成两份。
+                        arguments: None,
+                    }),
+                },
+            );
+            if let Some(arguments) = non_empty(item, "arguments") {
+                fill_arguments(accumulator, index, arguments);
+            }
         }
         "response.function_call_arguments.delta" => {
-            let index = event
-                .get("output_index")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                if !delta.is_empty() {
-                    emit(ChatChunk {
+            let index = output_index(event);
+            if let Some(delta) = non_empty(event, "delta") {
+                forward(
+                    accumulator,
+                    tx,
+                    ChatChunk {
                         content_delta: None,
                         reasoning_delta: None,
                         tool_call_delta: Some(ToolCallDelta {
@@ -350,7 +445,47 @@ fn apply_event(
                             name: None,
                             arguments: Some(delta.to_string()),
                         }),
-                    });
+                    },
+                );
+            }
+        }
+        // ── 完整值形态：上游可能一条 delta 都不发（见函数头「实测 A」）──────
+        "response.function_call_arguments.done" => {
+            let Some(arguments) = non_empty(event, "arguments") else {
+                return Ok(());
+            };
+            fill_arguments(accumulator, output_index(event), arguments);
+        }
+        "response.output_item.done" => {
+            let Some(item) = event.get("item") else {
+                return Ok(());
+            };
+            if item.get("type").and_then(Value::as_str) != Some("function_call") {
+                return Ok(());
+            }
+            if let Some(arguments) = non_empty(item, "arguments") {
+                fill_arguments(accumulator, output_index(event), arguments);
+            }
+        }
+        // 正文全文：只回填累加器，**不**补发增量——界面已经显示过 delta，
+        // 补发会重复。作用止于"持久化的事件与下一轮上下文是完整的"。
+        "response.output_text.done" => {
+            if let Some(text) = non_empty(event, "text") {
+                if !accumulator.fill_content(text) {
+                    tracing::warn!(
+                        incoming = %echo_defs::token::truncate(text, 120),
+                        "chatgpt: output_text.done 与已累积正文互相矛盾，保留增量值"
+                    );
+                }
+            }
+        }
+        "response.reasoning_summary_text.done" => {
+            if let Some(text) = non_empty(event, "text") {
+                if !accumulator.fill_reasoning(text) {
+                    tracing::warn!(
+                        incoming = %echo_defs::token::truncate(text, 120),
+                        "chatgpt: reasoning_summary_text.done 与已累积摘要互相矛盾，保留增量值"
+                    );
                 }
             }
         }
@@ -365,6 +500,7 @@ fn apply_event(
             if let Some(usage) = response.and_then(|r| r.get("usage")) {
                 accumulator.set_usage(usage_of(usage));
             }
+            backfill_output(accumulator, response);
         }
         // `incomplete` 是**正常终态**（max_tokens / content_filter），
         // 与 `completed` 同样要取 usage 与状态，否则长度截断会被报成失败。
@@ -379,6 +515,11 @@ fn apply_event(
             if let Some(usage) = response.and_then(|r| r.get("usage")) {
                 accumulator.set_usage(usage_of(usage));
             }
+            // 截断的响应同样带 `output[]`。参数此时**可能是残片**（模型写到
+            // 一半被 max_output_tokens 截住），回填会让执行层的报错带上这段
+            // 残片——比空串更能定位"模型生成到哪"。真正的"截断不该执行"由
+            // 调用方按 `stop_reason` 续跑决定，不在这里判。
+            backfill_output(accumulator, response);
         }
         "response.failed" => {
             let message = event
@@ -861,6 +1002,183 @@ mod tests {
         )
         .unwrap();
         assert!(accumulator.finish().content.is_none());
+    }
+    // ── 「只发完整值、不发 delta」形态（2026-11 线上故障）─────────────
+    //
+    // 用户报 list_files 失败：「工具参数不是合法 JSON（EOF while parsing a
+    // value at line 1 column 0）。你发送的原始参数: 」。会话记录里那 6 条
+    // 工具调用 arguments 全为空串，且正是历史上唯一一次 3 路并发调用；同库
+    // 另外 5772 次单/双发调用参数都正常。
+    //
+    // 直接用同一条订阅通道复现（3 路并发）：上游只发
+    //   output_item.added ×3 → function_call_arguments.done ×3
+    //   → output_item.done ×3 → completed
+    // `function_call_arguments.delta` 出现 **0 次**，参数全在 done 里；
+    // 换单调用 + 长参数重发同一通道，delta 又出现 62 条（聚合值 = done 值）。
+
+    /// 复刻「3 路并发 + 零 delta」的真实序列：三个调用的参数都不得丢。
+    ///
+    /// 用**实测原文形状**（`call_id` 形态、参数含空格），断言逐字完整——
+    /// 修复前这里拿到的是空串。
+    #[test]
+    fn parallel_calls_without_argument_deltas_keep_full_arguments() {
+        let paths = [
+            "/home/evence/.local/share/echo-agent-core/source",
+            "/home/evence/.local/share/echo-agent-panel/source",
+            "/home/evence/code_file/gitlab/echo-tech/echo-fabric-arch",
+        ];
+        let calls = [
+            ("call_98a3815ad1c14843950a7fcdd19921f2", 0usize),
+            ("call_4bcee46b79cc45d2bcdc149b982b89cc", 1),
+            ("call_eac839ce5430402db20486229217758e", 2),
+        ];
+        let arguments_of = |index: usize| json!({ "path": paths[index] }).to_string();
+
+        let mut accumulator = ChatStreamAccumulator::new();
+        for (call_id, index) in calls {
+            apply_event(
+                &json!({
+                    "type": "response.output_item.added",
+                    "output_index": index,
+                    // 实测 added 里的 arguments 是空串（当"无值"处理）。
+                    "item": {"type": "function_call", "call_id": call_id,
+                             "name": "list_files", "arguments": ""}
+                }),
+                &mut accumulator,
+                None,
+            )
+            .unwrap();
+        }
+        for (_, index) in calls {
+            apply_event(
+                &json!({
+                    "type": "response.function_call_arguments.done",
+                    "output_index": index,
+                    "arguments": arguments_of(index)
+                }),
+                &mut accumulator,
+                None,
+            )
+            .unwrap();
+        }
+        for (call_id, index) in calls {
+            apply_event(
+                &json!({
+                    "type": "response.output_item.done",
+                    "output_index": index,
+                    "item": {"type": "function_call", "call_id": call_id,
+                             "name": "list_files", "arguments": arguments_of(index)}
+                }),
+                &mut accumulator,
+                None,
+            )
+            .unwrap();
+        }
+        // `completed.response.output[]` 给同一份（最后一道保险）。
+        apply_event(
+            &json!({
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "output": calls.map(|(call_id, index)| json!({
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": "list_files",
+                        "arguments": arguments_of(index),
+                    }))
+                }
+            }),
+            &mut accumulator,
+            None,
+        )
+        .unwrap();
+
+        let response = accumulator.finish();
+        assert_eq!(response.tool_calls.len(), 3, "三个调用都要在");
+        // 累加器按 index 升序输出，位置即 index。
+        for (position, (call_id, index)) in calls.into_iter().enumerate() {
+            let call = &response.tool_calls[position];
+            assert_eq!(call.id, call_id);
+            assert_eq!(call.name, "list_files");
+            assert_eq!(
+                call.arguments,
+                arguments_of(index),
+                "第 {index} 个调用的参数必须是完整 JSON，不能是空串"
+            );
+        }
+    }
+
+    /// 形态 B：delta 逐段 + 完整值同时到达 → 不得叠加成 `{…}{…}`。
+    ///
+    /// 实测同一通道 62 段 delta 后跟着 `done`（值与聚合完全相同）。
+    #[test]
+    fn argument_deltas_and_full_value_do_not_duplicate() {
+        let full = r#"{"path":"a.rs"}"#;
+        let mut accumulator = ChatStreamAccumulator::new();
+        apply_event(
+            &json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {"type": "function_call", "call_id": "call_1", "name": "read_file"}
+            }),
+            &mut accumulator,
+            None,
+        )
+        .unwrap();
+        // 段数与语义无关，4 段足够表达"逐段拼接"。
+        for piece in [r#"{"path""#, ":", r#""a.rs""#, "}"] {
+            apply_event(
+                &json!({"type": "response.function_call_arguments.delta",
+                        "output_index": 0, "delta": piece}),
+                &mut accumulator,
+                None,
+            )
+            .unwrap();
+        }
+        // 同一份完整值重复两次（done + item.done）。
+        for _ in 0..2 {
+            apply_event(
+                &json!({"type": "response.function_call_arguments.done",
+                        "output_index": 0, "arguments": full}),
+                &mut accumulator,
+                None,
+            )
+            .unwrap();
+        }
+        apply_event(
+            &json!({"type": "response.output_item.done", "output_index": 0,
+                    "item": {"type": "function_call", "call_id": "call_1",
+                             "name": "read_file", "arguments": full}}),
+            &mut accumulator,
+            None,
+        )
+        .unwrap();
+
+        let response = accumulator.finish();
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].arguments, full);
+    }
+
+    /// 正文与推理摘要都可能**只来 done、零 delta**（同一种形态），
+    /// 终值仍要完整——否则持久化的事件与下一轮上下文里是空的。
+    #[test]
+    fn text_and_reasoning_done_backfill_missing_deltas() {
+        let mut accumulator = ChatStreamAccumulator::new();
+        apply_event(
+            &json!({"type": "response.output_text.done", "text": "完整回答"}),
+            &mut accumulator,
+            None,
+        )
+        .unwrap();
+        apply_event(
+            &json!({"type": "response.reasoning_summary_text.done", "text": "完整摘要"}),
+            &mut accumulator,
+            None,
+        )
+        .unwrap();
+        let response = accumulator.finish();
+        assert_eq!(response.content.as_deref(), Some("完整回答"));
+        assert_eq!(response.reasoning_content.as_deref(), Some("完整摘要"));
     }
 
     /// 保留未使用但有意留下的辅助（避免 dead_code 噪声）。
