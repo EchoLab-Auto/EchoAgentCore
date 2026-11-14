@@ -57,6 +57,16 @@ pub struct ModelService {
     pub(crate) session_providers: DashMap<String, (String, Arc<dyn LlmProvider>)>,
     /// 会话级 provider 构建互斥（同会话串行、跨会话并行）。
     pub(crate) session_provider_locks: DashMap<String, tokio::sync::Mutex<()>>,
+    /// 会话级覆盖的**持久化**（`session_id → profile`）。
+    ///
+    /// 与 `session_providers` 的关系：那个是「已构建的 provider 缓存」（内存、
+    /// 重启即失），这个是「用户的意图」（落盘、跨重启）。两者分开是因为
+    /// provider 需要配置才能构建，而持久化只是键值对——把两者合成一个结构会
+    /// 逼着加载路径去同步构建 provider，而那时配置可能还没就绪。
+    ///
+    /// 恢复走**惰性**路径（见 [`crate::agent::Agent::ensure_session_override`]）：
+    /// 某个会话第一次真正用到时才构建它的 provider。
+    pub(crate) session_api: crate::agent::session_api_store::SessionApiStore,
     /// 余额快照查询互斥（周期任务与手动「查余额」共用，防重复采样）。
     pub(crate) balance_snapshot_lock: tokio::sync::Mutex<()>,
 }
@@ -72,6 +82,7 @@ impl ModelService {
             persona_api: tokio::sync::RwLock::new(None),
             session_providers: DashMap::new(),
             session_provider_locks: DashMap::new(),
+            session_api: crate::agent::session_api_store::SessionApiStore::in_memory(),
             balance_snapshot_lock: tokio::sync::Mutex::new(()),
         }
     }

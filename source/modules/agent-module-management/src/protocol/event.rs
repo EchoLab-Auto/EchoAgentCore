@@ -768,6 +768,30 @@ pub enum BackendEvent {
         /// All saved API profiles.
         profiles: Vec<ApiProfileInfo>,
     },
+    /// **会话级 API 覆盖**（`session_id → profile`）：该会话的 LLM 请求走这个
+    /// profile 的 provider，其余会话不受影响。
+    ///
+    /// ## 为什么要下发
+    ///
+    /// Core 的路由依据是 `session_providers`。此前 Panel 看不到它：
+    ///
+    /// | 通道 | Core 内存 | Panel 可见性 |
+    /// |---|---|---|
+    /// | `local:workspace:*` | 有，且写进工作区对话文档 | 能从 `WorkspaceSessions` 读到 |
+    /// | 其它（TUI / QQ / shell …） | 有，重启即失 | **完全看不到** |
+    ///
+    /// 于是 Panel 自己在 localStorage 里记了一份、连上 Core 时重放——那是第二
+    /// 份真相：两个浏览器同时开，A 设 deepseek、B 拿旧缓存回放 kimi，谁也没错，
+    /// 但 Core 的路由只可能是其中一个。
+    ///
+    /// 现在 Core **持久化全部通道的覆盖**并随本事件下发，Panel 只读不写。
+    SessionApiOverrides {
+        /// 归属人格（会话 id 已含通道前缀，这里只用于 Panel 过滤）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
+        /// 当前全部覆盖（只含有覆盖的会话；空 = 没有任何会话被覆盖）。
+        overrides: Vec<SessionApiOverrideEntry>,
+    },
     /// API profile list changed (emitted together with ApiConfigUpdated).
     /// 联邦远端节点的脱敏供应商池（`RequestRemoteApiProfiles` 响应；
     /// 失败时 `profiles` 为空、`error` 带原因——peer 离线/未实现查询）。
@@ -1484,6 +1508,16 @@ pub struct WorkspaceFileEntry {
     pub size: u64,
 }
 
+/// 一条会话级 API 覆盖。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+pub struct SessionApiOverrideEntry {
+    /// 会话 id（含通道前缀，如 `local:tui::local_user`）。
+    pub session_id: String,
+    /// profile 名（非空；空覆盖不出现——空 = 无覆盖）。
+    pub profile: String,
+}
+
 /// API profile summary (for TUI list display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
@@ -1609,6 +1643,7 @@ impl BackendEvent {
             Self::TimelineEarlier { .. } => "TimelineEarlier",
             Self::SessionHistory { .. } => "SessionHistory",
             Self::ApiConfigUpdated { .. } => "ApiConfigUpdated",
+            Self::SessionApiOverrides { .. } => "SessionApiOverrides",
             Self::RemoteApiProfiles { .. } => "RemoteApiProfiles",
             Self::ApiProfilesUpdated { .. } => "ApiProfilesUpdated",
             Self::SkillsList { .. } => "SkillsList",

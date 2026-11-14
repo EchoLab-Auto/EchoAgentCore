@@ -51,7 +51,15 @@ impl Agent {
         }
         let model = self.active_model().await;
         // 事件形状（谁带生效值、谁带池原样）是协议知识 → 模块里装配。
-        admin_api::api_config_events(&api_snapshot_of(&cfg), &model)
+        let mut events = admin_api::api_config_events(&api_snapshot_of(&cfg), &model);
+        // 会话级覆盖跟着一起发：Panel 要能显示"我这个会话实际走哪个 profile"。
+        // 此前它自己用 localStorage 记、连上时重放——第二份真相。现在只有
+        // Core 一家之言（路由依据与下发内容同源，不可能不一致）。
+        events.push(BackendEvent::SessionApiOverrides {
+            team_id: self.team_id(),
+            overrides: self.session_api_overrides(),
+        });
+        events
     }
 
     /// Rebuild the LLM provider from the current config snapshot.

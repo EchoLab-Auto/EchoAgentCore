@@ -64,6 +64,8 @@ pub struct AgentBuilder {
     active_model: Option<String>,
     config_store: Option<ConfigStore>,
     session_persist_path: Option<std::path::PathBuf>,
+    /// 会话级 API 覆盖的持久化路径（`None` = 纯内存）。
+    session_api_path: Option<std::path::PathBuf>,
     subagent_store: Option<Arc<crate::subagent::SubagentStore>>,
     subagent_remote_sink: Option<Arc<dyn crate::subagent::RemoteDelegationSink>>,
     /// 节点身份（可选；缺省空 = 线格式不带 node_id / region_name）。
@@ -102,6 +104,7 @@ impl AgentBuilder {
             active_model: None,
             config_store: None,
             session_persist_path: None,
+            session_api_path: None,
             subagent_store: None,
             subagent_remote_sink: None,
             node_identity: None,
@@ -192,6 +195,16 @@ impl AgentBuilder {
         self
     }
 
+    /// 会话级 API 覆盖的持久化文件（`None` = 纯内存）。
+    ///
+    /// 与会话事件日志分开的文件：那份是 append-only 事件溯源格式，覆盖是
+    /// "少量、可变、与历史无关"的键值对，塞进去要么破格式要么写迁移。
+    /// 组合根按 `echo-session-api-{persona}.json` 派生（与会话文件同目录）。
+    pub fn session_api_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.session_api_path = Some(path.into());
+        self
+    }
+
     /// Subagent 模块运行态所需的子任务注册表。
     pub fn subagent_store(mut self, store: Arc<crate::subagent::SubagentStore>) -> Self {
         self.subagent_store = Some(store);
@@ -261,6 +274,9 @@ impl AgentBuilder {
         }
         if let Some(path) = self.session_persist_path {
             agent.set_session_persist_path(path);
+        }
+        if let Some(path) = self.session_api_path {
+            agent.set_session_api_path(path);
         }
         let agent = Arc::new(agent);
         if let Some(policy) = self.global_policy {

@@ -14,6 +14,7 @@ pub(crate) mod prompt;
 pub mod provider_host;
 pub mod registry;
 pub mod session_commands_host;
+pub mod session_api_store;
 pub mod session_query;
 pub mod session_view_host;
 pub mod shell_host;
@@ -1103,6 +1104,15 @@ impl Agent {
         if let Some(entry) = self.model.session_providers.get(session_id) {
             return Arc::clone(&entry.1);
         }
+        // 中路径：持久化表里有覆盖但还没构建 provider（进程刚起来，或该会话
+        // 第一次被用到）→ 补建。这是**跨重启生效**的关键一步：没有它，重启后
+        // 所有非工作区会话都会静默回落成 persona 配置。
+        if self.model.session_api.get(session_id).is_some() {
+            self.ensure_session_override(session_id).await;
+            if let Some(entry) = self.model.session_providers.get(session_id) {
+                return Arc::clone(&entry.1);
+            }
+        }
         // 慢路径：无覆盖 → 跟随 persona 级。
         Arc::clone(&*self.model.provider.read().await)
     }
@@ -1120,6 +1130,15 @@ impl Agent {
         if let Some(entry) = self.model.session_providers.get(session_id) {
             return entry.1.default_model().to_string();
         }
+        // 与 `resolve_session_provider` **成对**：它恢复覆盖后这里必须看到同一个
+        // provider，否则请求会打到"覆盖 provider + persona 模型"的组合上（2026-10
+        // 的 404 model_not_found 就是这么来的）。两者共用同一条惰性恢复路径。
+        if self.model.session_api.get(session_id).is_some() {
+            self.ensure_session_override(session_id).await;
+            if let Some(entry) = self.model.session_providers.get(session_id) {
+                return entry.1.default_model().to_string();
+            }
+        }
         self.active_model().await
     }
 
@@ -1132,6 +1151,9 @@ impl Agent {
         if profile_name.is_empty() {
             self.model.session_providers.remove(session_id);
             self.model.session_provider_locks.remove(session_id);
+            // 清除也要落盘：否则重启后覆盖会"复活"——用户点了"跟随 persona"，
+            // Core 重启一次又变回旧 profile，且没有任何痕迹。
+            self.model.session_api.clear(session_id);
             return true;
         }
         // 构建锁：同一会话的并发 set 串行（防重复构建）。
@@ -1195,7 +1217,49 @@ impl Agent {
         self.model
             .session_providers
             .insert(session_id.to_string(), (profile_name.to_string(), provider));
+        // 持久化放在**构建成功之后**：写进文件的必须是能解析的 profile，
+        // 否则下次启动会反复报 profile not found（2026-10 用户报障）。
+        self.model.session_api.set(session_id, profile_name);
         true
+    }
+
+    /// 惰性恢复：某会话有持久化覆盖但当前没有已构建的 provider 时补建。
+    ///
+    /// ## 为什么惰性而不是启动时全量恢复
+    ///
+    /// 恢复一条覆盖要按 profile 构建 provider（读配置、建 HTTP 客户端）。启动期
+    /// 做全量恢复有两个问题：那时 `api_pool`（共享 ConfigStore）可能还没就绪，
+    /// 会把能解析的 profile 误判成"不存在"；而绝大多数会话在本次进程生命周期
+    /// 里根本不会被用到。惰性恢复把成本摊到真正需要的那一次。
+    ///
+    /// 失败（profile 已被删除）时**清掉持久化条目**并记 warn：留着一个永远
+    /// 解析不了的覆盖，会让这个会话每次 turn 都卡在同一条错误上。
+    pub async fn ensure_session_override(&self, session_id: &str) {
+        if self.model.session_providers.contains_key(session_id) {
+            return;
+        }
+        let Some(profile) = self.model.session_api.get(session_id) else {
+            return;
+        };
+        if self.set_session_provider(session_id, &profile).await {
+            return;
+        }
+        tracing::warn!(
+            session = %session_id,
+            profile = %profile,
+            "持久化的会话级 API 覆盖无法解析，已丢弃（该会话回落到 persona 配置）"
+        );
+        self.model.session_api.clear(session_id);
+    }
+
+    /// 当前全部会话级覆盖（供 `BackendEvent::SessionApiOverrides`）。
+    pub fn session_api_overrides(&self) -> Vec<agent_module_management::protocol::SessionApiOverrideEntry> {
+        self.model.session_api.snapshot()
+    }
+
+    /// 装配期注入覆盖的持久化文件（不注入 = 纯内存）。
+    pub fn set_session_api_path(&self, path: impl Into<std::path::PathBuf>) {
+        self.model.session_api.attach(path);
     }
 
     /// API profile 改名传播（2026-10）：把会话级覆盖表里引用 `from` 的条目
@@ -1517,3 +1581,60 @@ mod reasoning_cap_tests {
 
 #[cfg(test)]
 pub mod tests;
+
+#[cfg(test)]
+mod session_api_persistence_tests {
+    use super::*;
+
+    /// 覆盖必须落盘并在**新进程**（新 store）里读回来。
+    ///
+    /// 这条测的是本轮改造的核心承诺：非工作区通道的会话级覆盖跨重启存活。
+    /// 修复前它只活在 `session_providers` 内存表里，重启即失——Panel 因此被迫
+    /// 自己用 localStorage 记一份。
+    #[test]
+    fn override_survives_a_fresh_store() {
+        let path = std::env::temp_dir().join(format!(
+            "echo-session-api-agent-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let store = crate::agent::session_api_store::SessionApiStore::open(&path);
+            store.set("local:tui::local_user", "deepseek");
+        }
+        let reopened = crate::agent::session_api_store::SessionApiStore::open(&path);
+        assert_eq!(
+            reopened.get("local:tui::local_user").as_deref(),
+            Some("deepseek")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 晚绑定不能覆盖已有内存条目。
+    ///
+    /// 装配顺序是 `Agent::new`（空表）→ 组合根接线。若接线时无条件用文件内容
+    /// 覆盖内存表，接线前做出的决定会被静默丢弃。
+    #[test]
+    fn attach_keeps_entries_set_before_wiring() {
+        let path = std::env::temp_dir().join(format!(
+            "echo-session-api-attach-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, r#"{"old:session":"from-disk"}"#).unwrap();
+        let store = crate::agent::session_api_store::SessionApiStore::in_memory();
+        store.set("new:session", "from-memory");
+        store.attach(&path);
+        assert_eq!(
+            store.get("new:session").as_deref(),
+            Some("from-memory"),
+            "接线前设的条目必须保留（它是本次进程已做出的决定）"
+        );
+        assert_eq!(
+            store.get("old:session").as_deref(),
+            Some("from-disk"),
+            "磁盘上的旧条目必须被读进来"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}

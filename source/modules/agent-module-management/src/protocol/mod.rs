@@ -122,6 +122,7 @@ export type JsonValue = unknown;\n\n";
         out.push_str(&decl::<super::WorkspaceChangedEntry>());
         out.push_str(&decl::<super::WorkspaceFileEntry>());
         out.push_str(&decl::<super::ApiProfileInfo>());
+        out.push_str(&decl::<super::SessionApiOverrideEntry>());
         out.push_str(&decl::<super::ApiMetricsEntry>());
         out.push_str(&decl::<super::ApiBalancePoint>());
         out.push_str(&decl::<super::ApiUsagePoint>());

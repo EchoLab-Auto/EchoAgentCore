@@ -1455,6 +1455,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 //   旧的 default 专用 echo-sessions.json 首次启动自动改名迁移）
                 // 两者文件格式不同，绝不可共用同一路径（JSON 会让 TOML parse 失败）。
                 let file = config_store_path.with_file_name(format!("echo-sessions-{id}.json"));
+                // 会话级 API 覆盖：独立小文件（与会话日志同目录）。那份是
+                // append-only 事件溯源格式，覆盖是"少量、可变、与历史无关"的
+                // 键值对——塞进去要么破格式要么写迁移。
+                let session_api_file =
+                    config_store_path.with_file_name(format!("echo-session-api-{id}.json"));
                 if id == "default" {
                     let legacy = config_store_path.with_file_name("echo-sessions.json");
                     if !file.exists() && legacy.exists() {
@@ -1471,7 +1476,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         }
                     }
                 }
-                let built = builder.session_persist_path(file).build();
+                let built = builder
+                    .session_persist_path(file)
+                    .session_api_path(session_api_file)
+                    .build();
                 factory_session_queries.register(id.clone(), &built.trunk);
                 // **新建人格补装远程工具**（2026-11 S13）。
                 //
