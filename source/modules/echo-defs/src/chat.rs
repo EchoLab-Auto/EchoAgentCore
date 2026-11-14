@@ -66,14 +66,14 @@ pub struct IncomingFile {
     /// Absolute path of the saved file; `None` when saving failed (see
     /// `error`) or was skipped (e.g. over the size limit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts-bindings", ts(optional))]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub path: Option<String>,
     /// File size in bytes (0 = unknown).
     #[serde(default)]
     pub size: u64,
     /// Failure/skip reason when `path` is `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts-bindings", ts(optional))]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub error: Option<String>,
 }
 

@@ -28,8 +28,10 @@ pub struct SkillSourceInfo {
     pub url: String,
     pub rev: String,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub branch: Option<String>,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub installed_at: Option<String>,
 }
 
@@ -46,6 +48,7 @@ pub struct InstanceStatus {
     pub started_at: Option<i64>,
     /// 归属人格 id（概念中立；2026-09 多实例）。
     #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub persona: Option<String>,
     /// 平台自有展示型字段的通用 KV 承载。
     ///
@@ -57,14 +60,17 @@ pub struct InstanceStatus {
     /// 平台标识（如 `"qq"`；来自 `InstanceInfo.platform`）。Panel 会话分组 /
     /// 通用化寻址需要它上线（W2.3 泛化 Core-1，2026-10）；旧 Panel 忽略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub platform: Option<String>,
     /// UI 描述符（`InstanceContribution.ui` 原样透传；Panel 通用渲染器按
     /// `ui.version` 选择渲染方案）。None = 模块未声明 UI。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub ui: Option<serde_json::Value>,
     /// 会话标签（`InstanceContribution.session_labels` 原样透传；如
     /// `{"dm":"私聊","group":"群聊"}`）。None = 未声明。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub session_labels: Option<serde_json::Value>,
 }
 
@@ -93,6 +99,7 @@ pub struct ShellSessionInfo {
     pub session_id: String,
     /// 归属 team（persona）。面板按当前 agent 过滤，不串显其他 agent 的 shell。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub team_id: Option<String>,
     /// 启动时的工作目录。
     pub workdir: String,
@@ -106,6 +113,7 @@ pub struct ShellSessionInfo {
     pub running: bool,
     /// 最近一次执行结果（截断到 4096 字符，供列表预览）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub last_output: Option<String>,
 }
 
@@ -118,13 +126,16 @@ pub struct SessionInfo {
     /// 区分同名会话（`local:tui::local_user` 在每个 Core 上都相同）。中继
     /// 聚合视图另有来源 core 名（信封），两者可对照。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub node_id: Option<String>,
     /// 运行区域展示名（`[core].region_name`；空 = 回退 NodeId）。与 node_id
     /// 共同构成 agent 的「运行区域」属性。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub region_name: Option<String>,
     /// Owning team id (None = default/legacy single agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub team_id: Option<String>,
     /// Platform identifier (e.g., "qq", "local").
     pub platform: String,
@@ -211,9 +222,11 @@ pub struct TimelineTool {
     pub timed_out: bool,
     /// 工具开始执行的 epoch 毫秒时间戳（面板「运行中实时计时」用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub started_at_ms: Option<i64>,
     /// 工具执行总耗时（毫秒；中断场景 = 开始到中断判定为止）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub elapsed_ms: Option<u64>,
 }
 
@@ -233,25 +246,31 @@ pub struct TimelineMessage {
     /// Unix seconds.
     pub time: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub source: Option<TimelineSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub reasoning: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub tool: Option<TimelineTool>,
     /// Multimodal media attached to the message (URLs / data URIs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub images: Option<Vec<String>>,
     /// 随消息落盘的文件附件（面板拖入 / 平台上传）。
     ///
     /// 面板据此在用户气泡下方显示「📎 报告.pdf · 1.2 MB」——没有它，刷新后
     /// 附件只剩 agent 上下文里的路径，用户看不到自己发过什么。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub files: Option<Vec<IncomingFile>>,
     /// 本条目对应的**压缩前归档**文件名（只有压缩提示行会带）。
     ///
     /// 面板据此在"上下文已压缩"那一行给出「查看压缩前的历史」入口——
     /// 没有它就只能猜"哪份归档对应这次压缩"（同一天可能有多次压缩）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub archive: Option<String>,
     /// 条目级单调序号（push 与就地更新都会推进）；0 = 旧版/重启前条目。
     /// 增量同步（since_seq）按此过滤，就地更新的工具条目会被重新投递。
@@ -410,6 +429,7 @@ pub enum BackendEvent {
         /// Owning team id (empty/None = default). Lets the panel filter
         /// realtime events to the active team.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
 
@@ -418,6 +438,7 @@ pub enum BackendEvent {
     AgentThinking {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
     /// LLM request was sent.
@@ -438,6 +459,7 @@ pub enum BackendEvent {
         /// 归属 team（多 persona 场景由 annotate_team 注入，前端据此过滤
         /// 实时事件，避免跨 agent 串显）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// Reply branch that owns this reasoning fragment.
         branch_id: String,
@@ -457,6 +479,7 @@ pub enum BackendEvent {
     ToolCall {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         tool_name: String,
         arguments: String,
@@ -469,12 +492,14 @@ pub enum BackendEvent {
         branch_id: String,
         /// 工具开始执行的 epoch 毫秒时间戳（面板「运行中实时计时」用）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         started_at_ms: Option<i64>,
     },
     /// Tool execution completed.
     ToolResult {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         tool_name: String,
         result: String,
@@ -490,6 +515,7 @@ pub enum BackendEvent {
         branch_id: String,
         /// 工具执行总耗时（毫秒；中断场景 = 开始到中断判定为止）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         elapsed_ms: Option<u64>,
     },
     /// 流式回复正文增量（`AgentOutput` 的逐段版本）。
@@ -500,6 +526,7 @@ pub enum BackendEvent {
     AgentContentDelta {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// 归属分支（与本 turn 的 `AgentReasoning` 同值）。
         #[serde(default)]
@@ -513,6 +540,7 @@ pub enum BackendEvent {
     AgentReasoningDelta {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         #[serde(default)]
         branch_id: String,
@@ -528,6 +556,7 @@ pub enum BackendEvent {
         /// 的 `local:tui::local_user`）此前在消费端（core+session_id）键
         /// 冲突——补 team 维度供消费端消歧。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
     /// Agent generated backend output. This is never sent to a platform
@@ -538,9 +567,11 @@ pub enum BackendEvent {
     AgentOutput {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         content: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         branch_id: Option<String>,
     },
     /// The agent turn finished, including turns whose backend output is empty.
@@ -560,6 +591,7 @@ pub enum BackendEvent {
         /// 当前正在执行 turn 的会话 id 列表。
         session_ids: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
 
@@ -572,14 +604,18 @@ pub enum BackendEvent {
         /// 当前阶段（update-status 的 phase：initializing/building/
         /// installing/restarting/verifying；细粒度进度反馈）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         phase: Option<String>,
         /// 目标版本/说明（update-status 的 revision/message，原样透传）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         revision: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         message: Option<String>,
         /// 时间戳（update-status 的 updated_at，原样透传）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         updated_at: Option<String>,
     },
     /// 本机邀请串（`RequestFederationInvite` 响应）。
@@ -592,6 +628,7 @@ pub enum BackendEvent {
         #[serde(default)]
         node_id: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         node_name: Option<String>,
         #[serde(default)]
         listen: String,
@@ -607,6 +644,7 @@ pub enum BackendEvent {
         #[serde(default)]
         node_id: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         node_name: Option<String>,
         #[serde(default)]
         listen: String,
@@ -622,6 +660,7 @@ pub enum BackendEvent {
         session_id: String,
         target_peer: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         new_session_id: Option<String>,
         message: String,
         #[serde(default)]
@@ -640,9 +679,11 @@ pub enum BackendEvent {
     CompactionProgress {
         /// 归属 team（persona）。多上游面板据此把进度归到对应 agent。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// 当前操作的会话；仅该会话的窗口展示进度。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         session_id: Option<String>,
         /// 阶段：`preview` / `archive` / `summarize` / `apply` / `done` / `failed`。
         phase: String,
@@ -666,9 +707,11 @@ pub enum BackendEvent {
         /// 有 `local:tui::local_user` 这个会话 id，只按 `(core, session)` 存会让
         /// A 人格的快照覆盖 B 人格的（切人格后上下文面板显示别人的 tokens/消息）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// 快照归属的会话 id（多会话，2026-09；None = 未指定会话的回退口径）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         session_id: Option<String>,
         /// Every message currently in the context (oldest first).
         messages: Vec<ContextMessageInfo>,
@@ -686,6 +729,7 @@ pub enum BackendEvent {
         sessions: Vec<crate::event::ShellSessionInfo>,
         /// 列表归属 team（与请求一致；无归属（缺省）时前端不过滤）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
     /// 新建 shell 会话成功。
@@ -728,6 +772,7 @@ pub enum BackendEvent {
         /// 前端必须按此路由缓存——绝不能拿当前 activeTeamId 猜测，
         /// 否则其他 agent 的兜底请求会污染当前视图（串显 alix 会话）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// true = 完整快照（替换缓存）；false = 相对 since_seq 的增量
         /// （追加/就地修补）。前端不再凭 seq 大小猜测，避免把全量快照
@@ -748,6 +793,7 @@ pub enum BackendEvent {
     TimelineEarlier {
         /// 响应归属：= 请求的 team_id（None = 主/默认 agent）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// 时间升序的更早条目（`seq` 均小于请求的 `before_seq`）。
         messages: Vec<TimelineMessage>,
@@ -760,6 +806,7 @@ pub enum BackendEvent {
     SessionHistory {
         /// 响应归属：= 请求的 team_id（None = 主/默认 agent）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// = 请求的 session_id（回显）。
         session_id: String,
@@ -818,6 +865,7 @@ pub enum BackendEvent {
     SessionApiOverrides {
         /// 归属人格（会话 id 已含通道前缀，这里只用于 Panel 过滤）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// 当前全部覆盖（只含有覆盖的会话；空 = 没有任何会话被覆盖）。
         overrides: Vec<SessionApiOverrideEntry>,
@@ -828,10 +876,12 @@ pub enum BackendEvent {
     RemoteApiProfiles {
         peer: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         active: Option<serde_json::Value>,
         #[serde(default)]
         profiles: Vec<serde_json::Value>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         error: Option<String>,
     },
     ApiProfilesUpdated {
@@ -958,9 +1008,11 @@ pub enum BackendEvent {
     Notice {
         /// 归属人格（多上游面板据此归到对应 agent）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// 归属会话。`None` = 人格级/全局操作（此时所有窗口都该看到）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         session_id: Option<String>,
         /// 操作是否成功（面板据此选 toast 配色，不解析文案）。
         #[serde(default = "default_true")]
@@ -985,6 +1037,7 @@ pub enum BackendEvent {
         result: serde_json::Value,
         /// 失败原因（成功为 None）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         error: Option<String>,
     },
     /// 模块实例状态推送（W2.1，2026-10）：模块/模块实例主动上报（含
@@ -1001,18 +1054,22 @@ pub enum BackendEvent {
     /// 工作区会话列表快照（含激活会话标记）。
     WorkspaceSessions {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         sessions: Vec<WorkspaceSessionInfo>,
         /// 当前激活会话 id（None = 未激活）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         active: Option<String>,
         /// 当前激活对话 id（2026-10 多对话；`active` 仍为工作区 id）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         active_conversation: Option<String>,
     },
     /// 某会话各工作区目录的 git 状态（`RequestWorkspaceGitStatus` 响应）。
     WorkspaceGitStatus {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         session_id: String,
         directories: Vec<WorkspaceGitInfo>,
@@ -1020,6 +1077,7 @@ pub enum BackendEvent {
     /// 某工作区目录下的文件列表（`RequestWorkspaceFiles` 响应；只读浏览）。
     WorkspaceFiles {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         session_id: String,
         /// 被列出的目录绝对路径（回显请求值）。
@@ -1027,12 +1085,14 @@ pub enum BackendEvent {
         entries: Vec<WorkspaceFileEntry>,
         /// 列目录失败的原因（路径越界 / 不存在等；成功时为 None）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         error: Option<String>,
     },
     /// 目录选择器浏览结果（`RequestBrowseDirectories` 响应，2026-10）。
     BrowseDirectories {
         /// 被浏览的位置（回显请求值；None = 根列表）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         path: Option<String>,
         /// 浏览根（path=None 时列出）：label（展示名，如「家目录 (~)」）+
         /// path。远程节点浏览时 roots 来自对端。
@@ -1043,6 +1103,7 @@ pub enum BackendEvent {
         entries: Vec<WorkspaceFileEntry>,
         /// 失败原因（越界 / 不存在 / 对端离线等；成功为 None）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         error: Option<String>,
     },
 }
@@ -1074,6 +1135,7 @@ pub struct SkillInfo {
     pub category: String,
     /// Owning package id (from SKILL.md frontmatter `package:`); None = standalone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub package: Option<String>,
     /// Full instructions body of `SKILL.md`.
     #[serde(default)]
@@ -1083,6 +1145,7 @@ pub struct SkillInfo {
     pub system: bool,
     /// 外部 Git 来源（安装的 skill；内置技能为 None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub source: Option<SkillSourceInfo>,
 }
 
@@ -1106,6 +1169,7 @@ pub struct ToolInfo {
     pub enabled: bool,
     /// Owning package id (e.g. "echo-agent.instance.qq"); None = standalone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub package: Option<String>,
 }
 
@@ -1116,9 +1180,11 @@ pub struct TeamInfo {
     pub id: String,
     /// 来源节点身份（federation NodeId）。多节点聚合时人格身份 = (node_id, id)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub node_id: Option<String>,
     /// 运行区域展示名（`[core].region_name`；空 = 回退 NodeId）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub region_name: Option<String>,
     pub name: String,
     #[serde(default)]
@@ -1206,14 +1272,17 @@ pub struct TeamInfo {
     pub available_tools: Vec<String>,
     /// Per-agent trunk token budget (None = 继承全局 [agent].memory_limit_tokens)。
     #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub memory_limit_tokens: Option<usize>,
     /// Per-agent context window cap (None = 继承全局 [agent].context_window_tokens)。
     #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub context_window_tokens: Option<usize>,
     /// Persona 级 API 供应商引用（None = 跟随全局默认配置；
     /// Some(name) = 使用全局供应商池中该名字的 profile）。
     /// 与 Profile 池、全局默认的展示组合见 API 设置页。
     #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub api_profile: Option<String>,
 }
 
@@ -1278,6 +1347,7 @@ pub struct ModuleInfo {
     /// 该字段（`ModuleDescriptor::error` 有、`ModuleInfo` 丢了），失败原因
     /// 只能翻日志。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub error: Option<String>,
     /// 声明该模块的配置层（`modules.toml` / `bundle:base.toml` …）；
     /// 空 = 配置未提及（编译内置的缺省行为）。
@@ -1359,6 +1429,7 @@ pub struct WorkspaceConversationInfo {
     /// 会话级 API 覆盖（2026-10）：`Some(name)` = 该对话的 LLM 请求走
     /// 全局供应商池中该 profile 的 provider；`None` = 跟随 persona 级。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub api_profile: Option<String>,
 }
 
@@ -1384,6 +1455,7 @@ pub struct WorkspaceSessionInfo {
     pub conversations: Vec<WorkspaceConversationInfo>,
     /// 最后使用的对话 id（激活工作区不带对话时进入它）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub last_conversation: Option<String>,
 }
 
@@ -1405,6 +1477,7 @@ pub enum WorkspaceDirectory {
         /// 归属节点（federation Phase 0 仅解析与保留；远程目录在
         /// Phase 2 之前不可用于工具执行）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         node: Option<String>,
     },
 }
@@ -1471,6 +1544,7 @@ pub struct WorkspaceGitInfo {
     pub is_repo: bool,
     /// 当前分支（detached 时为 `HEAD`）。
     #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub branch: Option<String>,
     /// 相对上游的领先/落后提交数（无上游时为 0）。
     #[serde(default)]
@@ -1505,9 +1579,11 @@ pub struct WorkspaceGitInfo {
     pub changed_entries: Vec<WorkspaceChangedEntry>,
     /// 最近一次提交的摘要（`<short-hash> <subject>`）。
     #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub last_commit: Option<String>,
     /// 采集失败原因（目录不存在 / git 不可用等；非仓库时为 None）。
     #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub error: Option<String>,
 }
 
@@ -1617,6 +1693,7 @@ pub struct ApiUsagePoint {
     pub calls: u64,
     /// 估算费用（按 `[agent.pricing]` 定价表；无匹配价格 = None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub est_cost: Option<f64>,
 }
 

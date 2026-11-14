@@ -40,6 +40,7 @@ pub enum BackendCommand {
         #[serde(default)]
         files: Vec<PendingFile>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
     /// Switch the active model.
@@ -66,8 +67,10 @@ pub enum BackendCommand {
         base_url: String,
         api_key: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         thinking: Option<ThinkingMode>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         reasoning_effort: Option<ReasoningEffort>,
     },
     /// Switch to an API profile by name (empty = top-level default).
@@ -165,18 +168,23 @@ pub enum BackendCommand {
     /// 旧语义（整档归档 + 全量清空），向后兼容旧面板。
     ArchiveHistory {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         session_id: Option<String>,
     },
     /// 压缩指定会话的历史：旧事件替换为摘要（保留最近 keep_recent 条）。
     /// `session_id` 必填；缺失时服务端拒绝，避免误压该人格的全部会话。
     CompactHistory {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         session_id: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         keep_recent: Option<usize>,
     },
     /// Request the list of all mounted modules.
@@ -215,14 +223,17 @@ pub enum BackendCommand {
         enabled_skills: Vec<String>,
         /// Per-agent trunk token budget (None = 继承全局 [agent].memory_limit_tokens)。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         memory_limit_tokens: Option<usize>,
         /// Per-agent context window cap (None = 继承全局 [agent].context_window_tokens)。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         context_window_tokens: Option<usize>,
         /// Persona 级 API 供应商引用（None = 跟随全局默认配置；
         /// Some(name) = 使用全局供应商池 `[agent].api_profiles` 中的该 profile）。
         /// 保存在 `[agent.teams.{id}].api_profile`，运行期即时重建该 persona 的 provider。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         api_profile: Option<String>,
     },
     /// Delete a team member (the default/main agent is protected).
@@ -242,8 +253,10 @@ pub enum BackendCommand {
     /// 该智能体的本地 TUI 会话（再回退任一已有会话）。
     RequestContext {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         session_id: Option<String>,
     },
     /// Cancel running work for a session (agent turns + background tasks).
@@ -255,6 +268,7 @@ pub enum BackendCommand {
         /// 取消必须路由到 turn 实际所在的 agent：self-coding 的 turn 在
         /// self-coding 的 Agent 中，默认 agent 取消永远为 0。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
     /// Request the persisted display timeline (`BackendEvent::TrunkTimeline`).
@@ -266,9 +280,11 @@ pub enum BackendCommand {
         url: String,
         /// 安装目录名（缺省取仓库名）
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         name: Option<String>,
         /// 分支/标签（缺省 = 仓库默认分支）
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         branch: Option<String>,
     },
     /// 更新从 Git 安装的 skill（根据 sources 记录 fetch + reset）。
@@ -281,6 +297,7 @@ pub enum BackendCommand {
     },
     RequestTrunkTimeline {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// 增量拉取：仅返回 seq > since_seq 的 timeline 条目并携带最新 seq。
         /// None / 0 = 全量（默认）。前端首次加载全量，此后切换/回放只拉增量。
@@ -297,6 +314,7 @@ pub enum BackendCommand {
         /// 只影响 `since_seq == 0`（全量）路径：增量路径本来就是缺口补齐，
         /// 截断会让前端游标与实际内容不一致。
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         limit: Option<usize>,
     },
     /// 请求**更早的时间线**（向上翻页；2026-10 分页）。
@@ -307,6 +325,7 @@ pub enum BackendCommand {
     /// 该前插。
     RequestTimelineEarlier {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         /// **已加载的最老条目的位置序号**（`TimelineMessage.ord`）。
         ///
@@ -324,6 +343,7 @@ pub enum BackendCommand {
         before_ord: u64,
         /// 本页最多返回条数（服务端 clamp [1, 500]）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         limit: Option<usize>,
     },
     /// 请求某会话的**显示历史**（从事件日志按会话派生；2026-10 修复面板
@@ -345,23 +365,29 @@ pub enum BackendCommand {
     /// 边界），仅受服务端硬上限约束。
     RequestSessionHistory {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         session_id: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         limit: Option<usize>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         expand_depth: Option<usize>,
     },
     /// 请求后台 shell 会话列表（带 team_id 时只返回该 persona 的会话）。
     RequestShellSessions {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
     /// 新建一个后台 shell 会话（持久 bash，可反复执行命令）。
     ShellStart {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         workdir: Option<String>,
     },
     /// 在指定 shell 会话中执行一条命令（超时内返回输出；超时标注且会话保留）。
@@ -369,14 +395,17 @@ pub enum BackendCommand {
         session_id: String,
         command: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         timeout_secs: Option<u64>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
     /// 停止（销毁）一个后台 shell 会话。
     ShellStop {
         session_id: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
     /// Erase agent conversation memory. Scope:
@@ -394,8 +423,10 @@ pub enum BackendCommand {
     /// workspace 会话）的记忆一并清掉。
     ClearHistory {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         session_id: Option<String>,
     },
     /// Start an instance by name.
@@ -438,18 +469,21 @@ pub enum BackendCommand {
     /// 响应 `BackendEvent::WorkspaceSessions`。
     RequestWorkspaceSessions {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
     },
     /// 新建/更新一个工作区会话（按 `session.id` upsert；空 id 由服务端
     /// 依名称生成）。响应为刷新后的 `WorkspaceSessions` 列表。
     SaveWorkspaceSession {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         session: crate::event::WorkspaceSessionInfo,
     },
     /// 删除一个工作区会话（若为激活会话则同时清除激活标记）。
     DeleteWorkspaceSession {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         id: String,
     },
@@ -457,12 +491,15 @@ pub enum BackendCommand {
     /// 激活会话的工作目录会注入系统提示词。
     ActivateWorkspaceSession {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         id: Option<String>,
         /// 工作区内的对话 id（2026-10 多对话；None = 进入该工作区的
         /// `last_conversation` / 首条对话）。`id = None`（取消激活）时忽略。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         conversation: Option<String>,
     },
     /// 请求某会话各工作区目录的 git 状态（`git` CLI 采集，只读）。
@@ -473,6 +510,7 @@ pub enum BackendCommand {
     /// 那种派生通道 id（2026-10 作用域普查确认，改名会破坏线协议，故只此注记）。
     RequestWorkspaceGitStatus {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         session_id: String,
     },
@@ -482,6 +520,7 @@ pub enum BackendCommand {
     /// `session_id` 同上（实为工作区 id，非对话会话 id）。
     RequestWorkspaceFiles {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         session_id: String,
         path: String,
@@ -500,6 +539,7 @@ pub enum BackendCommand {
     /// `BackendEvent::BrowseDirectories`。
     RequestBrowseDirectories {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         path: Option<String>,
     },
 
@@ -514,12 +554,14 @@ pub enum BackendCommand {
     /// `root` 必须是模块配置 `roots` 允许的范围内（缺省只有 HOME）。
     RequestProDocBundle {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         root: String,
     },
     /// 目录选择器的逐层浏览：`path = None` 给根列表，给路径给子目录。
     BrowseProDocDirs {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         path: Option<String>,
     },
     /// 可打开的根列表 + 生效的上限（面板初次连接时拉一次）。
@@ -528,11 +570,13 @@ pub enum BackendCommand {
     /// 响应 `ModuleEvent{name:"prodoc.file"}`。
     ReadProDocFile {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         root: String,
         path: String,
         /// 面板生成的回执关联 id（模块原样带回）。
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         request_id: Option<String>,
     },
     /// 保存单个文档（带 `base` 冲突检测）。
@@ -543,24 +587,30 @@ pub enum BackendCommand {
     /// `prodoc-core/merge.ts` 的 diff3，在 Rust 复刻保证不了语义一致。
     SaveProDocFile {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         root: String,
         path: String,
         content: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         base: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         request_id: Option<String>,
     },
     /// 删除单个文档（`base` 不匹配则取消删除）。
     DeleteProDocFile {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         root: String,
         path: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         base: Option<String>,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         request_id: Option<String>,
     },
     /// 文档图检查（断链 / 自身连线 / 重复 id / 环 / 孤立 / 空正文 / 超长 /
@@ -570,6 +620,7 @@ pub enum BackendCommand {
     /// 回执只给计数。**检查有问题不等于命令失败**：文档可以有意留草稿。
     ProDocCheck {
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         root: String,
     },
@@ -609,6 +660,7 @@ pub enum BackendCommand {
     MigrateSession {
         session_id: String,
         #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         target_peer: String,
     },
