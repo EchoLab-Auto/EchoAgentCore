@@ -46,6 +46,11 @@ enabled_modules = [
 
 [adapters.qq]
 enabled = true
+# QQ 适配器是**进程外模块**，二进制随镜像发布（`echo-adapter-qq`，在 PATH 里）。
+# 平台名派生即可，**不需要写 [adapters.qq.module].command**；只有想用自定义
+# 构建的适配器时才显式指定路径，例如：
+#   [adapters.qq.module]
+#   command = "/opt/my-adapter/echo-adapter-qq"
 # NapCat 容器由 compose 管理（见 docker-compose.yml 的 napcat 服务）
 napcat_auto_start = false
 napcat_auto_stop = false

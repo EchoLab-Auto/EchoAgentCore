@@ -108,6 +108,15 @@ docker run -v ./config:/config -v ./data:/data -p 3131:3131 -p 3132:3132 echo-ag
 
 镜像内置 docker CLI（可选挂 `/var/run/docker.sock`：QR 取图 / 文件桥 / NapCat 管理）。
 
+镜像**自带 QQ 适配器模块**（`echo-adapter-qq`）：适配器自 2026-10 起是进程外模块
+（独立仓 [`agent-module-adapter-qq`](https://github.com/EchoLab-Auto/agent-module-adapter-qq)），
+Core 按平台名派生去 PATH 里找它，装成派生名后容器模板不需要写 `module.command`。
+需要可复现构建时固定适配器版本：
+
+```bash
+docker build --build-arg ADAPTER_REF=<commit-or-tag> -t echo-agent-core:local .
+```
+
 ---
 
 ## 配置
