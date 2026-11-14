@@ -72,6 +72,38 @@ pub const CALLBACK_PATH: &str = "/auth/callback";
 /// ChatGPT 身份 claim 的容器键（OpenAI 命名空间下的自定义 claim）。
 pub const AUTH_CLAIM: &str = "https://api.openai.com/auth";
 
+/// 回调服务器绑定的地址。默认 `127.0.0.1`。
+///
+/// # 什么时候要改
+///
+/// `redirect_uri` 固定是 `http://localhost:1455/...`，而 **`localhost` 指浏览器
+/// 所在的那台机器**。所以从局域网另一台机器用浏览器打开授权链接时，跳转打到
+/// 的是那台机器自己的 1455，Core 收不到——用户看到"无法访问此网站"。
+///
+/// 两种解法：
+///
+/// 1. **SSH 隧道（推荐，无需改这里）**：在浏览器那台机器上
+///    `ssh -N -L 1455:127.0.0.1:1455 <core-host>`，之后 `localhost:1455`
+///    经由隧道回到 Core。这条路径在默认绑定下就能用。
+/// 2. **局域网转发**：浏览器那台机器上把本地 1455 转发到 Core 的 1455。这要求
+///    Core **不在**回环地址上监听，于是把 `ECHO_CHATGPT_CALLBACK_BIND` 设成
+///    `0.0.0.0`。
+///
+/// # 设成 0.0.0.0 的安全性
+///
+/// 回调只是一次性收授权码，真正换令牌需要 `code_verifier`——它只存在 Core
+/// 内存里、从不离开本机（PKCE 的用途正是这个）。所以同网段的人即使截获了
+/// `code` 也换不出令牌。另加 `state` 逐字比对，挡掉伪造回调。
+///
+/// 仍然建议只在登录期间打开、登完改回 `127.0.0.1`——没必要长期暴露一个监听口。
+pub fn callback_bind() -> String {
+    std::env::var("ECHO_CHATGPT_CALLBACK_BIND")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
 /// 回调地址（`redirect_uri` 必须与它逐字一致）。
 pub fn redirect_uri() -> String {
     format!("http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}")
@@ -553,13 +585,14 @@ pub(crate) fn classify_preflight(status: u16, body: &str) -> Result<(), String> 
 /// 注册的，换端口授权服务器会拒。最常见的原因是**本机 Codex CLI 正在登录**
 /// （它也用 1455），错误信息里点明这一点。
 pub async fn begin_login() -> Result<PendingLogin, String> {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
+    let bind = callback_bind();
+    let listener = tokio::net::TcpListener::bind((bind.as_str(), CALLBACK_PORT))
         .await
         .map_err(|error| {
             format!(
-                "绑定 127.0.0.1:{CALLBACK_PORT} 失败（{error}）。这个端口是 ChatGPT OAuth 的\
-                 redirect_uri 固定要求，不能换。常见原因：本机 codex CLI 正在同一个端口上登录。\
-                 关掉它再重试。"
+                "绑定 {bind}:{CALLBACK_PORT} 失败（{error}）。这个端口是 ChatGPT OAuth 的\
+                 redirect_uri 固定要求，不能换。常见原因：上一次登录还没结束（在等回调），\
+                 或本机 codex CLI 正在同一个端口上登录。先在面板点「取消登录」再重试。"
             )
         })?;
     let pkce = Pkce::generate();
@@ -1160,6 +1193,36 @@ mod tests {
                 "status={status} body={body} 不该被判为地区失败"
             );
         }
+    }
+
+    /// 回调绑定地址：默认回环；`ECHO_CHATGPT_CALLBACK_BIND` 可覆盖（局域网转发用）。
+    #[test]
+    fn callback_bind_defaults_to_loopback() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("ECHO_CHATGPT_CALLBACK_BIND") };
+        assert_eq!(callback_bind(), "127.0.0.1");
+
+        unsafe { std::env::set_var("ECHO_CHATGPT_CALLBACK_BIND", "0.0.0.0") };
+        assert_eq!(callback_bind(), "0.0.0.0");
+
+        // 空值当未设（运维常把变量导成空串，绑 "" 会直接失败）。
+        unsafe { std::env::set_var("ECHO_CHATGPT_CALLBACK_BIND", "  ") };
+        assert_eq!(callback_bind(), "127.0.0.1");
+
+        unsafe { std::env::remove_var("ECHO_CHATGPT_CALLBACK_BIND") };
+    }
+
+    /// `redirect_uri` 必须始终是 `localhost:1455`——它随 client 注册，改了就
+    /// 被授权服务器拒（实测 `param: redirect_uri` → invalid_request）。
+    /// 局域网访问只能靠隧道/转发，不能靠改这个值。
+    #[test]
+    fn redirect_uri_is_fixed_regardless_of_bind() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("ECHO_CHATGPT_CALLBACK_BIND", "0.0.0.0") };
+        assert_eq!(redirect_uri(), "http://localhost:1455/auth/callback");
+        unsafe { std::env::remove_var("ECHO_CHATGPT_CALLBACK_BIND") };
     }
 
     /// 地区封锁必须是"配代理"这条可执行提示，而不是裸 HTTP 403。

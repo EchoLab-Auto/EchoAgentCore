@@ -29,6 +29,47 @@ echo-agent-core login-chatgpt              # 起回调服务器并打印授权 U
 echo-agent-core login-chatgpt --print-url  # 只打印 URL（远端 Core 场景）
 ```
 
+### 从局域网另一台机器访问面板时
+
+`redirect_uri` 固定是 `http://localhost:1455/auth/callback`，而 **`localhost`
+指浏览器所在的那台机器**。所以：
+
+- 在**跑 Core 的机器**上开浏览器 → 直接可用
+- 在**另一台机器**上开浏览器 → 浏览器跳回它自己的 1455，Core 收不到，
+  页面显示「无法访问此网站」（或跳到别的程序）
+
+两种解法（`redirect_uri` 本身改不了：它随 OAuth client 注册，换掉会被授权
+服务器以 `invalid_request: redirect_uri` 拒绝——实测过）：
+
+**1. SSH 隧道（推荐，默认绑定即可）**
+
+在**浏览器那台机器**上：
+
+```bash
+ssh -N -L 1455:127.0.0.1:1455 <core-host>
+```
+
+保持它开着，再去浏览器打开授权链接。`localhost:1455` 经隧道回到 Core。
+
+**2. 局域网转发（没有 SSH 时）**
+
+先让 Core 在局域网地址上监听：
+
+```bash
+systemctl --user edit echo-agent-core
+  [Service]
+  Environment=ECHO_CHATGPT_CALLBACK_BIND=0.0.0.0
+systemctl --user restart echo-agent-core
+```
+
+再在**浏览器那台机器**上把本地 1455 转发到 Core 的 1455（`socat`：
+`socat TCP-LISTEN:1455,fork,reuseaddr TCP:<core-host>:1455`）。登录完成后
+建议把绑定改回 `127.0.0.1`——没必要长期暴露一个监听口。
+
+安全性：回调只是一次性收授权码；换令牌需要 `code_verifier`，它只存在 Core
+内存里、从不离开本机（这正是 PKCE 的用途）。同网段的人即使截获 `code` 也换
+不出令牌，另有 `state` 逐字比对挡伪造回调。
+
 两条路走同一套代码（`chatgpt::auth` + Responses 客户端）。面板侧只多三件事：
 `StartChatGptLogin` / `CancelChatGptLogin` / `RequestChatGptStatus` 三条命令，
 以及两个回推事件（URL 与结果）——登录**必须**由 Core 发起，因为 OAuth 回调
