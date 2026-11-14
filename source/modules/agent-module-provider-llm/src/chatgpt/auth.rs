@@ -399,6 +399,46 @@ pub struct PendingLogin {
     client: reqwest::Client,
 }
 
+/// 本通道专用代理地址。
+///
+/// **为什么不直接用全局 `HTTPS_PROXY`**：Core 同时服务 deepseek / kimi /
+/// opencode 等通道，把全局代理设上会把**所有**流量绕到境外节点——延迟变差，
+/// 有些国内中转还会因为出口 IP 变化拒绝请求。OpenAI 是唯一需要出境的通道，
+/// 所以代理也只给它。
+///
+/// 优先级：`ECHO_CHATGPT_PROXY` → `HTTPS_PROXY`（后者是运维直觉里的默认，
+/// 让"我已经全局配好了"的机器不用再改）。
+pub fn proxy_url() -> Option<String> {
+    for key in ["ECHO_CHATGPT_PROXY", "HTTPS_PROXY", "https_proxy"] {
+        if let Ok(value) = std::env::var(key) {
+            let value = value.trim().to_string();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// 建一个**带本通道代理**的 HTTP 客户端。
+///
+/// 所有出站请求（预检 / 换令牌 / 刷新 / Responses 调用）都用它，避免出现
+/// "登录走了代理、调用没走"这种半通状态——那种状态下登录成功但一发消息就
+/// 超时，排查会绕远路。
+pub(crate) fn build_client() -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15));
+    if let Some(url) = proxy_url() {
+        let proxy = reqwest::Proxy::all(&url)
+            .map_err(|error| format!("代理地址无效（{url}）：{error}"))?;
+        builder = builder.proxy(proxy);
+        tracing::debug!(%url, "chatgpt channel using proxy");
+    }
+    builder
+        .build()
+        .map_err(|error| format!("build http client failed: {error}"))
+}
+
 /// 登录前的**网络可达性预检**。
 ///
 /// # 为什么必须有
@@ -418,10 +458,7 @@ pub struct PendingLogin {
 /// 也就是说我们只把"地区被拒"当成失败，其余一律视为通过——这样上游改了
 /// 错误码也不会误判。
 pub async fn preflight() -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|error| format!("build http client failed: {error}"))?;
+    let client = build_client()?;
     // 只探测"地区门"，不真的换令牌：code 填一个假值，期望它被拒（那说明
     // 地区是通过的）。
     let response = client
@@ -484,10 +521,7 @@ pub async fn begin_login() -> Result<PendingLogin, String> {
     let pkce = Pkce::generate();
     let state = new_state();
     let url = authorize_url(&pkce, &state);
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|error| format!("build http client failed: {error}"))?;
+    let client = build_client()?;
     Ok(PendingLogin {
         url,
         listener,
@@ -685,10 +719,7 @@ pub async fn refresh(auth: &ChatGptAuth) -> Result<ChatGptAuth, String> {
     if auth.refresh_token.is_empty() {
         return Err("没有 refresh_token（登录时未取得 offline_access），需要重新登录".into());
     }
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|error| format!("build http client failed: {error}"))?;
+    let client = build_client()?;
     let form = [
         ("grant_type", "refresh_token"),
         ("refresh_token", auth.refresh_token.as_str()),
@@ -987,6 +1018,50 @@ mod tests {
         assert!(!rendered.contains("super-secret-access-value"));
         assert!(!rendered.contains("super-secret-refresh"));
         assert!(rendered.contains("chars"), "{rendered}");
+    }
+
+    /// 代理只给本通道：`ECHO_CHATGPT_PROXY` 优先于 `HTTPS_PROXY`，
+    /// 空值当未设。这条锁的是"不会因为机器上有全局代理就把 deepseek 也绕出国"。
+    #[test]
+    fn proxy_url_prefers_channel_specific_var() {
+        // 环境变量是进程级的，串行化避免与其它用例交叉。
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: 本用例串行读写这两个变量。
+        unsafe {
+            std::env::remove_var("ECHO_CHATGPT_PROXY");
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("https_proxy");
+        }
+        assert_eq!(proxy_url(), None, "两个都没设时不该有代理");
+
+        unsafe { std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:7897") };
+        assert_eq!(proxy_url().as_deref(), Some("http://127.0.0.1:7897"));
+
+        // 专用变量压过全局变量。
+        unsafe { std::env::set_var("ECHO_CHATGPT_PROXY", "http://127.0.0.1:17897") };
+        assert_eq!(proxy_url().as_deref(), Some("http://127.0.0.1:17897"));
+
+        // 空值视为未设（运维常把变量导成空串）。
+        unsafe { std::env::set_var("ECHO_CHATGPT_PROXY", "  ") };
+        assert_eq!(proxy_url().as_deref(), Some("http://127.0.0.1:7897"));
+
+        unsafe {
+            std::env::remove_var("ECHO_CHATGPT_PROXY");
+            std::env::remove_var("HTTPS_PROXY");
+        }
+    }
+
+    /// 非法代理地址要报错而不是静默直连——静默直连会表现为"地区被拒"，
+    /// 而真正原因是代理配置写错了。
+    #[test]
+    fn build_client_rejects_invalid_proxy() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("ECHO_CHATGPT_PROXY", "::not a url::") };
+        let error = build_client().unwrap_err();
+        assert!(error.contains("代理地址无效"), "{error}");
+        unsafe { std::env::remove_var("ECHO_CHATGPT_PROXY") };
     }
 
     /// 预检只把"地区被拒"判为失败——这是上一轮实测到的唯一真实失败形态。

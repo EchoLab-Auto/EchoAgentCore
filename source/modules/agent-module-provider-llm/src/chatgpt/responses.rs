@@ -67,13 +67,12 @@ impl ChatGptProvider {
             model: model.to_string(),
             auth: tokio::sync::Mutex::new(auth),
             reasoning_effort: echo_defs::ReasoningEffort::default(),
-            client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_else(|error| {
-                    tracing::warn!(%error, "reqwest builder failed, using default client");
-                    reqwest::Client::new()
-                }),
+            // 与登录共用同一个 client 构造器：代理配置只写一处，
+            // 不会出现"登录通了、调用超时"的半通状态。
+            client: auth::build_client().unwrap_or_else(|error| {
+                tracing::warn!(%error, "chatgpt client build failed, falling back to default");
+                reqwest::Client::new()
+            }),
         }
     }
 
