@@ -439,6 +439,30 @@ pub(crate) fn build_client() -> Result<reqwest::Client, String> {
         .map_err(|error| format!("build http client failed: {error}"))
 }
 
+/// 读登录态并转成协议事件（面板据此决定显示「登录」还是「已登录」）。
+///
+/// 文件损坏时返回 `logged_in: false` 并把原因塞进 `email` 字段吗？不——
+/// 这里刻意**不**造一个"看起来没登录"的假状态：`load()` 的错误要原样
+/// 让调用方看见（它会进 `Error` 事件），否则用户会以为订阅失效，
+/// 而真正原因是磁盘上那份 JSON 坏了。
+pub fn status_snapshot() -> agent_module_management::protocol::BackendEvent {
+    use agent_module_management::protocol::BackendEvent;
+    match load() {
+        Ok(Some(auth)) => BackendEvent::ChatGptStatus {
+            logged_in: auth.usable(),
+            email: auth.email,
+            expires_at_ms: auth.expires_at_ms,
+            refreshable: !auth.refresh_token.is_empty(),
+        },
+        _ => BackendEvent::ChatGptStatus {
+            logged_in: false,
+            email: String::new(),
+            expires_at_ms: 0,
+            refreshable: false,
+        },
+    }
+}
+
 /// 登录前的**网络可达性预检**。
 ///
 /// # 为什么必须有

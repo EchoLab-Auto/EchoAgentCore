@@ -266,7 +266,10 @@ impl Agent {
             | BackendCommand::TestApi { .. }
             | BackendCommand::QueryApiBalance { .. }
             | BackendCommand::QueryApiMetrics { .. }
-            | BackendCommand::DeleteApi { .. } => {
+            | BackendCommand::DeleteApi { .. }
+            | BackendCommand::StartChatGptLogin
+            | BackendCommand::CancelChatGptLogin
+            | BackendCommand::RequestChatGptStatus => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
                     message: "API 命令由 echo-agent.provider.llm 模块处理，但该模块未启用".into(),

@@ -18,10 +18,22 @@ y: 560
 
 ## 登录
 
+**从面板设置页登录（推荐）**：供应商下拉选「ChatGPT 订阅（Plus/Pro）」，登录块
+就在选择器下方——点「登录 ChatGPT」，Core 回推授权链接，点「打开」或「复制」
+到你自己的浏览器完成授权。回调会打到 **Core 那台** 的 1455 端口。
+
+也可以走命令行（无面板 / 排障时）：
+
 ```bash
 echo-agent-core login-chatgpt              # 起回调服务器并打印授权 URL
 echo-agent-core login-chatgpt --print-url  # 只打印 URL（远端 Core 场景）
 ```
+
+两条路走同一套代码（`chatgpt::auth` + Responses 客户端）。面板侧只多三件事：
+`StartChatGptLogin` / `CancelChatGptLogin` / `RequestChatGptStatus` 三条命令，
+以及两个回推事件（URL 与结果）——登录**必须**由 Core 发起，因为 OAuth 回调
+只能落到 Core 的端口上；在浏览器里做 OAuth 拿到的是"只在这台浏览器有效"的
+令牌，而真正要用的进程在 Core 那边。
 
 - 授权 URL 打开后完成登录，浏览器跳回 `http://localhost:1455/auth/callback`
 - 令牌写入 `~/.local/share/echo-agent-core/chatgpt-auth.json`（**0600**）
@@ -105,3 +117,5 @@ Core 把这句翻译成「配 `HTTPS_PROXY` 后重试」（reqwest 默认读该�
 | `HTTP 401` | 令牌失效且 refresh 也失败 | 重新登录 |
 | `unsupported_country_region_territory` | 地区限制 | 配代理 |
 | 回答不遵守人格 | 系统提示词位置错了（回归） | 查 `build_request_body` 的单测 |
+| 面板点「登录」没反应 | 面板发的命令名与 Core 注册的不一致（无载荷变体必须发裸字符串） | `typecheck-extensions` 之外，`ApiSettingsChatGpt` 测试盯住线格式 |
+| 「已有登录在进行中」 | 上一次登录仍在等回调（占着 1455） | 点「取消登录」，或等它 5 分钟超时 |

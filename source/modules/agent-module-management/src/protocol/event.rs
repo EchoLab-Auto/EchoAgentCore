@@ -942,6 +942,42 @@ pub enum BackendEvent {
     TeamsList {
         teams: Vec<TeamInfo>,
     },
+    // ---- ChatGPT 订阅登录（响应 StartChatGptLogin / RequestChatGptStatus）----
+    /// 授权 URL 已就绪：请用户在**任意**浏览器里打开它。
+    ///
+    /// 为什么把 URL 交给前端而不是 Core 自己开浏览器：Core 常跑在无桌面
+    /// 环境（服务器 / 容器 / 另一台机器），`webbrowser` 在那只会静默失败。
+    /// 而回调必须打到 **Core 这台** 的 1455 端口——URL 由用户浏览器打开、
+    /// 回调由 Core 接收，这个组合在远程部署下也成立。
+    ChatGptLoginPending {
+        /// 完整的授权 URL（含 PKCE challenge 与一次性 state）。
+        url: String,
+        /// 回调地址（展示用：让用户知道浏览器要跳回哪里）。
+        redirect_uri: String,
+    },
+    /// 登录结束（成功或失败）。
+    ChatGptLoginResult {
+        ok: bool,
+        /// 成功时的账户邮箱（Core 侧解析自 id_token）。
+        #[serde(default)]
+        email: String,
+        /// 失败原因；`ok == true` 时为空。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+        error: Option<String>,
+    },
+    /// 登录态快照（响应 `RequestChatGptStatus`）。
+    ChatGptStatus {
+        logged_in: bool,
+        #[serde(default)]
+        email: String,
+        /// access token 到期时刻（Unix 毫秒；0 = 未知）。
+        #[serde(default)]
+        expires_at_ms: i64,
+        /// 是否有可用的 refresh_token（false = 过期后必须重新登录）。
+        #[serde(default)]
+        refreshable: bool,
+    },
     /// API connectivity test result (response to `TestApi`).
     ApiTestResult {
         /// Tested config name (empty = top-level default).
@@ -1760,6 +1796,9 @@ impl BackendEvent {
             Self::ModuleEvent { .. } => "ModuleEvent",
             Self::TeamsList { .. } => "TeamsList",
             Self::ApiTestResult { .. } => "ApiTestResult",
+            Self::ChatGptLoginPending { .. } => "ChatGptLoginPending",
+            Self::ChatGptLoginResult { .. } => "ChatGptLoginResult",
+            Self::ChatGptStatus { .. } => "ChatGptStatus",
             Self::ApiBalanceResult { .. } => "ApiBalanceResult",
             Self::ApiMetrics { .. } => "ApiMetrics",
             Self::SystemPrompt { .. } => "SystemPrompt",

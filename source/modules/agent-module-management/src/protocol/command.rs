@@ -127,6 +127,24 @@ pub enum BackendCommand {
         from: String,
         to: String,
     },
+    // ---- ChatGPT 订阅登录（2026-11：设置页直接发起，不再依赖 CLI）----
+    //
+    // 三条命令都归 `agent-module-provider-llm`（它拥有 chatgpt 模块）。
+    // 为什么做成命令而不是"面板去跑 CLI"：Core 可能跑在另一台机器 / 容器里，
+    // 面板碰不到它的终端；而 OAuth 回调必须打到 **Core 那台** 的 1455 端口。
+    // 命令面是唯一能让"用户在浏览器点、Core 在后台收"闭环的地方。
+    /// 开始一次 ChatGPT 订阅登录。
+    ///
+    /// 进度经 `ChatGptLoginPending`（授权 URL）/ `ChatGptLoginResult`
+    /// （成功或失败）回推。已有登录在进行时回 `Error`，不静默排队——
+    /// 两次登录抢同一个 1455 端口，排队只会让第二个必然失败且原因隐晦。
+    StartChatGptLogin,
+    /// 取消进行中的登录（释放 1455 端口；面板关掉弹层时用）。
+    CancelChatGptLogin,
+    /// 读登录态（是否已登录 / 账户邮箱 / 过期时刻），回 `ChatGptStatus`。
+    ///
+    /// 只读：面板进设置页时拉一次，用来决定显示「登录」还是「已登录」。
+    RequestChatGptStatus,
     /// Request a full state snapshot（逐会话回 `BackendEvent::SessionUpdated`
     /// 等事件流，不发状态结构体）。
     RequestState,
@@ -697,6 +715,9 @@ impl BackendCommand {
             Self::QueryApiMetrics { .. } => "QueryApiMetrics",
             Self::DeleteApi { .. } => "DeleteApi",
             Self::RenameApi { .. } => "RenameApi",
+            Self::StartChatGptLogin => "StartChatGptLogin",
+            Self::CancelChatGptLogin => "CancelChatGptLogin",
+            Self::RequestChatGptStatus => "RequestChatGptStatus",
             Self::RequestState { .. } => "RequestState",
             Self::ToggleSkill { .. } => "ToggleSkill",
             Self::ToggleTool { .. } => "ToggleTool",
@@ -803,6 +824,7 @@ pub const BROADCAST_READONLY_COMMANDS: &[&str] = &[
     "RequestToolsList",
     "RequestSystemPrompt",
     "RequestRemoteApiProfiles",
+    "RequestChatGptStatus",
     "RequestWorkspaceSessions",
     // 联邦与自更新
     "RequestFederationStatus",
@@ -903,7 +925,12 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::MigrateSession { .. }
         | BackendCommand::RequestSelfUpdate
         | BackendCommand::RequestSelfUpdateStatus
-        | BackendCommand::ClearHistory { .. } => CommandClearance::Frontend,
+        | BackendCommand::ClearHistory { .. }
+        // ChatGPT 订阅登录：**人在环**的操作，模型绝不可触发——登录态就是
+        // 账户凭证，让 agent 自主登录等于把凭证的获取权交给提示注入。
+        | BackendCommand::StartChatGptLogin
+        | BackendCommand::CancelChatGptLogin
+        | BackendCommand::RequestChatGptStatus => CommandClearance::Frontend,
         _ => CommandClearance::Agent,
     }
 }
@@ -962,6 +989,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "RequestChatGptStatus",
                 "RequestFederationDirectory",
                 "RequestFederationInvite",
                 "RequestFederationStatus",
