@@ -38,8 +38,18 @@ echo-agent-core login-chatgpt --print-url  # 只打印 URL（远端 Core 场景�
 - 在**另一台机器**上开浏览器 → 浏览器跳回它自己的 1455，Core 收不到，
   页面显示「无法访问此网站」（或跳到别的程序）
 
-两种解法（`redirect_uri` 本身改不了：它随 OAuth client 注册，换掉会被授权
-服务器以 `invalid_request: redirect_uri` 拒绝——实测过）：
+**最省事的解法：把地址栏里的链接粘回面板。** 浏览器跳回你自己的
+`localhost:1455` 会显示「无法访问此页面」，但**地址栏里已经带着 `code` 与
+`state`**。整条复制下来，粘进设置页登录块里的输入框、点「完成登录」即可
+（`SubmitChatGptLoginCode` 命令）。不需要隧道、不需要改监听地址——这是 headless
+场景下 OAuth 的标准解法，`gh auth login` 这类 CLI 也是这么做的。
+
+安全性不打折：`state` 同样逐字比对，PKCE 的 `code_verifier` 始终只在本进程内，
+所以即使有人看到那条链接也换不出令牌。
+
+此外还有两种「让回调真的落到 Core」的办法（`redirect_uri` 本身改不了：它随
+OAuth client 注册，换掉会被授权服务器以 `invalid_request: redirect_uri` 拒绝
+——实测过）：
 
 **1. SSH 隧道（推荐，默认绑定即可）**
 

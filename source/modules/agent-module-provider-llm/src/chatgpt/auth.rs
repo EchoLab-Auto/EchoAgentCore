@@ -628,6 +628,49 @@ impl PendingLogin {
         Ok(auth)
     }
 
+    /// 等回调，**或者**用户手工把地址栏里的链接粘回来。
+    ///
+    /// # 为什么需要手工通道
+    ///
+    /// `redirect_uri` 固定是 `http://localhost:1455/auth/callback`，而
+    /// **`localhost` 指浏览器所在的那台机器**。用户在局域网另一台机器上开面板
+    /// 时，浏览器跳回的是他自己那台的 1455——那里没有服务，页面显示「无法访问
+    /// 此页面」，**但地址栏里已经带着 `code` 与 `state`**。
+    ///
+    /// 让用户把那条 URL 粘回来，就绕过了「回调必须落到 Core 这台机器」的限制：
+    /// 不需要 SSH 隧道、不需要 socat、不需要改监听地址。这是 headless 场景下
+    /// OAuth 的标准解法（`gh auth login`、各家云 CLI 都这么干）。
+    ///
+    /// 安全性与 HTTP 回调完全等价：`state` 同样逐字比对，PKCE 的 verifier 同样
+    /// 只在本进程内。区别只是 code 走了一条人肉搬运的链路。
+    pub async fn wait_with_manual(
+        self,
+        manual: tokio::sync::oneshot::Receiver<String>,
+    ) -> Result<ChatGptAuth, String> {
+        let client = self.client.clone();
+        let verifier = self.pkce.verifier.clone();
+        let state = self.state.clone();
+        // `wait_for_code` 按值拿走 self（持有 listener），所以 state 必须
+        // 在此之前克隆出来——否则粘回来的链接无法校验。
+        let code = tokio::select! {
+            http = self.wait_for_code() => http?,
+            input = manual => {
+                let input = input.map_err(|_| "登录已取消".to_string())?;
+                extract_code_from_input(&input, &state)?
+            }
+        };
+        let auth = exchange_code(&client, &code, &verifier).await?;
+        if !auth.usable() {
+            return Err(
+                "登录成功但令牌里没有 ChatGPT 账户 id（不是 ChatGPT 订阅账号？\
+                 API key 账号没有这个 claim）"
+                    .into(),
+            );
+        }
+        save(&auth)?;
+        Ok(auth)
+    }
+
     /// 接受一次回调，校验 state，取出 code。
     ///
     /// 手写最小 HTTP/1.1：只为一个 GET 引入 HTTP 服务器依赖不值当，而这里
@@ -683,6 +726,85 @@ impl PendingLogin {
 const SUCCESS_HTML: &str = "<!doctype html><meta charset=\"utf-8\"><title>EchoAgent</title>\
 <body style=\"font-family:system-ui;padding:3rem;max-width:34rem\">\
 <h1>登录完成</h1><p>可以关闭这个页面，回到 EchoAgent。</p></body>";
+
+/// 从用户粘贴的内容里取授权码。
+///
+/// 接受三种输入，都是真实会遇到的：
+///
+/// - **完整回调 URL**（最常见）：浏览器跳回 `localhost:1455/auth/callback?code=…&state=…`，
+///   页面打不开但地址栏是完整的——让用户整条复制过来
+/// - **只有 query 部分**：`?code=…&state=…`（有些浏览器会省掉 `http://`）
+/// - **只有 code 本身**：从「复制链接」里手工截出来的
+///
+/// `state` 只要出现就**必须**匹配：不匹配说明这条链接来自另一次登录（或伪造），
+/// 用它换令牌会失败并浪费一次往返，不如当场拒绝并说清原因。
+pub fn extract_code_from_input(input: &str, expected_state: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("没有收到授权码：把浏览器地址栏里的完整链接粘贴进来".into());
+    }
+    // 用户可能贴了整条 URL、也可能只贴 query。统一按 `key=value&…` 解析。
+    let query = trimmed
+        .split_once('?')
+        .map(|(_, q)| q)
+        .unwrap_or(trimmed)
+        .trim_start_matches('?');
+    let mut code = None;
+    let mut state = None;
+    let mut error = None;
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = percent_decode(value);
+        match key {
+            "code" => code = Some(value),
+            "state" => state = Some(value),
+            "error" => error = Some(value),
+            _ => {}
+        }
+    }
+    if let Some(error) = error {
+        return Err(format!(
+            "授权被拒绝（{error}）。可能是你在授权页点了「拒绝」，或该账号没有订阅。"
+        ));
+    }
+    let Some(code) = code else {
+        // 没解析出 `code=` → 用户贴的可能是裸 code。
+        // 裸 code 的形状：URL-safe base64（字母数字 `-` `_`），长度几十以上。
+        let looks_like_bare_code = !trimmed.is_empty()
+            && !trimmed.contains('=')
+            && !trimmed.contains('/')
+            && !trimmed.contains(' ')
+            && trimmed.len() >= 16;
+        if looks_like_bare_code {
+            // 裸 code 无法校验 state；这是可接受的——它来自用户自己的浏览器，
+            // 且换令牌仍需要本进程内的 verifier。
+            return Ok(trimmed.to_string());
+        }
+        return Err(
+            "链接里没有 code 参数。请粘贴登录完成后地址栏里的**完整**地址\
+             （形如 http://localhost:1455/auth/callback?code=…&state=…）"
+                .into(),
+        );
+    };
+    if !expected_state.is_empty() {
+        match state.as_deref() {
+            Some(state) if state == expected_state => {}
+            Some(_) => {
+                return Err(
+                    "这条链接来自另一次登录尝试（state 不匹配）。\
+                     请重新点「登录 ChatGPT」拿一条新的链接。"
+                        .into(),
+                )
+            }
+            // 缺 state：只在裸 code 分支允许。完整 URL 缺 state 说明被截断。
+            None => {
+                return Err("链接里没有 state 参数——可能复制时被截断了，请重新复制完整地址"
+                    .into())
+            }
+        }
+    }
+    Ok(code)
+}
 
 /// 从原始请求里取 `code` 与 `state`（非回调路径返回 `None`）。
 fn parse_callback(request: &str) -> Option<(String, String)> {
@@ -1193,6 +1315,69 @@ mod tests {
                 "status={status} body={body} 不该被判为地区失败"
             );
         }
+    }
+
+    /// 手工粘贴：完整回调 URL（局域网场景的主要输入形态）。
+    #[test]
+    fn manual_input_accepts_full_callback_url() {
+        let url = "http://localhost:1455/auth/callback?code=abc123&state=xyz";
+        assert_eq!(extract_code_from_input(url, "xyz").unwrap(), "abc123");
+    }
+
+    /// 只有 query、或带前导 `?` 也能认（浏览器「复制链接」常少 `http://`）。
+    #[test]
+    fn manual_input_accepts_query_only() {
+        assert_eq!(
+            extract_code_from_input("?code=abc&state=s", "s").unwrap(),
+            "abc"
+        );
+        assert_eq!(
+            extract_code_from_input("code=abc&state=s", "s").unwrap(),
+            "abc"
+        );
+    }
+
+    /// 裸 code：长度够、无 `=` `/` 空格 → 当作 code（无法校验 state，可接受）。
+    #[test]
+    fn manual_input_accepts_bare_code() {
+        let bare = "ac-_9fKq2LmN0pQrStUvWx";
+        assert_eq!(extract_code_from_input(bare, "any-state").unwrap(), bare);
+    }
+
+    /// state 不匹配 → 明确拒绝并指出"来自另一次登录"，而不是拿去换令牌
+    /// （那样只会得到一个看不懂的 invalid_grant）。
+    #[test]
+    fn manual_input_rejects_foreign_state() {
+        let url = "http://localhost:1455/auth/callback?code=abc&state=other";
+        let error = extract_code_from_input(url, "expected").unwrap_err();
+        assert!(error.contains("另一次登录"), "{error}");
+    }
+
+    /// 完整 URL 缺 state：说明复制被截断，必须明确说出来。
+    #[test]
+    fn manual_input_rejects_truncated_url() {
+        let error =
+            extract_code_from_input("http://localhost:1455/auth/callback?code=abc", "s")
+                .unwrap_err();
+        assert!(error.contains("state"), "{error}");
+    }
+
+    /// 用户在授权页点了「拒绝」：要翻译成人话。
+    #[test]
+    fn manual_input_surfaces_denial() {
+        let url = "http://localhost:1455/auth/callback?error=access_denied&state=s";
+        let error = extract_code_from_input(url, "s").unwrap_err();
+        assert!(error.contains("授权被拒绝"), "{error}");
+    }
+
+    /// 空输入 / 贴错东西：给出"该粘什么"的具体说明，而不是干巴巴的解析失败。
+    #[test]
+    fn manual_input_explains_what_to_paste() {
+        assert!(extract_code_from_input("   ", "s")
+            .unwrap_err()
+            .contains("完整链接"));
+        let error = extract_code_from_input("https://example.com/hello", "s").unwrap_err();
+        assert!(error.contains("完整"), "{error}");
     }
 
     /// 回调绑定地址：默认回环；`ECHO_CHATGPT_CALLBACK_BIND` 可覆盖（局域网转发用）。

@@ -141,6 +141,18 @@ pub enum BackendCommand {
     StartChatGptLogin,
     /// 取消进行中的登录（释放 1455 端口；面板关掉弹层时用）。
     CancelChatGptLogin,
+    /// 手工提交授权码（**局域网 / 远程部署的主要路径**）。
+    ///
+    /// 回调固定打 `localhost:1455`，而 `localhost` 是**浏览器那台机器**。
+    /// 用户从另一台机器登录时，浏览器会跳到不存在服务的 1455——但地址栏里
+    /// 已经带着 `code` 与 `state`。把那条 URL 整条粘回来即可完成登录：
+    /// 不需要 SSH 隧道、不需要改监听地址。
+    ///
+    /// `input` 接受完整 URL / 只有 query / 只有 code 三种形态（见
+    /// `chatgpt::auth::extract_code_from_input`）。
+    SubmitChatGptLoginCode {
+        input: String,
+    },
     /// 读登录态（是否已登录 / 账户邮箱 / 过期时刻），回 `ChatGptStatus`。
     ///
     /// 只读：面板进设置页时拉一次，用来决定显示「登录」还是「已登录」。
@@ -717,6 +729,7 @@ impl BackendCommand {
             Self::RenameApi { .. } => "RenameApi",
             Self::StartChatGptLogin => "StartChatGptLogin",
             Self::CancelChatGptLogin => "CancelChatGptLogin",
+            Self::SubmitChatGptLoginCode { .. } => "SubmitChatGptLoginCode",
             Self::RequestChatGptStatus => "RequestChatGptStatus",
             Self::RequestState { .. } => "RequestState",
             Self::ToggleSkill { .. } => "ToggleSkill",
@@ -930,6 +943,7 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         // 账户凭证，让 agent 自主登录等于把凭证的获取权交给提示注入。
         | BackendCommand::StartChatGptLogin
         | BackendCommand::CancelChatGptLogin
+        | BackendCommand::SubmitChatGptLoginCode { .. }
         | BackendCommand::RequestChatGptStatus => CommandClearance::Frontend,
         _ => CommandClearance::Agent,
     }

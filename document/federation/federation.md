@@ -335,6 +335,17 @@ Panel 的**主节点失效转移**语义与联邦一致（**换节点、换会�
   会静默掉出去（两侧都没有任何报错）。执行端准入同样按声明裁决：注册表里
   没有 → `UnknownCall`；有但未声明 → `Forbidden`（**即使 `allow_tools=["*"]`**）
   ——这条闸门此前不存在，配对互信档下任何工具名都能穿透执行
+- **远程面当前包含 9 个工具**：6 个编码工具（`bash` / `read_file` /
+  `list_files` / `search_code` / `write_file` / `edit_file`）+ 3 个会话工具
+  （`bash-start` / `bash-exec` / `bash-stop`）。会话工具是 2026-11 补上的：
+  在此之前跨机只剩同步 `bash`，它没有句柄、没有后台作业、不会在完成时唤醒，
+  「等训练出结果」只能写成 `sleep N; grep log`——实测某算法会话 **64%** 的
+  工具时间（4.83h / 7.52h）耗在含 `sleep` 的调用上。补齐后执行端的
+  `ShellManager` 可被对端驱动：起会话立刻返回 `session_id`，之后每轮 poll。
+  两条限制：① 远程调用只回终态（`handle_invoke` 尚未使用
+  `FedFrame::InvokeOutput` 流式帧），实时输出只在执行端自己的面板；
+  ② 会话归属按 `team_id` 校验，而远程 invoke 不带 `ToolContext`，所以远程
+  起的会话无 owner、任何有权限的 peer 都能操作——边界仍是 `allow_tools`
 - **远程沙箱的范围**由工具声明的 `Tool::path_arguments()` 决定（文件类工具
   是 `["path"]`）：绝对路径必须落在执行端工作区根并集内。模块新加的文件工具
   自动享有同一条保护；`bash` 的边界是 peer 策略而不是目录（`command` 是命令行

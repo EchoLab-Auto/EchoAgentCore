@@ -177,6 +177,12 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
   `echo-agent.shell` 提供，按人格白名单门控；此前是 `shell_start` / `shell_exec`
   / `shell_stop`，隶属内置工具集——改名与拆分是同一轮：它们与一次性工具 `bash`
   是同一件事的两种模式，名字统一到 `bash-` 前缀后模型不再在两套命名间犹豫）
+- **远程可用（2026-11）**：三个工具都声明 `remote_capable`，对端节点握手时
+  出现在 `NodeCaps.tools` 里，大脑侧注册为 `<peer>__bash-start` 等代理工具。
+  会话住在**执行端**进程内，`session_id` 是不透明句柄、跨机原样传回即可；
+  远程调用只回终态（无流式帧），超时同样**保留会话**。归属校验需要
+  `team_id`，而远程 invoke 不带 `ToolContext` → 远程会话无 owner，
+  边界由 peer 的 `allow_tools` 收敛
 - **常驻进程规范**：agent 需要跑常驻进程（文档/开发服务器、watch 构建、本地服务
   等）时**优先经 shell 会话启动**（`bash-start` + `bash-exec`）——会话内的常驻进程
   在 Shell 视图可见、可停止（`ShellStop` 终止**整个进程组**：bash 及其全部子孙，

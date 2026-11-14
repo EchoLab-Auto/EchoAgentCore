@@ -25,7 +25,7 @@ use echo_defs::api_profile::{ReasoningEffort, ThinkingMode};
 use agent_module_management::protocol::{BackendCommand, BackendEvent};
 
 /// 本模块处理的命令名（`RenameApi` 是**进程级**命令，归组合根，不在此列）。
-pub const COMMANDS: [&str; 16] = [
+pub const COMMANDS: [&str; 17] = [
     "SwitchModel",
     "SwitchProvider",
     "SetSystemPrompt",
@@ -43,6 +43,7 @@ pub const COMMANDS: [&str; 16] = [
     // 三条都在本模块——`chatgpt` 模块就在这里（登录流程 + 令牌落盘）。
     "StartChatGptLogin",
     "CancelChatGptLogin",
+    "SubmitChatGptLoginCode",
     "RequestChatGptStatus",
 ];
 
@@ -123,6 +124,11 @@ pub struct ProviderCommandHandler {
     /// 会释放 1455 端口**，所以取消是"真的放掉"，不是只标个状态。不放掉的
     /// 后果很具体：用户取消后想重试，会撞上自己上一次登录占着的端口。
     login_cancel: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    /// 手工提交授权码的投递端（局域网 / 远程部署的主要路径）。
+    ///
+    /// 与 `login_cancel` 分开存：两者生命周期不同——取消是一次性的（用完即弃），
+    /// 而提交码在**用户粘贴之前**必须一直有效（他可能过一两分钟才复制完）。
+    login_manual: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>>,
 }
 
 impl ProviderCommandHandler {
@@ -131,6 +137,7 @@ impl ProviderCommandHandler {
         Self {
             host,
             login_cancel: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            login_manual: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -247,6 +254,20 @@ impl ProviderCommandHandler {
                 Ok(())
             }
             BackendCommand::StartChatGptLogin => self.start_chatgpt_login().await,
+            BackendCommand::SubmitChatGptLoginCode { input } => {
+                let mut slot = self.login_manual.lock().await;
+                match slot.take() {
+                    Some(sender) => {
+                        // 接收端已 drop = 登录任务已经结束（超时/取消/别处成功）。
+                        // 这不是错误，但要说清楚——用户以为粘了就能成。
+                        sender.send(input).map_err(|_| {
+                            "登录已经结束（超时或被取消），请重新点「登录 ChatGPT」".to_string()
+                        })
+                    }
+                    None => Err("当前没有进行中的登录：先点「登录 ChatGPT」拿到授权链接"
+                        .to_string()),
+                }
+            }
             BackendCommand::CancelChatGptLogin => {
                 let mut slot = self.login_cancel.lock().await;
                 match slot.take() {
@@ -290,6 +311,7 @@ impl ProviderCommandHandler {
         // 这个端口）。失败也要清槽，否则接下来永远"已有登录在进行"。
         let fail = |error: String| async move {
             self.login_cancel.lock().await.take();
+            self.login_manual.lock().await.take();
             self.host.emit(BackendEvent::ChatGptLoginResult {
                 ok: false,
                 email: String::new(),
@@ -314,18 +336,28 @@ impl ProviderCommandHandler {
             redirect_uri: auth::redirect_uri(),
         });
 
+        // 手工提交授权码的通道：局域网 / 远程部署时**唯一**能走通的路
+        // （回调固定打浏览器那台的 localhost:1455，Core 收不到）。
+        let (manual_tx, manual_rx) = tokio::sync::oneshot::channel();
+        {
+            let mut slot = self.login_manual.lock().await;
+            *slot = Some(manual_tx);
+        }
+
         let host = Arc::clone(&self.host);
         let slot = Arc::clone(&self.login_cancel);
+        let manual_slot = Arc::clone(&self.login_manual);
         tokio::spawn(async move {
-            // `select!` 而不是 `timeout(...)`：取消要**立刻**释放端口。
-            // drop 掉 pending 会把 listener 一起 drop，端口随之放掉——
-            // 否则用户取消后重试会撞上自己上一次登录占着的端口。
+            // 两条输入竞争：HTTP 回调（本机浏览器）与手工粘贴（远程浏览器）。
+            // 取消单独 select 一层——它要**立刻**释放端口：drop 掉 pending 会把
+            // listener 一起 drop，端口随之放掉，否则用户取消后重试会撞上自己。
             let outcome = tokio::select! {
-                result = pending.wait() => result,
+                result = pending.wait_with_manual(manual_rx) => result,
                 _ = cancel_rx => Err("登录已取消".to_string()),
             };
-            // 无论成败都清槽：不清的话下一次登录会被告知"已有登录在进行"。
+            // 无论成败都清两个槽：不清的话下一次登录会被告知"已有登录在进行"。
             slot.lock().await.take();
+            manual_slot.lock().await.take();
             match outcome {
                 Ok(auth) => host.emit(BackendEvent::ChatGptLoginResult {
                     ok: true,
@@ -523,7 +555,13 @@ mod tests {
         // 漏了"）。这里排除 `StartChatGptLogin` / `CancelChatGptLogin`：
         // 前者会真去绑 1455 并打网络（CI 里必失败），后者在没有进行中的
         // 登录时**本来就该返回 Err**。两条单独覆盖，见下个用例。
-        let exempt = ["StartChatGptLogin", "CancelChatGptLogin"];
+        // 三条豁免：Start 会真打网络并绑 1455；Cancel/Submit 在没有进行中的
+        // 登录时**本来就该返回 Err**（见各自的专门用例）。
+        let exempt = [
+            "StartChatGptLogin",
+            "CancelChatGptLogin",
+            "SubmitChatGptLoginCode",
+        ];
         let (h, host) = handler();
         let payloads = serde_json::json!({
             "SwitchModel": {"model":"m"},
@@ -566,10 +604,31 @@ mod tests {
         // 从枚举里删掉，这里会红）。
         for name in exempt {
             assert!(COMMANDS.contains(&name), "{name} 未声明");
-            let tagged = serde_json::json!({ name: serde_json::Value::Null });
+            // 无载荷变体传 null；SubmitChatGptLoginCode 需要一个 input 字段。
+            let payload = if name == "SubmitChatGptLoginCode" {
+                serde_json::json!({ "input": "x" })
+            } else {
+                serde_json::Value::Null
+            };
+            let tagged = serde_json::json!({ name: payload });
             let parsed: Result<BackendCommand, _> = serde_json::from_value(tagged);
             assert!(parsed.is_ok(), "{name} 线格式解析失败: {:?}", parsed.err());
         }
+    }
+
+    /// 没有进行中的登录时提交授权码，要明确报错（用户以为粘了就能成）。
+    #[tokio::test]
+    async fn submit_code_without_login_is_an_error() {
+        let (h, _host) = handler();
+        let out = h
+            .handle(
+                "SubmitChatGptLoginCode",
+                serde_json::json!({ "input": "http://localhost:1455/auth/callback?code=x&state=y" }),
+            )
+            .await
+            .expect("应被本域认领");
+        assert!(out.is_err(), "没有登录在跑时提交应报错");
+        assert!(out.unwrap_err().contains("没有进行中的登录"));
     }
 
     /// 没有进行中的登录时，取消要**明确报错**而不是静默成功——静默成功会

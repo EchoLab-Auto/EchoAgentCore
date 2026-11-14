@@ -269,6 +269,7 @@ impl Agent {
             | BackendCommand::DeleteApi { .. }
             | BackendCommand::StartChatGptLogin
             | BackendCommand::CancelChatGptLogin
+            | BackendCommand::SubmitChatGptLoginCode { .. }
             | BackendCommand::RequestChatGptStatus => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
