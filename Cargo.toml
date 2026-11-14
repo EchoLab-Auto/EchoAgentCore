@@ -124,6 +124,9 @@ chrono = "0.4"
 # 日志归档压缩（日志轮转器用；纯 Rust 后端，无系统 zlib 依赖）。
 flate2 = "1"
 sha2 = "0.10"
+# ChatGPT 订阅登录（PKCE 挑战的随机 verifier / 授权 URL 拼装）
+rand = "0.8"
+url = "2"
 walkdir = "2"
 regex = "1"
 aho-corasick = "1"

@@ -113,7 +113,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 
 ### provider 取值
 
-`[agent].provider` 取值：`openai` / `deepseek` / `third-party`（OpenAI 兼容，base_url 以 `/anthropic` 结尾时自动走 Messages 协议）、`anthropic` / `claude`、`kimi`（Kimi Code 订阅：Anthropic 兼容端点 `https://api.kimi.com/coding`，`x-api-key` 在 Kimi Code Console 创建，推理档位 `output_config.effort` low/high/max）、`ollama`。
+`[agent].provider` 取值：`openai` / `deepseek` / `third-party`（OpenAI 兼容，base_url 以 `/anthropic` 结尾时自动走 Messages 协议）、`anthropic` / `claude`、`kimi`（Kimi Code 订阅：Anthropic 兼容端点 `https://api.kimi.com/coding`，`x-api-key` 在 Kimi Code Console 创建，推理档位 `output_config.effort` low/high/max）、`ollama`、`openai-chatgpt`（ChatGPT Plus/Pro 订阅：凭据是 OAuth 登录态而非 api_key，先跑 `echo-agent-core login-chatgpt`；协议走 Responses API，详见 [ChatGPT 订阅接入](./chatgpt-subscription.md)）。
 
 ## 实例门控配置持久化（模块侧）
 

@@ -41,6 +41,7 @@ pub mod api_pool;
 pub mod balance;
 pub mod commands;
 /// 供应商 / API 命令域（全模块化 S5：13 条命令的归属关系）。
+pub mod chatgpt;
 pub mod host_keys;
 pub mod metrics;
 /// 各协议客户端（OpenAI 兼容 / Anthropic Messages / Ollama）。
@@ -216,12 +217,39 @@ pub fn create_provider(cfg: &ProviderConfig) -> Result<Box<dyn LlmProvider>, Llm
             &cfg.api_key,
             &cfg.model,
         ))),
+        // ChatGPT 订阅（Plus / Pro）：凭据**不是** api_key，而是 OAuth 登录态。
+        // 详见 `chatgpt` 模块头（事实来源、风险、为什么必须换协议）。
+        //
+        // `base_url` 忽略：这条通道只有 `https://chatgpt.com/backend-api/codex`
+        // 一个入口，让用户可配只会配错。
+        "openai-chatgpt" | "chatgpt" => {
+            let auth = chatgpt::auth::load()
+                .map_err(|error| LlmError::Config(format!("ChatGPT 登录态读取失败：{error}")))?
+                .ok_or_else(|| {
+                    LlmError::Config(
+                        "ChatGPT 订阅未登录：先运行 `echo-agent-core login-chatgpt`，\
+                         或在 Panel 的设置里点「登录 ChatGPT」。"
+                            .into(),
+                    )
+                })?;
+            if !auth.usable() {
+                return Err(LlmError::Config(
+                    "ChatGPT 登录态里没有账户 id（不是 ChatGPT 订阅账号？）。\
+                     重新运行 `echo-agent-core login-chatgpt`。"
+                        .into(),
+                ));
+            }
+            Ok(Box::new(
+                chatgpt::ChatGptProvider::new(auth, &cfg.model)
+                    .with_reasoning(cfg.reasoning_effort),
+            ))
+        }
         "ollama" => Ok(Box::new(providers::ollama::OllamaProvider::new(
             &cfg.base_url,
             &cfg.model,
         ))),
         other => Err(LlmError::Config(format!(
-            "不支持的 provider: {other} (可选: openai/deepseek/third-party/anthropic/kimi/opencode-go/ollama)"
+            "不支持的 provider: {other} (可选: openai/deepseek/third-party/anthropic/kimi/opencode-go/openai-chatgpt/ollama)"
         ))),
     }
 }
