@@ -71,7 +71,32 @@ impl agent_module_tools::Tool for BashStartTool {
         "bash-start"
     }
     fn description(&self) -> &str {
-        "Start a persistent background bash session. Commands run in the same shell keep state (cwd, exports, background jobs). Returns session_id used by bash-exec / bash-stop. Optional workdir."
+        "Start a persistent background bash session. Commands run in the same shell keep state (cwd, exports, background jobs). Returns session_id used by bash-exec / bash-stop. Optional workdir. Also available on remote federated nodes as `<peer>__bash-start` — start the session there, run long jobs with `&`, and poll from later calls instead of blocking a synchronous `bash` window."
+    }
+    // ── 远程面声明（2026-11）──
+    /// 可被对端节点直接调用：会话住在**执行端**的进程里，返回的
+    /// `session_id` 只是一个不透明句柄——跨机带回大脑侧后原样塞进
+    /// `bash-exec` / `bash-stop` 即可。
+    ///
+    /// ## 为什么这三个工具必须能远程
+    ///
+    /// 同步 `bash` 是远程唯一可用的执行原语：没有句柄、没有后台作业、
+    /// 不会在完成时唤醒。于是"等训练出结果"只能写成 `sleep N; grep log`。
+    /// 实测某个算法会话里，**64% 的工具时间**（4.83h / 7.52h）耗在含
+    /// `sleep` 的调用上，其中 65 次是 `sleep 60~290` 的定长等待，且
+    /// `sleep` 的取值一路从 60 试到 290（说明是在猜日志何时出现）。
+    /// 有了远程会话，起任务立刻返回、期间干别的、回头 poll 才是可能的。
+    ///
+    /// ## 归属语义（与本地调用的唯一差别）
+    ///
+    /// 远程 invoke 走 `registry.execute`，不带 `ToolContext`，因此
+    /// `requester` 为 `None`。`ShellManager::ensure_owned_by` 的校验需要
+    /// **owner 与 requester 同时存在**才比较，所以远程调用一律放行。
+    /// 这不构成新增风险面：peer 策略为 `allow_tools` 白名单，能调本工具的
+    /// peer 本来就能调 `bash`（任意命令）；而 `session_id` 由执行端生成、
+    /// 不外泄，跨 peer 猜不到。真正需要隔离时应收敛 `allow_tools`。
+    fn remote_capable(&self) -> bool {
+        true
     }
     fn parameters(&self) -> serde_json::Value {
         json!({
@@ -137,7 +162,16 @@ impl agent_module_tools::Tool for BashExecTool {
         "bash-exec"
     }
     fn description(&self) -> &str {
-        "Run one command inside a persistent bash session (see bash-start). Output is streamed to the Panel live. Timeout: 120s default, max 300s; on timeout the SESSION IS KEPT (you may poll again or continue). Background jobs survive: start them with `&` and poll in the next call."
+        "Run one command inside a persistent bash session (see bash-start). Output is streamed to the Panel live **on the node that owns the session**. Timeout: 120s default, max 300s; on timeout the SESSION IS KEPT (you may poll again or continue). Background jobs survive: start them with `&` and poll in the next call. Also available on remote federated nodes as `<peer>__bash-exec` — the timeout semantics are identical there, and the session also survives it."
+    }
+    /// 可远程：理由见 [`BashStartTool::remote_capable`]。
+    ///
+    /// **已知限制**：远程调用只回终态（`FedFrame::InvokeResult`），不吃
+    /// `InvokeOutput` 流式帧（`handle_invoke` 目前不发它）。所以执行端的
+    /// 实时输出只出现在**执行端自己的面板**，大脑侧要等这一条命令返回
+    /// 才看得到文本。对"起任务 + 稍后 poll"的用法没有影响。
+    fn remote_capable(&self) -> bool {
+        true
     }
     fn parameters(&self) -> serde_json::Value {
         json!({
@@ -220,7 +254,15 @@ impl agent_module_tools::Tool for BashStopTool {
         "bash-stop"
     }
     fn description(&self) -> &str {
-        "Stop and destroy a persistent bash session (kills the whole process group, including background jobs)."
+        "Stop and destroy a persistent bash session (kills the whole process group, including background jobs). Also available on remote federated nodes as `<peer>__bash-stop`."
+    }
+    /// 可远程：理由见 [`BashStartTool::remote_capable`]。
+    ///
+    /// 与 `bash-start` **成对**声明：只给创建不给销毁，远程起的会话就
+    /// 只能等执行端 Core 重启才回收（会话是运行期资源，`MAX_SHELL_SESSIONS`
+    /// 上限 8 个，泄漏几次就再也起不来）。
+    fn remote_capable(&self) -> bool {
+        true
     }
     fn parameters(&self) -> serde_json::Value {
         json!({
@@ -271,5 +313,68 @@ impl BashStopTool {
             .await
             .map_err(agent_module_tools::ToolError::Execution)?;
         Ok(format!("shell session {session_id} stopped"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_module_tools::Tool;
+
+    /// 远程面声明（2026-11）：三个会话工具必须都能被对端节点直接调用。
+    ///
+    /// 这条锁的是一个真实的能力缺口：声明缺失时它们不进握手 `NodeCaps.tools`，
+    /// 大脑侧就不会注册 `<peer>__bash-start` 等代理工具——于是跨机只剩同步
+    /// `bash`，长任务只能靠定长 `sleep` 等（实测某会话 64% 的工具时间耗在
+    /// 含 `sleep` 的调用上）。删掉任何一条声明都会让这个问题静默回来。
+    #[test]
+    fn shell_tools_declare_their_remote_surface() {
+        let shell = ShellHandle::new();
+        let tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(BashStartTool {
+                shell: shell.clone(),
+            }),
+            Box::new(BashExecTool {
+                shell: shell.clone(),
+                guard: None,
+            }),
+            Box::new(BashStopTool { shell }),
+        ];
+        let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        names.sort();
+        assert_eq!(names, vec!["bash-exec", "bash-start", "bash-stop"]);
+        for tool in &tools {
+            assert!(
+                tool.remote_capable(),
+                "{}: 远程面声明缺失——对端将看不见它，跨机只能退回同步 bash",
+                tool.name()
+            );
+        }
+    }
+
+    /// `bash-start` / `bash-exec` / `bash-stop` 都**不**声明路径参数。
+    ///
+    /// 理由与 `bash` 一致（见 `coding.rs` 的同名注释）：`workdir` /
+    /// `command` 是工作目录与命令行，不是可裁决的路径参数。假装有沙箱比
+    /// 没有沙箱更糟——它会让人以为远程会话被目录边界约束住了，实际边界是
+    /// peer 策略（`allow_tools`）。
+    #[test]
+    fn shell_tools_do_not_fake_a_path_sandbox() {
+        let shell = ShellHandle::new();
+        let start = BashStartTool {
+            shell: shell.clone(),
+        };
+        let exec = BashExecTool {
+            shell: shell.clone(),
+            guard: None,
+        };
+        let stop = BashStopTool { shell };
+        for tool in [&start as &dyn Tool, &exec as &dyn Tool, &stop as &dyn Tool] {
+            assert!(
+                tool.path_arguments().is_empty(),
+                "{}: 不应声明 path_arguments（边界是 peer 策略，不是目录）",
+                tool.name()
+            );
+        }
     }
 }
