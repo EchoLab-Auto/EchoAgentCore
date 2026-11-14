@@ -481,6 +481,31 @@ pub fn status_snapshot() -> agent_module_management::protocol::BackendEvent {
 ///
 /// 也就是说我们只把"地区被拒"当成失败，其余一律视为通过——这样上游改了
 /// 错误码也不会误判。
+/// 请求**发不出去**时的提示（连不上代理 / 代理连不上上游）。
+///
+/// 必须点名当前用的代理：只说"要能直连 openai.com"会把排查方向带偏——
+/// 实测那次用户明明配了代理，真正原因是代理节点挂了。两种情形（配了 / 没配）
+/// 给的下一步完全不同，所以分开写。
+pub(crate) fn transport_hint(error: &str) -> String {
+    match proxy_url() {
+        Some(proxy) => format!(
+            "预检请求发不出去：{error}\n\
+             当前使用的是本通道代理：{proxy}\n\
+             先确认代理本身可用：\n  \
+             curl -x {proxy} https://chatgpt.com/cdn-cgi/trace | grep loc=\n\
+             常见原因：代理进程没起 / 节点挂了 / 节点落地在被封地区。\n\
+             换节点：~/.local/share/echo-agent-chatgpt-proxy/pick-node.sh"
+        ),
+        None => format!(
+            "预检请求发不出去：{error}\n\
+             当前**没有配置**本通道代理（ECHO_CHATGPT_PROXY / HTTPS_PROXY 都为空），\n\
+             而这台机器直连不到 openai.com。给 Core 配代理：\n  \
+             systemctl --user edit echo-agent-core\n    [Service]\n    \
+             Environment=ECHO_CHATGPT_PROXY=http://127.0.0.1:7897"
+        ),
+    }
+}
+
 pub async fn preflight() -> Result<(), String> {
     let client = build_client()?;
     // 只探测"地区门"，不真的换令牌：code 填一个假值，期望它被拒（那说明
@@ -495,12 +520,7 @@ pub async fn preflight() -> Result<(), String> {
         .send()
         .await
         .map_err(|error| {
-            format!(
-                "预检请求发不出去：{error}\n\
-                 这条通道必须能直连 openai.com。如果 Core 需要代理：\n  \
-                 systemctl --user edit echo-agent-core   # 加 Environment=HTTPS_PROXY=...\n  \
-                 或临时：HTTPS_PROXY=http://127.0.0.1:7897 echo-agent-core login-chatgpt"
-            )
+            transport_hint(&error.to_string())
         })?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
@@ -1086,6 +1106,30 @@ mod tests {
         let error = build_client().unwrap_err();
         assert!(error.contains("代理地址无效"), "{error}");
         unsafe { std::env::remove_var("ECHO_CHATGPT_PROXY") };
+    }
+
+    /// 发不出去时的提示必须**点名当前代理**（配了代理却说"要能直连"
+    /// 会把排查方向带偏——实测踩过：真正原因是代理节点挂了）。
+    #[test]
+    fn unreachable_hint_names_the_proxy_in_use() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("https_proxy");
+            std::env::set_var("ECHO_CHATGPT_PROXY", "http://127.0.0.1:17897");
+        }
+        let hint = transport_hint("connect error");
+        assert!(hint.contains("http://127.0.0.1:17897"), "{hint}");
+        assert!(hint.contains("curl -x http://127.0.0.1:17897"), "{hint}");
+        assert!(hint.contains("pick-node.sh"), "应给出换节点的办法：{hint}");
+
+        unsafe {
+            std::env::remove_var("ECHO_CHATGPT_PROXY");
+        }
+        let bare = transport_hint("connect error");
+        assert!(bare.contains("没有配置"), "{bare}");
+        assert!(bare.contains("ECHO_CHATGPT_PROXY"), "{bare}");
     }
 
     /// 预检只把"地区被拒"判为失败——这是上一轮实测到的唯一真实失败形态。
