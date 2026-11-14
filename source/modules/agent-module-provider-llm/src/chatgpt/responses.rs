@@ -62,18 +62,21 @@ pub struct ChatGptProvider {
 
 impl ChatGptProvider {
     /// 用一份已加载的令牌建 provider。
-    pub fn new(auth: ChatGptAuth, model: &str) -> Self {
-        Self {
+    ///
+    /// `client` 构建失败**必须**返回错误，不能退化成默认 client：默认 client
+    /// 不认 `ECHO_CHATGPT_PROXY`，会变成直连——而直连在这台机器上必然失败。
+    /// 于是"代理地址写错"会表现成"用户发消息时报网络错误"，排查要从网络查起，
+    /// 真正的原因（一个拼错的 URL）反而藏在没人看的 warn 日志里。
+    pub fn new(auth: ChatGptAuth, model: &str) -> Result<Self, LlmError> {
+        // 与登录共用同一个 client 构造器：代理配置只写一处，
+        // 不会出现"登录通了、调用超时"的半通状态。
+        let client = auth::build_client().map_err(LlmError::Config)?;
+        Ok(Self {
             model: model.to_string(),
             auth: tokio::sync::Mutex::new(auth),
             reasoning_effort: echo_defs::ReasoningEffort::default(),
-            // 与登录共用同一个 client 构造器：代理配置只写一处，
-            // 不会出现"登录通了、调用超时"的半通状态。
-            client: auth::build_client().unwrap_or_else(|error| {
-                tracing::warn!(%error, "chatgpt client build failed, falling back to default");
-                reqwest::Client::new()
-            }),
-        }
+            client,
+        })
     }
 
     pub fn with_reasoning(mut self, effort: echo_defs::ReasoningEffort) -> Self {
@@ -131,6 +134,59 @@ impl LlmProvider for ChatGptProvider {
 
 /// `chat_stream` 的内部实现：`tx` 为 `None` 时只解析不投递（给 `chat()` 用）。
 impl ChatGptProvider {
+    /// 发请求，**只在连接层失败时**重试。
+    ///
+    /// # 为什么重试是安全的
+    ///
+    /// `is_connect()` 为真表示连接没建立起来（DNS / TCP / TLS / 代理 CONNECT
+    /// 任一环节失败）——请求字节一个都没到上游。这类失败是瞬时抖动
+    /// （节点切换、代理重启）的典型形态，重试能直接吸收掉。
+    ///
+    /// 反过来，body 发到一半断掉时 `is_connect()` 为假——那种情况**不能**
+    /// 重试：上游可能已经开始生成，重发等于让模型说两遍。
+    ///
+    /// 实测背景：线上出现过一次 756ms 的 `error sending request`，而连接
+    /// 超时是 15s——说明失败发生在建连途中而非等超时，正是这里处理的情形。
+    async fn send_with_retry(
+        &self,
+        auth: &ChatGptAuth,
+        payload: Vec<u8>,
+    ) -> Result<reqwest::Response, LlmError> {
+        const ATTEMPTS: u32 = 3;
+        let mut last: Option<String> = None;
+        for attempt in 1..=ATTEMPTS {
+            let outcome = self
+                .client
+                .post(self.endpoint())
+                .bearer_auth(&auth.access_token)
+                .header("chatgpt-account-id", &auth.account_id)
+                // 官方 CLI 的身份标识（二进制里的字面量）。如实上报，不伪装成
+                // 别的软件——伪装只会更容易被判定异常。
+                .header("originator", "codex_cli_rs")
+                .header("accept", "text/event-stream")
+                .body(payload.clone())
+                .send()
+                .await;
+            match outcome {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let described = auth::describe_transport_error(&error);
+                    let retryable = error.is_connect() && attempt < ATTEMPTS;
+                    if !retryable {
+                        return Err(LlmError::Http(described));
+                    }
+                    tracing::warn!(attempt, %described, "chatgpt 连接失败，重试");
+                    last = Some(described);
+                    // 抖动通常几百毫秒就过去；退避固定值即可，太复杂反而难猜。
+                    tokio::time::sleep(std::time::Duration::from_millis(400 * attempt as u64))
+                        .await;
+                }
+            }
+        }
+        // 循环必然在内部 return，这里只是给类型系统一个出口。
+        Err(LlmError::Http(last.unwrap_or_else(|| "请求发送失败".into())))
+    }
+
     async fn chat_stream_inner(
         &self,
         request: &ChatRequest,
@@ -138,19 +194,14 @@ impl ChatGptProvider {
     ) -> Result<ChatResponse, LlmError> {
         let auth = self.fresh_auth().await?;
         let body = build_request_body(request, &self.model, self.reasoning_effort);
-        let response = self
-            .client
-            .post(self.endpoint())
-            .bearer_auth(&auth.access_token)
-            .header("chatgpt-account-id", &auth.account_id)
-            // 官方 CLI 的身份标识（二进制里的字面量）。如实上报，不伪装成
-            // 别的软件——伪装只会更容易被判定异常。
-            .header("originator", "codex_cli_rs")
-            .header("accept", "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| LlmError::Http(error.to_string()))?;
+        // 请求体先序列化成字节：重试时每次重建 RequestBuilder（它不可 Clone），
+        // 序列化只做一次。
+        let payload = serde_json::to_vec(&body)
+            .map_err(|error| LlmError::Parse(format!("请求体序列化失败：{error}")))?;
+        let response = match self.send_with_retry(&auth, payload).await {
+            Ok(response) => response,
+            Err(error) => return Err(error),
+        };
 
         let status = response.status();
         if !status.is_success() {
@@ -440,8 +491,13 @@ pub(crate) fn build_request_body(
         "store": false,
         "stream": true,
         "parallel_tool_calls": true,
-        // 推理摘要：面板的「思考」块靠它。没有这个字段时部分模型不返回摘要。
-        "include": ["reasoning_summary_text"],
+        // 这里**不要**放 `include: ["reasoning_summary_text"]`。
+        //
+        // 推理摘要由下面的 `reasoning.summary: "auto"` 控制，`include` 是另一
+        // 回事（它列举响应里要额外带回的**载荷**，合法值形如
+        // `reasoning.encrypted_content`）。写错值会被上游整条拒掉：
+        // `Invalid value: 'reasoning_summary_text'`，且报错出现在"发消息"这一步，
+        // 看起来像网络/额度问题——实际是请求体字段非法。
     });
     if !instructions.is_empty() {
         body["instructions"] = json!(instructions.join("\n\n"));
@@ -814,4 +870,93 @@ mod tests {
             chunk_of(json!({"type": "response.output_text.delta", "delta": "x"}));
         assert_eq!(delta.content_delta.as_deref(), Some("x"));
     }
+
+    // ── 传输错误可诊断性（2026-11 线上事故）─────────────────────────
+    //
+    // 用户报「model request failed: HTTP 请求失败: error sending request for
+    // url (…codex/responses)」——只有这一句，看不出卡在哪一层。真实原因藏在
+    // reqwest 的 source 链里，被 `{error}` 压掉了。
+
+    /// 传输错误必须带上 source 链：DNS / TCP / TLS / 代理 CONNECT 四种原因
+    /// 的 Display 措辞完全相同，只有链里的下层错误能区分。
+    #[tokio::test]
+    async fn transport_error_includes_source_chain() {
+        // 连一个必然无人监听的端口：拿到真实的 reqwest::Error（构造不出来，
+        // 只能真发一次）。回环连接被拒是毫秒级的，不依赖外网。
+        let error = reqwest::Client::new()
+            .post("http://127.0.0.1:1/responses")
+            .send()
+            .await
+            .expect_err("连 1 端口不可能成功");
+        assert!(error.is_connect(), "回环拒绝应被判定为连接层失败");
+
+        let described = auth::describe_transport_error(&error);
+        // 至少两层：外层 "error sending request"，内层 connect 细节。
+        let arrows = described.matches(" → ").count();
+        assert!(arrows >= 1, "应展开 source 链，实际只有一层：{described}");
+        assert!(
+            described.contains("连接层失败=true"),
+            "必须标出可重试性：{described}"
+        );
+        // 平台差异（Linux 是 Connection refused，别的平台措辞不同），
+        // 所以只断言"有下层细节"，不断言具体单词。
+        assert!(
+            described.lines().next().unwrap().contains("http://127.0.0.1:1"),
+            "首行应保留原始 URL：{described}"
+        );
+    }
+
+    /// 代理配错时**建 provider 就失败**，不能静默退化成直连。
+    ///
+    /// 退化后的表现是"用户发消息时报网络错误"，而真正原因是一个拼错的
+    /// 代理 URL——排查方向会被完全带偏。
+    #[tokio::test]
+    async fn provider_construction_surfaces_invalid_proxy() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("ECHO_CHATGPT_PROXY", "::not a url::") };
+        // 令牌内容与本次断言无关：宁可让它在 build_client 之前就失败。
+        let auth = ChatGptAuth {
+            access_token: "t".into(),
+            refresh_token: String::new(),
+            id_token: String::new(),
+            account_id: "a".into(),
+            expires_at_ms: i64::MAX,
+            email: String::new(),
+        };
+        let error = match ChatGptProvider::new(auth, "gpt-5-codex") {
+            Ok(_) => panic!("非法代理必须让构造失败，不能静默直连"),
+            Err(error) => error,
+        };
+        unsafe { std::env::remove_var("ECHO_CHATGPT_PROXY") };
+        let message = error.to_string();
+        assert!(message.contains("代理地址无效"), "{message}");
+    }
+
+
+    /// 请求体**不能**带 `include: ["reasoning_summary_text"]`。
+    ///
+    /// 这个字段值上游不认（合法值形如 `reasoning.encrypted_content`），会整条
+    /// 400：`Invalid value: 'reasoning_summary_text'`。而它看起来像是"要摘要"，
+    /// 很容易被当成正确写法加回来——所以钉一条测试。
+    ///
+    /// 摘要的真正开关是 `reasoning.summary`，那条断言在下面一起守着：
+    /// 删 include 时若把摘要也删了，面板的「思考」块就空了。
+    #[test]
+    fn request_body_does_not_send_unsupported_include() {
+        let body = build_request_body(
+            &request(vec![ChatMessage::user("hi")]),
+            "gpt-6.1-sol",
+            echo_defs::ReasoningEffort::High,
+        );
+        assert!(
+            body.get("include").is_none(),
+            "include 会被上游拒（该值不在支持列表里）：{body}"
+        );
+        assert_eq!(
+            body["reasoning"]["summary"], "auto",
+            "推理摘要靠 reasoning.summary 控制，不能被顺手删掉：{body}"
+        );
+    }
+
 }

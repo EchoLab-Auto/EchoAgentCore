@@ -519,23 +519,55 @@ pub fn status_snapshot() -> agent_module_management::protocol::BackendEvent {
 /// 实测那次用户明明配了代理，真正原因是代理节点挂了。两种情形（配了 / 没配）
 /// 给的下一步完全不同，所以分开写。
 pub(crate) fn transport_hint(error: &str) -> String {
+    format!("预检请求发不出去：{error}\n{}", proxy_context())
+}
+
+/// 代理现状 + 自检办法（不含具体错误，供各处拼装）。
+///
+/// 拆出来是因为**所有**出站失败都该带上它：调用失败的提示里只说"网络问题"
+/// 会让用户去查 DNS，而真正原因是代理节点挂了——两种情形的下一步完全不同。
+pub(crate) fn proxy_context() -> String {
     match proxy_url() {
         Some(proxy) => format!(
-            "预检请求发不出去：{error}\n\
-             当前使用的是本通道代理：{proxy}\n\
+            "当前使用的是本通道代理：{proxy}\n\
              先确认代理本身可用：\n  \
              curl -x {proxy} https://chatgpt.com/cdn-cgi/trace | grep loc=\n\
              常见原因：代理进程没起 / 节点挂了 / 节点落地在被封地区。\n\
              换节点：~/.local/share/echo-agent-chatgpt-proxy/pick-node.sh"
         ),
-        None => format!(
-            "预检请求发不出去：{error}\n\
-             当前**没有配置**本通道代理（ECHO_CHATGPT_PROXY / HTTPS_PROXY 都为空），\n\
+        None => "当前**没有配置**本通道代理（ECHO_CHATGPT_PROXY / HTTPS_PROXY 都为空），\n\
              而这台机器直连不到 openai.com。给 Core 配代理：\n  \
              systemctl --user edit echo-agent-core\n    [Service]\n    \
              Environment=ECHO_CHATGPT_PROXY=http://127.0.0.1:7897"
-        ),
+            .to_string(),
     }
+}
+
+/// 把 `reqwest::Error` 展开成能照着做的说明。
+///
+/// # 为什么不能只写 `{error}`
+///
+/// `reqwest::Error` 的 Display 只有最外层一句
+/// （`error sending request for url (…)`）——线上那次失败就长这样，而
+/// DNS 失败、TCP 被拒、TLS 握手失败、代理 CONNECT 被拒**四种原因完全同一个措辞**。
+/// 真正的原因在 `source()` 链里（`client error (Connect)` →
+/// `operation timed out`），压成一行就等于把它扔了。
+///
+/// `连接层失败=true` 还有第二重用途：这类失败**请求一定没到上游**，
+/// 所以可以安全重试；`false` 则可能是 body 发到一半断掉，重试会重复生成。
+pub(crate) fn describe_transport_error(error: &reqwest::Error) -> String {
+    let mut chain = vec![error.to_string()];
+    let mut source: &dyn std::error::Error = error;
+    while let Some(next) = source.source() {
+        chain.push(next.to_string());
+        source = next;
+    }
+    format!(
+        "{}\n连接层失败={}（true 表示请求没到上游，可安全重试）\n{}",
+        chain.join(" → "),
+        error.is_connect(),
+        proxy_context()
+    )
 }
 
 pub async fn preflight() -> Result<(), String> {

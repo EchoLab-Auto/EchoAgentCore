@@ -240,7 +240,7 @@ pub fn create_provider(cfg: &ProviderConfig) -> Result<Box<dyn LlmProvider>, Llm
                 ));
             }
             Ok(Box::new(
-                chatgpt::ChatGptProvider::new(auth, &cfg.model)
+                chatgpt::ChatGptProvider::new(auth, &cfg.model)?
                     .with_reasoning(cfg.reasoning_effort),
             ))
         }
