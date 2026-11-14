@@ -1254,9 +1254,35 @@ impl Agent {
         self.model.session_api.clear(session_id);
     }
 
-    /// 当前全部会话级覆盖（供 `BackendEvent::SessionApiOverrides`）。
+    /// 本 agent 的会话级覆盖（自己的内存表）。
     pub fn session_api_overrides(&self) -> Vec<agent_module_management::protocol::SessionApiOverrideEntry> {
         self.model.session_api.snapshot()
+    }
+
+    /// **全进程**的会话级覆盖：本 agent + 全部运行中人格。
+    ///
+    /// `SessionApiOverrides` 事件在 Panel 侧是「整体替换」语义（某会话不再出现
+    /// = 它已经没有覆盖），所以载荷必须是**全量**的。只发自己那一份时，处理
+    /// `RequestState` 的 agent 若碰巧没有任何覆盖，面板刷新就会把整张表替成空
+    /// ——「换完会话模型一刷新就变回去」（2026-11 用户报障）。
+    ///
+    /// 枚举口径与 `state_snapshot` / 改名传播一致（`registry().all()`，含自己）。
+    pub fn all_session_api_overrides(
+        &self,
+    ) -> Vec<agent_module_management::protocol::SessionApiOverrideEntry> {
+        let mut slices = vec![(
+            self.team_id().unwrap_or_default(),
+            self.session_api_overrides(),
+        )];
+        if let Some(mgr) = self.registry() {
+            for running in mgr.all() {
+                if running.agent.team_id() == self.team_id() {
+                    continue; // 已由上面覆盖
+                }
+                slices.push((running.id.clone(), running.agent.session_api_overrides()));
+            }
+        }
+        crate::agent::session_api_store::merge_overrides(slices)
     }
 
     /// 装配期注入覆盖的持久化文件（不注入 = 纯内存）。

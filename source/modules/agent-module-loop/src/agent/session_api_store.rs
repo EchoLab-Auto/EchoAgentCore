@@ -18,6 +18,10 @@
 //! 本模块把持久化收归 Core：**所有通道**的覆盖写同一个旁路文件，Panel 只读
 //! （`BackendEvent::SessionApiOverrides`）。
 //!
+//! 下发时是**进程级快照**（跨全部人格合并，`team_id: None`，
+//! 见 [`merge_overrides`]）——因为 Panel 对这条事件是「整体替换」语义，
+//! 发局部切片会让刷新后的界面把整张表替成空表。
+//!
 //! ## 为什么是独立文件而不是塞进 `echo-sessions-{id}.json`
 //!
 //! 会话文件是**事件溯源**格式（append-only 事件日志 + 派生视图），加一个可变
@@ -230,6 +234,53 @@ impl SessionApiStore {
     }
 }
 
+/// 把多个人格的覆盖合并成**一份进程级快照**（`SessionApiOverrides` 的载荷）。
+///
+/// # 为什么必须合并
+///
+/// Panel 对这条事件采取「整体替换」语义（某会话不再出现 = 它已经没有覆盖），
+/// 而 Core 过去只发**发命令那个 agent 自己的**切片。两者对不上时，面板刷新
+/// 拿到的是一份局部表：其他人格的条目、连同当前会话刚设的那条一起消失，表现
+/// 为「换完会话模型一刷新就变回去」（2026-11 用户报障）。更糟的是处理
+/// `RequestState` 的那个 agent 恰好没有 team_id 也没有任何覆盖，于是刷新 = 清空。
+///
+/// 合并后的事件是**进程级**的（`team_id: None`），与 Panel「缺省 = 全进程」
+/// 的判断一致，也与路由真源（每个 agent 各自的内存表）一致。
+///
+/// # 冲突
+///
+/// 两个 agent 对同一个 session_id 各有覆盖：保留先到的并记 warn。同一对话
+/// 同时属于两个人格本不该发生；为此让整份快照报错，界面只会更糟。
+pub fn merge_overrides(
+    slices: impl IntoIterator<Item = (String, Vec<SessionApiOverrideEntry>)>,
+) -> Vec<SessionApiOverrideEntry> {
+    let mut merged: BTreeMap<String, String> = BTreeMap::new();
+    for (owner, entries) in slices {
+        for entry in entries {
+            match merged.get(&entry.session_id) {
+                Some(existing) if existing != &entry.profile => tracing::warn!(
+                    owner = %owner,
+                    session = %entry.session_id,
+                    kept = %existing,
+                    ignored = %entry.profile,
+                    "同一会话在两个人格下各有 API 覆盖，保留先到的"
+                ),
+                Some(_) => {}
+                None => {
+                    merged.insert(entry.session_id, entry.profile);
+                }
+            }
+        }
+    }
+    merged
+        .into_iter()
+        .map(|(session_id, profile)| SessionApiOverrideEntry {
+            session_id,
+            profile,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,4 +366,57 @@ mod tests {
         let store = SessionApiStore::open(&path);
         assert!(store.snapshot().is_empty());
     }
+
+    /// 合并必须**跨人格**：只取当前 agent 的切片会让面板刷新后看到空表。
+    ///
+    /// 这正是用户报的「换完会话模型一刷新就变回去」——处理 `RequestState` 的
+    /// agent 自己没有任何覆盖，于是整张表被替成空的。
+    #[test]
+    fn merge_overrides_keeps_entries_from_every_persona() {
+        let merged = merge_overrides(vec![
+            (
+                "EchoCode".to_string(),
+                vec![SessionApiOverrideEntry {
+                    session_id: "local:workspace:echo-agent/v:local_user".into(),
+                    profile: "opencode".into(),
+                }],
+            ),
+            (
+                "Alice".to_string(),
+                vec![SessionApiOverrideEntry {
+                    session_id: "local:tui::local_user".into(),
+                    profile: "kimi".into(),
+                }],
+            ),
+            ("__core".to_string(), Vec::new()),
+        ]);
+        assert_eq!(merged.len(), 2, "两个人格的条目都要在：{merged:?}");
+        // 名称排序（BTreeMap）：输出稳定，便于 diff 与人工核对。
+        assert_eq!(merged[0].session_id, "local:tui::local_user");
+        assert_eq!(merged[1].session_id, "local:workspace:echo-agent/v:local_user");
+    }
+
+    /// 同一会话被两个人格各设一次：保留第一个，不丢整张表。
+    #[test]
+    fn merge_overrides_keeps_first_on_conflict() {
+        let merged = merge_overrides(vec![
+            (
+                "A".to_string(),
+                vec![SessionApiOverrideEntry {
+                    session_id: "s".into(),
+                    profile: "one".into(),
+                }],
+            ),
+            (
+                "B".to_string(),
+                vec![SessionApiOverrideEntry {
+                    session_id: "s".into(),
+                    profile: "two".into(),
+                }],
+            ),
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].profile, "one");
+    }
+
 }

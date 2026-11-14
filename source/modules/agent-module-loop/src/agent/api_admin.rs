@@ -55,9 +55,14 @@ impl Agent {
         // 会话级覆盖跟着一起发：Panel 要能显示"我这个会话实际走哪个 profile"。
         // 此前它自己用 localStorage 记、连上时重放——第二份真相。现在只有
         // Core 一家之言（路由依据与下发内容同源，不可能不一致）。
+        //
+        // **进程级**（`team_id: None`）且**跨全部人格**：Panel 对这条事件是
+        // "整体替换"语义，发局部切片会让刷新后其他人格的条目连同当前会话的
+        // 覆盖一起消失（2026-11 用户报障："换完会话模型一刷新就变回去"）。
+        // 缺省 team_id 在 Panel 侧等于"全进程"，两侧语义由此对齐。
         events.push(BackendEvent::SessionApiOverrides {
-            team_id: self.team_id(),
-            overrides: self.session_api_overrides(),
+            team_id: None,
+            overrides: self.all_session_api_overrides(),
         });
         events
     }
