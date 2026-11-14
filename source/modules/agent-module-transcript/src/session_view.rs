@@ -291,6 +291,7 @@ mod tests {
             reasoning: None,
             tool: None,
             images: None,
+            files: None,
             archive: None,
             ord: seq,
         }

@@ -431,6 +431,7 @@ impl Agent {
                 session_id,
                 content,
                 images,
+                files,
                 team_id: _,
             } => {
                 // 懒加载（2026-11）：**第一次真正要用这份历史**时才读盘。
@@ -467,6 +468,17 @@ impl Agent {
                     .iter()
                     .map(|image| echo_defs::media_store::spill_or_keep(image))
                     .collect();
+                // 面板拖入的文件（2026-11）：字节在这里落盘，agent 只拿到
+                // 绝对路径——与平台上传的文件走同一个结构（`IncomingFile`），
+                // 所以 agent 侧无需区分来源，`read_file` 直接读。
+                //
+                // 单个文件失败**不拖垮整条消息**：失败原因写进 `error` 随消息
+                // 一起交给 agent（"你发了个 30 MB 的文件，太大没存下"是有效
+                // 信息），而不是让用户的消息整个发不出去。
+                let files: Vec<echo_defs::chat::IncomingFile> = files
+                    .iter()
+                    .map(|file| save_pending_file(&sid, file))
+                    .collect();
                 // Notify TUI that a session exists so it can set active_session_id.
                 self.emit(BackendEvent::SessionUpdated {
                     session: session.info(String::new(), &self.node_identity()),
@@ -484,6 +496,7 @@ impl Agent {
                     group_name: None,
                     content: content.clone(),
                     images: images.clone(),
+                    files: files.clone(),
                     timestamp: received_at_ms / 1000,
                     received_at_ms,
                     message_sequence,
@@ -501,7 +514,13 @@ impl Agent {
                         "user_id": key.user_id
                     },
                     "content": content,
-                    "images": images
+                    "images": images,
+                    "files": files.iter().map(|file| serde_json::json!({
+                        "name": file.name,
+                        "path": file.path,
+                        "size": file.size,
+                        "error": file.error,
+                    })).collect::<Vec<_>>()
                 });
                 let backend_input = crate::input_marker::wrap_hook_value("backend", &backend_input);
                 tracing::info!(
@@ -799,5 +818,119 @@ mod reload_skills_tests {
         assert!(failures.len() <= 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// 把一个面板上传的文件落盘，返回给 agent 看的结构。
+///
+/// 失败**不返回 Err**：原因写进 `error` 字段随消息交给 agent。让整条消息
+/// 因为一个附件存不下而失败，用户会看到"消息发不出去"却拿不到任何解释。
+pub(crate) fn save_pending_file(
+    session_id: &str,
+    file: &agent_module_management::protocol::PendingFile,
+) -> echo_defs::chat::IncomingFile {
+    let name = echo_defs::attachment_store::sanitize_file_name(&file.name);
+    let saved = echo_defs::attachment_store::decode_base64(&file.data).and_then(|bytes| {
+        let size = bytes.len() as u64;
+        echo_defs::attachment_store::save_attachment(session_id, &name, &bytes)
+            .map(|path| (path, size))
+    });
+    match saved {
+        Ok((path, size)) => echo_defs::chat::IncomingFile {
+            name,
+            path: Some(path.display().to_string()),
+            size,
+            error: None,
+        },
+        Err(error) => {
+            tracing::warn!(%error, file = %name, "attachment save failed");
+            echo_defs::chat::IncomingFile {
+                name,
+                path: None,
+                size: 0,
+                error: Some(error),
+            }
+        }
+    }
+}
+
+/// 串行化所有会改进程级 `ECHO_ATTACHMENT_DIR` 的测试。
+///
+/// cargo test 默认多线程：两个用例同时设置/清除这个变量，会互相把对方的
+/// 落盘目录换掉——失败形态是"文件找不到了"，而且只在特定调度下复现。
+#[cfg(test)]
+pub(crate) static ATTACHMENT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod save_pending_file_tests {
+    use crate::agent::commands::save_pending_file;
+    use agent_module_management::protocol::PendingFile;
+
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-attach-save-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// 落盘成功：返回的是**可读的绝对路径**——这是 agent 唯一依赖的东西。
+    #[test]
+    fn saves_and_reports_absolute_path() {
+        let _guard = super::ATTACHMENT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let root = temp_dir("ok");
+        // ECHO_ATTACHMENT_DIR 是进程级环境变量：这里直接调 `_in` 版本会绕过
+        // `save_pending_file`（它读默认目录），所以改环境变量并串到同一测试内
+        // 完成读写——用互斥锁避免与其它测试交叉。
+
+        // SAFETY: 测试内单线程读写该变量；其它测试不设它。
+        unsafe { std::env::set_var("ECHO_ATTACHMENT_DIR", &root) };
+        let file = PendingFile {
+            name: "报告.pdf".into(),
+            data: "aGVsbG8=".into(), // "hello"
+        };
+        let saved = save_pending_file("local:tui::u1", &file);
+
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        let path = saved.path.expect("saved path");
+        assert!(path.starts_with('/'), "must be absolute: {path}");
+        assert!(path.ends_with("报告.pdf"), "{path}");
+        assert_eq!(saved.size, 5);
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+
+        let _ = std::fs::remove_dir_all(&root);
+        unsafe { std::env::remove_var("ECHO_ATTACHMENT_DIR") };
+    }
+
+    /// 失败不 panic、不返回 Err：原因进 `error` 随消息交给 agent。
+    /// 让整条消息因为一个附件存不下而失败，用户拿不到任何解释。
+    #[test]
+    fn reports_failure_instead_of_dropping_message() {
+        let _guard = super::ATTACHMENT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let file = PendingFile {
+            name: "../../etc/passwd".into(),
+            data: "!!!not base64!!!".into(),
+        };
+        let saved = save_pending_file("s", &file);
+        assert!(saved.path.is_none());
+        assert!(
+            saved.error.as_deref().unwrap_or_default().contains("base64"),
+            "unexpected error: {:?}",
+            saved.error
+        );
+        // 名字已消毒：即使用户看到错误也要看到安全的形状。
+        assert_eq!(saved.name, "passwd");
+        // 未落盘时 size 为 0（没有可信的字节数）。
+        assert_eq!(saved.size, 0);
     }
 }

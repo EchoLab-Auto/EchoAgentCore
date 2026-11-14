@@ -117,6 +117,7 @@ impl AgentMessageHook {
             // 群成员粘贴的密钥不得经展示事件露出（无脱敏器 = 原样）。
             content: agent.redact_text(&msg.content),
             images: msg.images.clone(),
+            files: msg.files.clone(),
             timestamp: msg.timestamp,
             received_at_ms,
             message_sequence,

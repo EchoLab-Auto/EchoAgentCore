@@ -936,6 +936,7 @@ impl Agent {
                 group_name,
                 content,
                 images,
+                files,
                 timestamp,
                 received_at_ms,
                 message_sequence,
@@ -950,6 +951,7 @@ impl Agent {
                 group_name,
                 content,
                 images,
+                files,
                 timestamp,
                 received_at_ms,
                 message_sequence,
@@ -1541,6 +1543,42 @@ pub(crate) fn extract_input_images(content: &str) -> Vec<String> {
                     m.as_str()
                         .filter(|s| s.len() <= MAX_INPUT_IMAGE_CHARS)
                         .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 从结构化输入的 payload 里抽出文件附件，随 `UserMessage` 事件落库。
+///
+/// 与 [`extract_input_images`] 同理：文件路径必须进 durable 事件，否则
+/// 刷新后从事件日志重建时间线时附件会静默消失（实时投影有、回放没有，
+/// 这类"只有刷新才出现"的差异最难查）。
+///
+/// 与图片的区别在**谁负责落盘**：图片在入站时落盘、这里是读已有引用；
+/// 文件由入站方（面板命令 / 平台实例）落盘后才写进 payload，所以这里
+/// 只做反序列化，不碰磁盘。
+pub(crate) fn extract_input_files(content: &str) -> Vec<echo_defs::chat::IncomingFile> {
+    let Some(payload) = crate::input_marker::hook_payload(content) else {
+        return Vec::new();
+    };
+    let value: serde_json::Value = match serde_json::from_str(&payload) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    // **逐元素**解析而不是整段 `from_value`：一个形状不对的元素（比如旧版
+    // Panel 发的、缺了后加的必填字段）只该丢掉它自己，不能让同一条消息里
+    // 另外三个好好的文件一起消失。
+    value["files"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    serde_json::from_value::<echo_defs::chat::IncomingFile>(item.clone())
+                        .map_err(|error| {
+                            tracing::warn!(%error, "skip malformed file attachment in payload");
+                        })
+                        .ok()
                 })
                 .collect()
         })

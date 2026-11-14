@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 文件附件（平台上传 / 面板拖入）的线格式类型。
+///
+/// 真值在 `echo_defs::chat::IncomingFile`——QQ 模块收文件已经在用它，
+/// 这里只做一次 re-export：同一份字段名（`name` / `path` / `size` / `error`）
+/// 同时服务 ws 协议与平台入站，改名不会有编译错误的那类漂移因此不存在。
+pub use echo_defs::chat::IncomingFile;
+
 pub use agent_module_federation::{FederatedNodeInfo, FederationLinkState, FederationPeerInfo};
 
 /// 状态快照 → 线上事件的构造器。
@@ -234,6 +241,12 @@ pub struct TimelineMessage {
     /// Multimodal media attached to the message (URLs / data URIs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    /// 随消息落盘的文件附件（面板拖入 / 平台上传）。
+    ///
+    /// 面板据此在用户气泡下方显示「📎 报告.pdf · 1.2 MB」——没有它，刷新后
+    /// 附件只剩 agent 上下文里的路径，用户看不到自己发过什么。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<IncomingFile>>,
     /// 本条目对应的**压缩前归档**文件名（只有压缩提示行会带）。
     ///
     /// 面板据此在"上下文已压缩"那一行给出「查看压缩前的历史」入口——
@@ -276,10 +289,21 @@ impl TimelineMessage {
             reasoning: None,
             tool: None,
             images: (!images.is_empty()).then_some(images),
+            files: None,
             archive: None,
             seq: 0,
             ord: 0,
         }
+    }
+
+    /// 附加文件附件。
+    ///
+    /// 链式而非加参数：`user()` 有多个既有调用点（transcript / session / 测试），
+    /// 给它们统一加一个 `Vec<IncomingFile>` 参数会让每个调用点都得写
+    /// `vec![]`——那是纯粹的噪声，且新增参数与既有 5 个参数没有语义关联。
+    pub fn with_files(mut self, files: Vec<IncomingFile>) -> Self {
+        self.files = (!files.is_empty()).then_some(files);
+        self
     }
 
     /// An assistant/backend output.
@@ -298,6 +322,7 @@ impl TimelineMessage {
             reasoning,
             tool: None,
             images: None,
+            files: None,
             archive: None,
             seq: 0,
             ord: 0,
@@ -320,6 +345,7 @@ impl TimelineMessage {
             reasoning: None,
             tool: Some(tool),
             images: None,
+            files: None,
             archive: None,
             seq: 0,
             ord: 0,
@@ -337,6 +363,7 @@ impl TimelineMessage {
             reasoning: None,
             tool: None,
             images: None,
+            files: None,
             archive: None,
             seq: 0,
             ord: 0,
@@ -371,6 +398,9 @@ pub enum BackendEvent {
         /// Multimodal media attached to the message (URLs / data URIs).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<String>,
+        /// 已落盘的文件附件（面板拖入 / 平台上传）。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<IncomingFile>,
         /// Source/platform timestamp in Unix seconds.
         timestamp: i64,
         /// Core receive timestamp in Unix milliseconds.

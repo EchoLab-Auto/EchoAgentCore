@@ -253,6 +253,7 @@ mod tests {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
             session: None,
         })
     }
@@ -831,6 +832,7 @@ mod tests {
                 message_sequence: None,
                 source: None,
                 images: Vec::new(),
+                files: vec![],
                 session: Some("a".into()),
             }),
             SessionEvent::Compaction(CompactionEvent {
@@ -845,6 +847,7 @@ mod tests {
                 message_sequence: None,
                 source: None,
                 images: Vec::new(),
+                files: vec![],
                 session: Some("a".into()),
             }),
         ];
@@ -866,6 +869,7 @@ mod tests {
                 message_sequence: None,
                 source: None,
                 images: Vec::new(),
+                files: vec![],
                 session: Some("s1".into()),
             }),
             reasoning("中间思考", 2),
@@ -894,6 +898,7 @@ mod tests {
                 message_sequence: None,
                 source: None,
                 images: Vec::new(),
+                files: vec![],
                 session: Some("s1".into()),
             }),
             SessionEvent::ToolCall(ToolCallEvent {
@@ -932,6 +937,7 @@ mod tests {
                 message_sequence: None,
                 source: None,
                 images: Vec::new(),
+                files: vec![],
                 session: Some("s1".into()),
             }),
             model_step(0, &["c1"]),

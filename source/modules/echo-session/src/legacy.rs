@@ -161,6 +161,8 @@ fn migrate_history(history: &[V4Message]) -> Vec<SessionEvent> {
                 message_sequence: None,
                 source: None,
                 images: vec![],
+                // 旧格式（v4 之前）没有附件概念。
+                files: vec![],
                 // 旧格式无会话归属：加载期归因迁移（见 agent 侧 attribute 逻辑）。
                 session: None,
             })),

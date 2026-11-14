@@ -16,7 +16,7 @@ pub use bridge::{
     FanoutHandle, SequencedEvent, WsMessage,
 };
 pub use command::{
-    command_clearance, is_panel_readonly_allowed, BackendCommand, CommandClearance,
+    command_clearance, is_panel_readonly_allowed, BackendCommand, CommandClearance, PendingFile,
     PANEL_READONLY_COMMANDS,
 };
 pub use delta_batch::{DeltaBatcher, Emit, DEFAULT_BATCH_WINDOW};
@@ -110,6 +110,8 @@ export type JsonValue = unknown;\n\n";
         out.push_str(&decl::<super::TimelineSource>());
         out.push_str(&decl::<super::TimelineTool>());
         out.push_str(&decl::<super::TimelineMessage>());
+        out.push_str(&decl::<super::IncomingFile>());
+        out.push_str(&decl::<super::PendingFile>());
         out.push_str(&decl::<super::BrowseRoot>());
         out.push_str(&decl::<super::SkillInfo>());
         out.push_str(&decl::<super::ToolInfo>());

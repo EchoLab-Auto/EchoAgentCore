@@ -99,6 +99,9 @@ impl Agent {
                     message_sequence: structured_message_sequence(&content),
                     source: None,
                     images: extract_input_images(&content),
+                    // 文件附件与图片同理：路径必须进 durable 事件，否则
+                    // 刷新后从日志重建时间线时附件会静默消失。
+                    files: extract_input_files(&content),
                     session: Some(session.id.clone()),
                 },
             ));
@@ -164,6 +167,7 @@ impl Agent {
                     message_sequence: Some(message_sequence),
                     source: None,
                     images: extract_input_images(content),
+                    files: extract_input_files(content),
                     session: Some(session.id.clone()),
                 },
             ));

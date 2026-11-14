@@ -1040,6 +1040,7 @@ fn events_from_messages(
                     message_sequence: None,
                     source: None,
                     images: message.images.clone(),
+                    files: vec![],
                     session: session.clone(),
                 },
             )),

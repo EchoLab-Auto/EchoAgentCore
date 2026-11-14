@@ -262,6 +262,7 @@ mod tests {
             session_id: "qq:group:123:456".into(),
             content: "你好".into(),
             images: vec![],
+            files: vec![],
             team_id: None,
         };
         let text = serialize_command(&cmd);
@@ -273,9 +274,11 @@ mod tests {
                     session_id,
                     content,
                     images,
+                    files,
                     team_id,
                 } => {
                     assert!(images.is_empty());
+                    assert!(files.is_empty());
                     assert!(team_id.is_none());
                     assert_eq!(session_id, "qq:group:123:456");
                     assert_eq!(content, "你好");

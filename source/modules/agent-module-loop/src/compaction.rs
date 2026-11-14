@@ -536,6 +536,7 @@ mod tests {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
             session: Some("s".into()),
         })
     }

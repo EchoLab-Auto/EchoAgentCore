@@ -40,6 +40,7 @@ fn import_session_events_appends_to_fact_log() {
         message_sequence: Some(1),
         source: None,
         images: Vec::new(),
+        files: vec![],
         session: Some(sid.into()),
     });
     store.import_session_events(sid, vec![event.clone()]);
@@ -88,6 +89,7 @@ fn legacy_attribution_splits_interleaved_sessions() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
             session: None,
         }),
         echo_session::SessionEvent::ToolCall(ToolCallEvent {
@@ -117,6 +119,7 @@ fn legacy_attribution_splits_interleaved_sessions() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
             session: None,
         }),
         echo_session::SessionEvent::AssistantMessage(AssistantMessage {
@@ -132,6 +135,7 @@ fn legacy_attribution_splits_interleaved_sessions() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
             session: None,
         }),
     ];
@@ -171,6 +175,7 @@ fn legacy_attribution_falls_back_to_first_known_session() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
             session: None,
         }),
     ];
@@ -188,6 +193,7 @@ fn legacy_attribution_falls_back_to_first_known_session() {
         message_sequence: None,
         source: None,
         images: vec![],
+        files: vec![],
         session: None,
     })];
     assert!(attribute_legacy_events(&mut plain));
@@ -215,6 +221,7 @@ async fn interleaved_events_project_per_session() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
             session: Some(session_id.clone()),
         }));
         store.append_event(echo_session::SessionEvent::AssistantMessage(
@@ -250,6 +257,7 @@ async fn model_step_event_is_logged_without_touching_projection() {
         message_sequence: None,
         source: None,
         images: vec![],
+        files: vec![],
         session: Some(session.id.clone()),
     }));
     let before = store.snapshot_for(&session.id).await;
@@ -394,6 +402,7 @@ async fn sessions_have_independent_histories_and_shared_turn_lock() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
             session: Some("local:tui::local_user".into()),
         },
     ));
@@ -468,6 +477,7 @@ async fn seed_session_file(name: &str, sessions: &[(&str, &str)]) -> std::path::
                 message_sequence: None,
                 source: None,
                 images: vec![],
+                files: vec![],
             },
         ));
     }
@@ -622,6 +632,7 @@ async fn loaded_store_saves_normally() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     store.save_now().await;
@@ -658,6 +669,7 @@ async fn save_and_load_roundtrip_restores_trunk_and_identities() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     store.append_event(echo_session::SessionEvent::AssistantMessage(
@@ -734,6 +746,7 @@ fn spill_event_media_migrates_inline_images_to_refs() {
             message_sequence: None,
             source: None,
             images: vec![data_uri.clone(), "https://example.com/a.png".into()],
+            files: vec![],
             session: Some("local:tui::local_user".into()),
         }),
         echo_session::SessionEvent::ToolResult(ToolResultEvent {
@@ -797,6 +810,7 @@ async fn persisted_refs_inline_on_projection_for_model() {
             message_sequence: None,
             source: None,
             images: vec![reference.clone()],
+            files: vec![],
             session: Some("local:tui::local_user".into()),
         },
     ));
@@ -830,6 +844,7 @@ async fn persisted_history_restores_per_session() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     store.append_event(echo_session::SessionEvent::AssistantMessage(
@@ -917,6 +932,7 @@ fn timeline_push_caps_at_max_and_keeps_newest() {
             reasoning: None,
             tool: None,
             images: None,
+            files: None,
             archive: None,
             seq: 0,
             ord: 0,
@@ -949,6 +965,7 @@ async fn clear_history_wipes_log_trunk_timeline_and_disk() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     store.push_timeline(agent_module_management::protocol::TimelineMessage {
@@ -960,6 +977,7 @@ async fn clear_history_wipes_log_trunk_timeline_and_disk() {
         reasoning: None,
         tool: None,
         images: None,
+        files: None,
         archive: None,
         seq: 0,
         ord: 0,
@@ -1003,6 +1021,7 @@ async fn clear_session_only_wipes_target_and_keeps_siblings() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         })
     };
     let timeline_msg =
@@ -1015,6 +1034,7 @@ async fn clear_session_only_wipes_target_and_keeps_siblings() {
             reasoning: None,
             tool: None,
             images: None,
+            files: None,
             archive: None,
             seq: 0,
             ord: 0,
@@ -1087,6 +1107,7 @@ async fn clear_session_empties_the_shared_history_arc() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     assert!(!session.history.lock().is_empty(), "投影已物化");
@@ -1107,6 +1128,7 @@ async fn clear_session_empties_the_shared_history_arc() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     let history = store.history_for(&session.id).expect("投影重建");
@@ -1143,6 +1165,7 @@ async fn clear_session_keeps_identity_arc_connected_after_new_events() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     assert!(!session.history.lock().is_empty(), "投影已物化");
@@ -1159,6 +1182,7 @@ async fn clear_session_keeps_identity_arc_connected_after_new_events() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     let contents: Vec<String> = session
@@ -1193,6 +1217,7 @@ async fn clear_session_keeps_legacy_unattributed_events() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     store.append_event(echo_session::SessionEvent::UserMessage(
@@ -1203,6 +1228,7 @@ async fn clear_session_keeps_legacy_unattributed_events() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
 
@@ -1230,6 +1256,7 @@ async fn timeline_probe_counters_track_writes() {
         reasoning: None,
         tool: None,
         images: None,
+        files: None,
         archive: None,
         seq: 0,
         ord: 0,
@@ -1303,6 +1330,7 @@ async fn timeline_roundtrips_through_the_persisted_file() {
         reasoning: None,
         tool: None,
         images: None,
+        files: None,
         archive: None,
         seq: 0,
         ord: 0,
@@ -1316,6 +1344,7 @@ async fn timeline_roundtrips_through_the_persisted_file() {
         reasoning: Some(vec!["先分析".into()]),
         tool: None,
         images: None,
+        files: None,
         archive: None,
         seq: 0,
         ord: 0,
@@ -1371,6 +1400,7 @@ fn push_user(store: &TrunkStore, content: &str) {
         reasoning: None,
         tool: None,
         images: None,
+        files: None,
         archive: None,
         seq: 0,
         ord: 0,
@@ -1628,6 +1658,7 @@ fn evict_idle_drops_stale_identity_but_keeps_context() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     // Force last_active far in the past (2× TTL).
@@ -1662,6 +1693,7 @@ fn ev_user(session: &str, content: &str) -> echo_session::SessionEvent {
         message_sequence: None,
         source: None,
         images: vec![],
+        files: vec![],
     })
 }
 
@@ -2009,6 +2041,7 @@ fn append_reprojects_only_the_owning_session() {
                 message_sequence: None,
                 source: None,
                 images: vec![],
+                files: vec![],
             },
         ));
         store.append_event(echo_session::SessionEvent::UserMessage(
@@ -2019,6 +2052,7 @@ fn append_reprojects_only_the_owning_session() {
                 message_sequence: None,
                 source: None,
                 images: vec![],
+                files: vec![],
             },
         ));
     }
@@ -2048,6 +2082,7 @@ fn reasoning_events_reach_display_history_but_not_model_context() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     store.append_event(echo_session::SessionEvent::Reasoning(
@@ -2099,6 +2134,7 @@ async fn set_memory_limit_tokens_reprojects_immediately() {
                 message_sequence: None,
                 source: None,
                 images: vec![],
+                files: vec![],
             },
         ));
     }
@@ -2121,6 +2157,7 @@ async fn set_memory_limit_tokens_reprojects_immediately() {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         },
     ));
     let contents: Vec<String> = session

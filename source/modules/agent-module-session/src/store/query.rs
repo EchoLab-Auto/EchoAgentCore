@@ -221,6 +221,7 @@ mod tests {
             message_sequence: Some(1),
             source: None,
             images: vec![],
+            files: vec![],
             session: session.clone(),
         }));
         trunk.append_event(SessionEvent::ModelStep(ModelStepEvent {

@@ -215,6 +215,7 @@ mod tests {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         }));
         log.append(SessionEvent::AssistantMessage(AssistantMessage {
             timestamp: 0,
@@ -262,6 +263,7 @@ mod tests {
             message_sequence: Some(1),
             source: None,
             images: vec![],
+            files: vec![],
         }));
         log.append(SessionEvent::ToolCall(ToolCallEvent {
             session: None,
@@ -306,6 +308,7 @@ mod tests {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         })
     }
 
@@ -322,6 +325,7 @@ mod tests {
             message_sequence: None,
             source: None,
             images: vec![],
+            files: vec![],
         }));
         log.append(user_in("a", "a3"));
 
@@ -427,6 +431,7 @@ mod tests {
             message_sequence: Some(1),
             source: None,
             images: vec![],
+            files: vec![],
         }));
         log.append(SessionEvent::ModelStep(crate::event::ModelStepEvent {
             step_index: 0,
@@ -487,6 +492,7 @@ mod tests {
             message_sequence: Some(1),
             source: None,
             images: vec![],
+            files: vec![],
         }));
         log.append(SessionEvent::Reasoning(crate::event::ReasoningEvent {
             content: "思考".into(),

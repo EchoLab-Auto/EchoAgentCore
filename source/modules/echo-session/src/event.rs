@@ -74,6 +74,13 @@ pub struct UserMessage {
     /// Multimodal media attached to the message (image URLs / data URIs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// 随消息落盘的文件附件（平台上传 / 面板拖入）。
+    ///
+    /// **不进模型上下文**：路径已经写在用户消息的 hook JSON 里，模型靠
+    /// 文件工具去读。这里落库只为显示层——否则刷新后从事件日志重建时间线
+    /// 时附件会静默消失（`images` 字段当初进来也是同一个理由）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<echo_defs::chat::IncomingFile>,
     /// 归属会话 id（多会话上下文，2026-09）：投影按该字段分区——
     /// 每个来源（本地/QQ 私聊/群）有独立的模型上下文。
     /// None = 旧版事件（加载期归因迁移）。
@@ -386,6 +393,7 @@ mod tests {
             message_sequence: Some(7),
             source: None,
             images: vec![uri.clone()],
+            files: vec![],
             session: None,
         };
         let message = user_message(&event);
@@ -448,6 +456,7 @@ mod tests {
                     message_sequence: None,
                     source: None,
                     images: vec![],
+                    files: vec![],
                 }),
                 "user/message",
             ),

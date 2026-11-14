@@ -645,7 +645,7 @@ async fn accept_standalone_ws(
     let level_out = Arc::new(std::sync::Mutex::new(Level::Admin));
     let level_out2 = level_out.clone();
     let panel_source2 = panel_source.clone();
-    let ws = tokio_tungstenite::accept_hdr_async(
+    let ws = tokio_tungstenite::accept_hdr_async_with_config(
         stream,
         move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
             observe(request);
@@ -673,6 +673,7 @@ async fn accept_standalone_ws(
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = level;
             Ok(response)
         },
+        Some(panel_ws_config()),
     )
     .await?;
     let level = *level_out
@@ -698,7 +699,7 @@ async fn accept_merged_ws(
     let token_out = Arc::new(std::sync::Mutex::new(String::new()));
     let role_out2 = role_out.clone();
     let token_out2 = token_out.clone();
-    let ws = tokio_tungstenite::accept_hdr_async(
+    let ws = tokio_tungstenite::accept_hdr_async_with_config(
         stream,
         move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
             // 观测地址（2026-11）：客户端连本机用的 `Host` 就是「它眼中的
@@ -730,6 +731,7 @@ async fn accept_merged_ws(
                 None => Err(unauthorized_response()),
             }
         },
+        Some(panel_ws_config()),
     )
     .await?;
     let role = role_out
@@ -741,6 +743,25 @@ async fn accept_merged_ws(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     Ok((ws, role, presented))
+}
+
+/// Panel↔Core websocket 的单帧/单消息上限。
+///
+/// **必须容得下一个满额附件**：面板把文件 base64 内嵌在 `SendMessage` 里
+/// （+33%），tungstenite 默认 `max_frame_size = 16 MiB`——20 MB 的文件编码后
+/// 26.7 MiB，会在这里被拒，而症状只是"连接断了、消息没发出去"。
+///
+/// 取 32 MiB 而非 `64 MiB`（默认的 message 上限）：帧上限是内存占用的
+/// 直接乘数（对端可声明的帧长决定我们预分配多少），刚够用即可。
+/// `frame_limit_covers_max_attachment` 测试盯住这两者的关系。
+const WS_FRAME_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+fn panel_ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        max_message_size: Some(WS_FRAME_MAX_BYTES),
+        max_frame_size: Some(WS_FRAME_MAX_BYTES),
+        ..Default::default()
+    }
 }
 
 /// 管理通道连接主体（升级后；独立/合并模式共用）。
@@ -1002,6 +1023,20 @@ mod tests {
     use super::*;
     use crate::protocol::BackendCommand;
 
+    /// 帧上限必须容得下一个满额附件——否则超限的文件会在 **ws 层**被拒，
+    /// 症状是连接断开而消息静默丢失（没有 Error 事件，用户只看到"没反应"）。
+    ///
+    /// base64 把 3 字节编码成 4 字符，再加 JSON 信封与其它字段的余量。
+    #[test]
+    fn frame_limit_covers_max_attachment() {
+        let encoded = echo_defs::attachment_store::MAX_ATTACHMENT_BYTES.div_ceil(3) * 4;
+        let envelope_headroom = 256 * 1024;
+        assert!(
+            encoded + envelope_headroom <= WS_FRAME_MAX_BYTES,
+            "one max-size attachment encodes to {encoded} bytes, +{envelope_headroom} headroom              exceeds the {WS_FRAME_MAX_BYTES}-byte frame limit"
+        );
+    }
+
     #[test]
     fn parses_command_frame() {
         let text =
@@ -1014,6 +1049,7 @@ mod tests {
                         session_id: "s1".into(),
                         content: "hi".into(),
                         images: vec![],
+                        files: vec![],
                         team_id: None
                     }
                 );
@@ -1468,6 +1504,7 @@ mod tests {
             session_id: "s1".into(),
             content: "hi".into(),
             images: vec![],
+            files: vec![],
             team_id: None,
         };
         let secret = crate::protocol::BackendCommand::RequestFederationInvite;

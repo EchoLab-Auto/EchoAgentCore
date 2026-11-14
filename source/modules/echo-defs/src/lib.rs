@@ -21,15 +21,21 @@
 //! | [`mode`] | shared policy enums (`ThinkingMode`, `ReasoningEffort`) |
 //! | [`token`] | pure token-estimation/truncation helpers |
 //! | [`media`] | multimodal payload hygiene: embedded base64 → placeholder text |
+//! | [`media_store`] | inbound image spill: data URI → on-disk media id |
+//! | [`attachment_store`] | inbound file spill: uploaded bytes → absolute path |
 //! | [`sanitize`] | the sensitive-data seam: `Redactor` trait (scan / redact / register) |
 //! # Dependency rules
 //!
 //! - This crate depends on nothing from the harness (no echo-* crates).
 //! - It is deliberately transport-agnostic: `LlmError` carries strings, never
 //!   an HTTP client error; providers map their own errors into it.
-//! - Everything here is a definition: no filesystem, no network, no state.
+//! - No network and no process state anywhere in this crate. The two on-disk
+//!   caches ([`media_store`], [`attachment_store`]) are the one documented
+//!   exception: they own files (content-addressed images / per-session file
+//!   attachments) and nothing else.
 
 pub mod api_profile;
+pub mod attachment_store;
 pub mod chat;
 pub mod control_command;
 pub mod disposer;

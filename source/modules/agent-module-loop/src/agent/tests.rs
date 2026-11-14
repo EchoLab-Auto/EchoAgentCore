@@ -327,6 +327,7 @@ async fn emitted_events_are_recorded_into_the_display_timeline() {
         group_name: None,
         content: "hi".into(),
         images: vec![],
+        files: vec![],
         timestamp: 1700000000,
         received_at_ms: 1700000000123,
         message_sequence: 1,
@@ -669,6 +670,7 @@ async fn request_trunk_timeline_returns_the_persisted_history() {
         group_name: None,
         content: "你好".into(),
         images: vec![],
+        files: vec![],
         timestamp: 1700000000,
         received_at_ms: 1700000000123,
         message_sequence: 1,
@@ -728,6 +730,7 @@ async fn request_session_history_derives_from_the_event_log() {
         group_name: None,
         content: "实时条目".into(),
         images: vec![],
+        files: vec![],
         timestamp: 1700000000,
         received_at_ms: 1700000000123,
         message_sequence: 1,
@@ -743,6 +746,7 @@ async fn request_session_history_derives_from_the_event_log() {
                 message_sequence: Some(2),
                 source: None,
                 images: Vec::new(),
+                files: vec![],
                 session: Some(target.into()),
             },
         ));
@@ -808,6 +812,7 @@ async fn clear_history_resends_remaining_timeline_not_empty() {
         reasoning: None,
         tool: None,
         images: None,
+        files: None,
         archive: None,
         seq: 0,
         ord: 0,
@@ -891,6 +896,7 @@ async fn archive_history_without_session_id_is_rejected_fail_closed() {
         reasoning: None,
         tool: None,
         images: None,
+        files: None,
         archive: None,
         seq: 0,
         ord: 0,
@@ -3226,6 +3232,152 @@ fn sequence_parsing_only_accepts_structured_markers() {
     );
 }
 
+/// 端到端：`SendMessage` 带文件 → 落盘 → 事件带路径 → **agent 真的看到路径**。
+///
+/// 三个断言分别对应三处独立失败的后果：
+/// - 没落盘：agent 拿到一个不存在的路径，工具调用报"文件不存在"
+/// - 事件不带 files：时间线/刷新后看不到用户发过文件
+/// - hook JSON 不带 files：agent 根本不知道有文件（用户以为发了）
+#[tokio::test]
+async fn send_message_with_files_saves_and_tells_agent() {
+    use crate::agent::commands::ATTACHMENT_ENV_LOCK;
+    use agent_module_management::protocol::{BackendCommand, PendingFile};
+
+    let _guard = ATTACHMENT_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join(format!(
+        "echo-attach-e2e-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    // SAFETY: 由 ATTACHMENT_ENV_LOCK 串行化，其它落盘测试不会同时读写它。
+    unsafe { std::env::set_var("ECHO_ATTACHMENT_DIR", &root) };
+
+    let seen: Arc<std::sync::Mutex<Vec<Vec<String>>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let gate = Arc::new(tokio::sync::Semaphore::new(8)); // 立刻放行，不测排队
+    let provider = Arc::new(SnapshotProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        seen: seen.clone(),
+        gate,
+    });
+    let agent = Arc::new(test_agent(provider));
+    // `SendMessage` 必须显式带 team_id（去主智能体后没有默认人格），且要与
+    // 本 agent 的归属一致——否则命令会被转派或直接拒绝，文件根本不会落盘。
+    agent.set_team_id(Some("alice".into()));
+    let events: Arc<std::sync::Mutex<Vec<BackendEvent>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    agent.attach_event_sink(Arc::new(move |event: BackendEvent| {
+        sink.lock().expect("events poisoned").push(event);
+    }));
+
+    let base64 = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode("# 报告
+正文")
+    };
+    agent
+        .apply_command(BackendCommand::SendMessage {
+            session_id: "local:tui::local_user".into(),
+            content: "看下这个文件".into(),
+            images: Vec::new(),
+            files: vec![PendingFile {
+                name: "报告.md".into(),
+                data: base64,
+            }],
+            team_id: Some("alice".into()),
+        })
+        .await;
+
+    // ① 真的落盘了，内容对得上
+    let saved: Vec<std::path::PathBuf> = std::fs::read_dir(&root)
+        .expect("attachment root should exist")
+        .flat_map(|entry| std::fs::read_dir(entry.unwrap().path()).unwrap())
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(saved.len(), 1, "expected exactly one saved attachment");
+    assert_eq!(
+        std::fs::read_to_string(&saved[0]).unwrap(),
+        "# 报告
+正文"
+    );
+    let saved_path = saved[0].display().to_string();
+    assert!(saved_path.ends_with("报告.md"), "{saved_path}");
+
+    // ② 事件里带路径（面板据此在气泡上显示"发过什么"）
+    let received = events
+        .lock()
+        .expect("events poisoned")
+        .iter()
+        .find_map(|event| match event {
+            BackendEvent::MessageReceived { files, .. } => Some(files.clone()),
+            _ => None,
+        })
+        .expect("MessageReceived must be emitted");
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].path.as_deref(), Some(saved_path.as_str()));
+    assert_eq!(received[0].size, "# 报告
+正文".len() as u64);
+
+    // ③ agent 收到的内容里有那个路径（用户的核心诉求：agent 知道文件在哪）
+    let seen = seen.lock().expect("seen poisoned");
+    let first_turn = seen.first().expect("provider must be called once");
+    let hook = first_turn
+        .iter()
+        .find(|content| content.contains("backend_message_hook"))
+        .expect("first turn should carry the backend hook");
+    assert!(hook.contains(&saved_path), "hook must carry the path: {hook}");
+    assert!(hook.contains("报告.md"));
+
+    let _ = std::fs::remove_dir_all(&root);
+    unsafe { std::env::remove_var("ECHO_ATTACHMENT_DIR") };
+}
+
+/// `files` 的解析必须与构造闭环：面板/平台写进 hook 的文件列表，agent 侧
+/// 要能原样读回来（否则"消息里有文件"这件事只存在于 payload 文本里，
+/// 时间线与刷新后的回放全都看不到）。
+#[test]
+fn extract_input_files_reads_hook_payload() {
+    let hook = r#"<backend_message_hook>
+    {"message_sequence":9,"content":"看这个","files":[
+      {"name":"报告.pdf","path":"/home/u/attachments/s/报告.pdf","size":2048},
+      {"name":"big.bin","size":0,"error":"file too large"}
+    ]}
+    </backend_message_hook>"#;
+    let files = extract_input_files(hook);
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0].name, "报告.pdf");
+    assert_eq!(files[0].path.as_deref(), Some("/home/u/attachments/s/报告.pdf"));
+    assert_eq!(files[0].size, 2048);
+    assert!(files[0].error.is_none());
+    // 未落盘项：path 缺失、error 是唯一线索——丢了它 agent 就只会看到
+    // "有个文件叫 big.bin"，不知道它根本没存下来。
+    assert!(files[1].path.is_none());
+    assert_eq!(files[1].error.as_deref(), Some("file too large"));
+}
+
+#[test]
+fn extract_input_files_ignores_absent_and_malformed() {
+    // 没有 files 字段（纯文本 / 旧面板）
+    assert!(extract_input_files("看一下这个 https://example.com/a.pdf").is_empty());
+    let no_files = r#"<backend_message_hook>{"message_sequence":1,"content":"hi","images":[]}</backend_message_hook>"#;
+    assert!(extract_input_files(no_files).is_empty());
+    // 形状不对（files 不是数组 / 元素缺 name）：整段解析失败 → 空，
+    // 不 panic——一条坏 payload 不该让整轮对话挂掉。
+    let wrong = r#"<backend_message_hook>{"files":"oops"}</backend_message_hook>"#;
+    assert!(extract_input_files(wrong).is_empty());
+    // 单个坏元素只丢它自己：同一条消息里其它文件必须留下。
+    let mixed = r#"<backend_message_hook>{"files":[{"path":"/x"},{"name":"ok.txt","path":"/y","size":1}]}</backend_message_hook>"#;
+    let files = extract_input_files(mixed);
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].name, "ok.txt");
+}
+
 #[test]
 fn extract_input_images_reads_hook_payload() {
     let hook = r#"<qq_message_hook>
@@ -3266,6 +3418,7 @@ fn inbound_image_hook_yields_a_compact_model_request() {
             message_sequence: Some(15),
             source: None,
             images,
+            files: vec![],
         },
     )];
     let messages = echo_session::derive::derive_messages(&log, 800_000);
@@ -3294,6 +3447,7 @@ fn user_message_event_roundtrips_images() {
         message_sequence: Some(3),
         source: None,
         images: extract_input_images(hook),
+        files: vec![],
     };
     let json =
         serde_json::to_string(&echo_session::SessionEvent::UserMessage(event.clone())).unwrap();
@@ -3893,6 +4047,7 @@ async fn workspace_conversation_channels_and_delete_cleanup() {
                 message_sequence: None,
                 source: None,
                 images: vec![],
+                files: vec![],
             },
         ));
     assert!(agent
@@ -4829,6 +4984,7 @@ async fn clear_history_snapshot_targets_the_operated_session() {
                     message_sequence: None,
                     source: None,
                     images: vec![],
+                    files: vec![],
                 },
             )],
         );
@@ -4898,6 +5054,7 @@ async fn clear_history_without_session_id_is_rejected_fail_closed() {
                 message_sequence: None,
                 source: None,
                 images: vec![],
+                files: vec![],
             },
         )],
     );
@@ -4956,6 +5113,7 @@ async fn compact_result_is_a_session_scoped_notice() {
                     message_sequence: None,
                     source: None,
                     images: vec![],
+                    files: vec![],
                 })
             })
             .collect(),
@@ -5026,6 +5184,7 @@ async fn compact_without_session_id_is_rejected_fail_closed() {
                     message_sequence: None,
                     source: None,
                     images: vec![],
+                    files: vec![],
                 })
             })
             .collect(),

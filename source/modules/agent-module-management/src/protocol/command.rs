@@ -2,6 +2,28 @@
 
 use echo_defs::mode::{ReasoningEffort, ThinkingMode};
 
+/// 面板随消息上传的文件（字节内嵌）。
+///
+/// ## 为什么字节内嵌，而不是「先上传、再传引用」
+///
+/// Core **只有 ws 一个入口**（`agent-module-management` 在裸 TcpListener 上
+/// 升级 websocket，没有 HTTP 服务），所以没有现成的上传端点；更要紧的是
+/// federation 下 Panel 与 Core 可能不在一台机器上，「先落盘再传路径」需要
+/// 一个两端都能访问的中转目录，跨机时它不存在。
+///
+/// 落盘位置与命名规则由 Core 单方面决定（`echo_defs::attachment_store`）：
+/// 前端只提供原文件名与字节，不参与路径决策——否则同一份协议要在两个仓库
+/// 各维护一套目录约定。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
+pub struct PendingFile {
+    /// 用户看到的文件名（`report.pdf`）。Core 落盘前消毒，不可信。
+    pub name: String,
+    /// base64 字节。也接受 `data:<mime>;base64,` 前缀（浏览器 FileReader 的
+    /// 原生输出就是那种形状，前端不必先剥）。
+    pub data: String,
+}
+
 /// Commands from the frontend to the agent backend.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
@@ -14,6 +36,9 @@ pub enum BackendCommand {
         content: String,
         #[serde(default)]
         images: Vec<String>,
+        /// 面板随消息拖入的文件（字节内嵌，Core 负责落盘并告知 agent 路径）。
+        #[serde(default)]
+        files: Vec<PendingFile>,
         #[serde(default)]
         team_id: Option<String>,
     },

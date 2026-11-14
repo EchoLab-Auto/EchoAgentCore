@@ -127,6 +127,8 @@ impl Agent {
             group_name: None,
             content: hook.clone(),
             images: vec![],
+            // subagent hook 由进程内生成，没有附件通道。
+            files: vec![],
             timestamp: chrono::Utc::now().timestamp(),
             received_at_ms: chrono::Utc::now().timestamp_millis(),
             message_sequence,

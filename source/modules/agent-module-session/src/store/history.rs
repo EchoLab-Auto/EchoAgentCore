@@ -103,13 +103,19 @@ pub fn display_history_for_session(
                             received_at_ms: source.received_at_ms,
                             message_sequence: source.message_sequence,
                         });
-                        messages.push(TimelineMessage::user(
-                            user.content.clone(),
-                            session_id,
-                            user.timestamp,
-                            source,
-                            images,
-                        ));
+                        messages.push(
+                            TimelineMessage::user(
+                                user.content.clone(),
+                                session_id,
+                                user.timestamp,
+                                source,
+                                images,
+                            )
+                            // 附件随日志回放（与实时投影同口径）：不回放的话
+                            // 刷新后用户看不到自己发过的文件，而 agent 上下文里
+                            // 那个路径还在——两边对不上。
+                            .with_files(user.files.clone()),
+                        );
                     }
                 }
                 // 两类用户事件都带真实时间戳：推进 carry-forward 游标
@@ -170,6 +176,7 @@ pub fn display_history_for_session(
                     reasoning: None,
                     tool: None,
                     images: None,
+                    files: None,
                     archive: None,
                     seq: 0,
                     ord: 0, // 派生条目：非时间线缓冲条目，无需分页锚点
@@ -508,6 +515,7 @@ mod tests {
             message_sequence: None,
             source: None,
             images: Vec::new(),
+            files: vec![],
             session: Some(session.into()),
         };
         event.timestamp = timestamp;
@@ -560,6 +568,7 @@ mod tests {
                 message_sequence: 1,
             }),
             images: Vec::new(),
+            files: vec![],
             session: Some("a".into()),
         };
         event.timestamp = 1;
@@ -581,6 +590,7 @@ mod tests {
                 reasoning: None,
                 tool: None,
                 images: None,
+                files: None,
                 archive: None,
                 seq: 5,
                 ord: 0,
@@ -594,6 +604,7 @@ mod tests {
                 reasoning: None,
                 tool: None,
                 images: None,
+                files: None,
                 archive: None,
                 seq: 99,
                 ord: 1,
@@ -623,6 +634,7 @@ mod tests {
                 message_sequence: 0,
             }),
             images: Vec::new(),
+            files: vec![],
             session: Some(session.into()),
         })
     }

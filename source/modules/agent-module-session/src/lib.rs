@@ -244,6 +244,7 @@ mod tests {
                 message_sequence: None,
                 source: None,
                 images: Vec::new(),
+                files: vec![],
                 session: Some("s-a".into()),
             },
         ));

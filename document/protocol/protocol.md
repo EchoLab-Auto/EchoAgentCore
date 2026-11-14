@@ -115,6 +115,24 @@ pub enum WsMessage {
 {"type":"event","payload":{"AgentOutput":{"session_id":"...","content":"...","branch_id":null}},"seq":4127}
 ```
 
+### 随消息附带的载荷（`images` / `files`）
+
+`SendMessage` 有两个可选数组，**语义不同、不要混**：
+
+| 字段 | 内容 | Core 的处理 | 模型看到什么 |
+|---|---|---|---|
+| `images: string[]` | 图片 data URI / URL | 落盘到媒体库，改写为 `/media/<id>` | 独立的 image 内容块 |
+| `files: PendingFile[]` | `{ name, data(base64) }` | 落盘到 `attachments/`，得到绝对路径 | 路径文本（用 `read_file` 读） |
+
+把 PDF 塞进 `images` 会让 Core 当图片投影给模型，多模态端点直接报错；
+把图片塞进 `files` 则失去视觉能力。面板按 MIME 分流的依据就在这里。
+
+`files` **必须**整段 base64 内嵌（不是"先上传拿句柄"）：Core 只有 ws 一个入口
+（没有 HTTP 服务），且 federation 下 Panel 与 Core 可能不共享文件系统——一个
+"两端都能访问的中转目录"在跨机时不存在。代价是单帧变大，因此两端 ws 的
+`max_frame_size` 都显式抬到 32 MiB（tungstenite 默认 16 MiB 会让 20 MB 的文件
+在握手后**静默断开**）。
+
 序列化助手：`serialize_command` / `serialize_event` / `serialize_event_sequenced` / `serialize_event_identified` / `deserialize_message`（`agent_module_management::protocol::bridge`）；无法解析的帧记日志后丢弃。
 
 ### 事件扇出序号

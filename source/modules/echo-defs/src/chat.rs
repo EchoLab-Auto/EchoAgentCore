@@ -45,21 +45,35 @@ impl std::fmt::Display for ChannelType {
     }
 }
 
-/// An inbound file attachment, downloaded to the local machine.
+/// An inbound file attachment, saved on the local machine.
 ///
 /// Instances that can receive files (e.g. QQ group uploads / private files)
-/// download the bytes next to the incoming message and surface them here;
+/// save the bytes next to the incoming message and surface them here;
 /// the agent reads `path` with its file/bash tools.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// # 为什么它同时是**线格式**类型
+///
+/// 同一个文件从三条入口进来（平台上传、面板拖入、远端节点转发），要先后
+/// 经过四层（`IncomingMessage` → ws 协议 → 会话事件日志 → 显示时间线）。
+/// 每层各定义一个同形结构会有四份真值，而它们的字段名是**线格式**——
+/// 改名不会有编译错误，只会让某一层的 `path` 变成 `undefined`。
+/// 所以这里带 serde（各层直接复用它），面板的 TS 类型由 ts-rs 从它生成。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
 pub struct IncomingFile {
-    /// File name as shown on the platform (e.g. `report.pdf`).
+    /// File name as shown to the user (e.g. `report.pdf`).
     pub name: String,
-    /// Absolute path of the downloaded file; `None` when the download
-    /// failed (see `error`) or was skipped (e.g. over the size limit).
+    /// Absolute path of the saved file; `None` when saving failed (see
+    /// `error`) or was skipped (e.g. over the size limit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional))]
     pub path: Option<String>,
-    /// File size in bytes as reported by the platform (0 = unknown).
+    /// File size in bytes (0 = unknown).
+    #[serde(default)]
     pub size: u64,
-    /// Download failure/skip reason when `path` is `None`.
+    /// Failure/skip reason when `path` is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(optional))]
     pub error: Option<String>,
 }
 

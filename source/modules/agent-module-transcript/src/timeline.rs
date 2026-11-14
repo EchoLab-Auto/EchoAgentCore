@@ -97,6 +97,7 @@ impl<H: TimelineHost + ?Sized + 'static> TimelineProjector<H> {
                 group_name,
                 content,
                 images,
+                files,
                 timestamp,
                 received_at_ms,
                 message_sequence,
@@ -141,7 +142,8 @@ impl<H: TimelineHost + ?Sized + 'static> TimelineProjector<H> {
                         message_sequence: *message_sequence,
                     }),
                     images,
-                ));
+                )
+                .with_files(files.clone()));
             }
             BackendEvent::AgentReasoning {
                 session_id,
@@ -163,6 +165,7 @@ impl<H: TimelineHost + ?Sized + 'static> TimelineProjector<H> {
                     reasoning: None,
                     tool: None,
                     images: None,
+                    files: None,
                     archive: None,
                     seq: 0, // 由宿主赋递增序号
                     ord: 0, // 由宿主赋（分页锚点，此后不变）
@@ -389,6 +392,7 @@ mod tests {
             group_name: None,
             content: "internal".into(),
             images: vec![],
+            files: vec![],
             timestamp: 0,
             received_at_ms: 0,
             message_sequence: 0,
@@ -463,6 +467,7 @@ mod tests {
             group_name: None,
             content: "你好".into(),
             images: vec![],
+            files: vec![],
             timestamp: 1_700_000_000,
             received_at_ms: 1_700_000_000_123,
             message_sequence: 1,
@@ -516,6 +521,7 @@ mod tests {
                 reasoning: None,
                 tool: None,
                 images: None,
+                files: None,
                 archive: None,
                 seq: 0,
                 ord: 0,
@@ -545,6 +551,7 @@ mod tests {
                 reasoning: None,
                 tool: None,
                 images: None,
+                files: None,
                 archive: None,
                 seq: index as u64,
                 ord: index as u64,
