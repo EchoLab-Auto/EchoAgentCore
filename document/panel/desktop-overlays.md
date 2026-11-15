@@ -65,9 +65,9 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 
 | 操作 | 下发命令 | 作用范围 |
 | --- | --- | --- |
-| 清理历史记忆 | `ClearHistory{team_id, session_id}` | **只清当前会话**；会话未知时 fail-closed 不发命令（缺 `session_id` 在 Core 语义是清空该人格全部会话） |
+| 清理历史记忆 | `ClearHistory{team_id, session_id}` | **只清当前会话**；会话未知时 fail-closed 不发命令（Core 同样拒绝缺失的 `session_id`） |
 | 归档 | `ArchiveHistory{team_id, session_id}` | **只归档并清空当前会话**（完整快照写 `archives/`）；同样 fail-closed |
-| 压缩 | `CompactHistory{team_id, session_id, keep_recent: 40}` | **仅当前会话**（各会话独立分组摘要，LLM 生成可能数分钟；执行前自动写 `archives/*-precompact.json`，摘要失败回退统计文案） |
+| 压缩 | `CompactHistory{team_id, session_id, keep_recent: 40}` | **仅当前会话**（各会话独立分组摘要，LLM 生成可能数分钟；执行前自动写 `archives/*-precompact.json`，归档失败中止、摘要失败组保留原事件） |
 | 重载技能 | `ReloadSkills` | 全部运行中智能体 + 管理代理的技能注册表，不只是当前查看的那个；回执三态——「技能已重新加载（N/M 个智能体更新）」/「技能无变化」/「技能重载部分失败（N/M 个更新）：<逐个人格原因>」 |
 | 刷新 | `RequestContext` | 重新拉取快照 |
 
