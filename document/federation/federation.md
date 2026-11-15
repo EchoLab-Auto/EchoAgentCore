@@ -30,7 +30,9 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
    基元不网络化；联邦协议只存在于边界（工具路由、委派、查询、扇出）
 4. **显式命名**：远程工具以 `<peer>__<tool>` 注册（双下划线；LLM
    function name 仅允许 `[a-zA-Z0-9_-]`，peer 名中其余字符以 `_` 替代），
-   模型显式选择目标节点；同名本机工具不做隐式路由
+   模型显式选择目标节点；同名本机工具不做隐式路由。代理工具只在对方
+   **完整通告工具定义**时自动注册；旧节点/缺定义不回退本机 schema
+   （绝不猜），改用 `node://<peer>/…` 显式调用
 
 ## 命名空间
 
@@ -62,7 +64,8 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 `listen = ""` 退回纯连出）与按 peers 连出；连接后角色对称。
 
 - **握手**：Hello/Welcome（NodeId + 能力 `NodeCaps{tools, subagent,
-  workspaces}` + `protocol_version`）——`PROTOCOL_VERSION` 不相等即拒绝
+  workspaces}` + `protocol_version`；2026-11 起另带可选
+  `tool_definitions`，见下文「工具发现」）——`PROTOCOL_VERSION` 不相等即拒绝
   （单一 `u32` 精确匹配，无主次版本结构）、自连回环拒绝、
   双向同时 dial 按 node_id 字典序让路（顶掉旧链路前显式 Down）
 - **认证**：per-peer 共享密钥（Bearer；双向相同）。邀请串生成用
@@ -94,7 +97,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 | 类别 | 帧 | 语义 |
 |---|---|---|
-| 工具调用 | Invoke → InvokeAccepted（裁决）→ InvokeOutput*（流式）→ InvokeResult（终态）/ Cancel | 大脑侧 `RemoteTool` 代理；执行端 per-peer 白名单裁决后经本机 `ToolRegistry` 执行；断链使在飞调用失败，重连整包恢复 |
+| 工具调用 | Invoke → InvokeAccepted（裁决）→ InvokeOutput*（流式）→ InvokeResult（终态）/ Cancel | 大脑侧 `RemoteTool` 代理；执行端 per-peer 白名单裁决后经本机 `ToolRegistry` 执行（统一入口校验 + schema 预检 + 截止/取消 + 并发上限，见「执行治理」）；断链使在飞调用失败并取消对端在飞任务，重连整包恢复 |
 | 委派 | SubagentSpawn / SubagentEvent | `spawn_subagent node=...`：大脑侧跑 LLM，工具视图剥前缀替换为该 peer 代理工具（执行时还原 `<peer>:` 前缀）；**执行端按 per-peer `allow_subagent` 门控**（未授予时拒绝受理并回 `SubagentEvent(Failed)` 终态，调用方聚合器按失败销账不悬挂） |
 | 只读查询 | Query / QueryResult | `NodeStatus`（恒允许）/ `WorkspaceFiles`（会话已声明目录内 canonical 校验）/ `SessionSnapshot`（trunk 快照 + since_seq/limit 分页）/ `WorkspaceGitStatus`（跨机工作区 git 采集——远程目录经联邦拉对端 `collect_dir_git` 实时采集）/ `BrowseDirectories`（目录选择器浏览——限**浏览根**：工作区目录并集 ∪ HOME，供新建工作区时跨机挑选目录，解决"要浏览才能选、要选才能浏览"的鸡生蛋问题）/ `ApiProfiles`（脱敏供应商池，恒允许）；per-peer `allow_queries` 白名单项：`workspace_files` / `workspace_git_status` / `browse_directories` / `session_snapshot`，默认仅 node_status |
 
@@ -110,6 +113,51 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   canonical 校验）——对端可访问本机任意可读路径。显式列出查询种类的
   受限策略仍受沙箱约束。
 - 全部联邦调用记 `federation` 审计日志（tracing target）
+
+### 执行治理与身份（2026-11）
+
+- **主体来自传输层**：执行端构造 `ToolContext { peer }`——对端 `node_id`
+  由链路注入，**参数里的任何 `__team_id` / `session_id` 都不是身份**。
+  依赖归属的工具（shell 会话族）按它绑定/裁决资源。
+- **统一入口校验**：`call_id` 形状 + `origin` 必须等于来源 peer（防冒用
+  他人 id 触发取消/串味；origin 为本机 = `LoopDetected`）、工具名形状、
+  `args` 必须是 JSON 对象、工具 schema 的必需参数预检。
+- **单终态**：每次入站调用在 `DashMap<call_id, InboundCall>` 登记
+  （来源 peer / 截止 / 取消信号 / 并发额度），**先摘表再回帧**——重放、
+  迟到帧、重复 call_id 都不会产生第二个终态。执行任务带 RAII 结算器：
+  工具 panic（可捕获时经 `catch_unwind` 转成失败终态并回显消息）或任务
+  abort 时，`Drop` 也会摘除入站条目并尽力回失败终态，不会泄漏条目/额度、
+  让调用方干等。
+- **终态来源校验**：`InvokeResult` / `Error` / `QueryResult`（以及
+  `InvokeAccepted` 的拒绝裁决、`InvokeOutput` 分块）只接受**登记 peer**
+  发来的帧；其他链路对端即使猜到 call_id 也不能结算/污染别人的调用。
+- **截止与取消**：执行端按 `timeout_secs`（缺省取工具 `timeout_hint`，
+  夹到 1–600s，另加 5s 余量让调用方先到）停止等待并回终态；调用方
+  `Cancel` 只对**同一来源 peer** 生效（其他人只记审计）。对 shell 会话族
+  这是「超时/取消只停止等待、不杀会话」的既有契约（drop 的是读到哨兵的
+  future，bash 子进程与会话都保留）；一次性 `bash` 由工具自身
+  `kill_on_drop` 整组终止。
+- **并发上限**：全局 32 / 单 peer 8，超限立刻回 `Internal`（busy），不排队
+  到调用方硬超时。
+- **工具发现（绝不猜 schema）**：`NodeCaps.tool_definitions`（名 + 描述 +
+  参数 schema）与 `tools` 同源上报；大脑侧注册 `<peer>__<tool>` **只用对端
+  通告的定义**。旧节点不发该字段（空表）→ **不自动注册代理工具**并记
+  `warn`，链路仍兼容、仍可经 `node://<peer>/…` 显式调用；非空定义表里缺
+  某个工具、或定义缺 `parameters` → 同样跳过该工具。不回退本机同名
+  schema、不伪造空 object。`serde(default)` + `skip_serializing_if`，
+  **不提升 `PROTOCOL_VERSION`**，新旧互通。
+- **宣告与执行同口径**：`NodeCaps` 的工具定义只取**实际执行宿主**的
+  注册表（`executor_hosts().first()`：人格优先、零人格回退 `__core`），
+  不汇总全部 persona；否则第二个人格独有的工具会被宣告、执行端却
+  `UnknownCall`。工具注册表在禁用集合/工具表锁竞争时 fail-closed：
+  本轮不宣告任何远程工具（不会把"读不到禁用集合"当成"未禁用"）。
+- **沙箱收紧**：`path_within_roots` 拒绝 `..`、逐段解析符号链接，
+  **悬空链接一律拒绝**（旧实现回退到最近已存在祖先，悬空链接可把
+  `write_file` 引到工作区根外）。
+- **Shell 会话归属**：远端 `bash-start` 起的会话绑定来源 peer
+  （`owner_peer`）；跨 peer 与本地 persona 默认拒绝，面板显式管理路径
+  （`manage`）可清理泄漏会话。会话 id 只是句柄（带随机后缀），
+  **不作为授权依据**。
 
 ### Panel 身份
 

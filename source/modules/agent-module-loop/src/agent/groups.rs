@@ -98,6 +98,15 @@ pub(crate) struct TurnState {
     pub(crate) reply_branch_slots: tokio::sync::Semaphore,
     /// 在飞入站 turn（会话键 → 句柄）：并发去重与"同一会话串行"的判据。
     pub(crate) active_inbound_turns: DashMap<String, crate::agent::ActiveInboundTurn>,
+    /// 在飞 + 排队的 turn 计数（与 `active_inbound_turns` **同步变化**）。
+    ///
+    /// 退场收尾要等"所有登记/排队 turn 都跑完 commit/cleanup"，判据就是它归零
+    /// （`wait_for`，不 sleep 轮询）。顺序纪律见
+    /// [`crate::agent::Agent::try_register_inbound_turn`] /
+    /// [`crate::agent::Agent::finish_inbound_turn`]：登记先 +1 再入表、收尾先出表
+    /// 再 -1——于是"计数 = 0"严格蕴含"表里也没有未跑完的 turn"，不会留下
+    /// "表空了、commit 还在飞"的窗口（2026-11 C 复审）。
+    pub(crate) inbound_turn_count: tokio::sync::watch::Sender<usize>,
     /// 消息序号（单调递增）：面板据此给流式片段排序。
     pub(crate) next_message_sequence: std::sync::atomic::AtomicU64,
     /// 优雅退出标记：置位后新 turn 一律拒绝，在飞的跑完
@@ -105,6 +114,21 @@ pub(crate) struct TurnState {
     pub(crate) draining: std::sync::atomic::AtomicBool,
     /// 后台任务取消令牌（身份淘汰 / 落盘）：drop = 停机。
     pub(crate) cancel: tokio_util::sync::CancellationToken,
+    /// 可逆升级准备（upgrade guard）：维护态代数 + prepare/cancel 临界区。
+    ///
+    /// 与 `draining` 同组不是巧合：本闸**复用** `draining` 作为"拒新 turn"
+    /// 的开关（所有入口都检查它），自己只额外持有"谁在准备、代数是多少、
+    /// 失败后是否还欠一次显式回滚"。详见 [`crate::agent::upgrade`]。
+    pub(crate) upgrade: crate::agent::upgrade::UpgradeGate,
+    /// 后台写者的**可逆暂停**共享锁（周期会话保存 + 模块热重载）。
+    ///
+    /// 协议：每个实际写操作在动笔前拿**读**锁，并持有到本轮写/挂载/emit 全部
+    /// 结束；升级准备拿**写**锁（[`crate::agent::Agent::pause_upgrade_writers`]），
+    /// 拿到即"当前没有写者在飞"，drop 即恢复——不取消任何 token，锁可重复使用。
+    ///
+    /// 只覆盖上面两类后台写者；turn commit / 管理面写盘等由其它全局门控负责，
+    /// 本锁**不能**声称"所有进程写者都已停"。
+    pub(crate) upgrade_writers: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl TurnState {
@@ -113,9 +137,12 @@ impl TurnState {
             runner: tokio::sync::RwLock::new(None),
             reply_branch_slots: tokio::sync::Semaphore::new(reply_slots),
             active_inbound_turns: DashMap::new(),
+            inbound_turn_count: tokio::sync::watch::channel(0).0,
             next_message_sequence: std::sync::atomic::AtomicU64::new(1),
             draining: std::sync::atomic::AtomicBool::new(false),
             cancel,
+            upgrade: crate::agent::upgrade::UpgradeGate::new(),
+            upgrade_writers: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 }

@@ -1890,13 +1890,8 @@ async fn test_api_config_profile_empty_fields_fall_back() {
 #[test]
 fn data_module_stale_detects_manifest_diff() {
     use echo_module::{ModuleDescriptor, ModuleManifest};
-    let manifest = ModuleManifest::builtin(
-        "acme.tools.weather",
-        "Weather",
-        "1.0.0",
-        "tool",
-        "old desc",
-    );
+    let manifest =
+        ModuleManifest::builtin("acme.tools.weather", "Weather", "1.0.0", "tool", "old desc");
     let desc = ModuleDescriptor::from(&manifest);
 
     // 完全一致：不 stale
@@ -3278,8 +3273,10 @@ async fn send_message_with_files_saves_and_tells_agent() {
 
     let base64 = {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode("# 报告
-正文")
+        base64::engine::general_purpose::STANDARD.encode(
+            "# 报告
+正文",
+        )
     };
     agent
         .apply_command(BackendCommand::SendMessage {
@@ -3321,8 +3318,12 @@ async fn send_message_with_files_saves_and_tells_agent() {
         .expect("MessageReceived must be emitted");
     assert_eq!(received.len(), 1);
     assert_eq!(received[0].path.as_deref(), Some(saved_path.as_str()));
-    assert_eq!(received[0].size, "# 报告
-正文".len() as u64);
+    assert_eq!(
+        received[0].size,
+        "# 报告
+正文"
+            .len() as u64
+    );
 
     // ③ agent 收到的内容里有那个路径（用户的核心诉求：agent 知道文件在哪）
     let seen = seen.lock().expect("seen poisoned");
@@ -3331,7 +3332,10 @@ async fn send_message_with_files_saves_and_tells_agent() {
         .iter()
         .find(|content| content.contains("backend_message_hook"))
         .expect("first turn should carry the backend hook");
-    assert!(hook.contains(&saved_path), "hook must carry the path: {hook}");
+    assert!(
+        hook.contains(&saved_path),
+        "hook must carry the path: {hook}"
+    );
     assert!(hook.contains("报告.md"));
 
     let _ = std::fs::remove_dir_all(&root);
@@ -3352,7 +3356,10 @@ fn extract_input_files_reads_hook_payload() {
     let files = extract_input_files(hook);
     assert_eq!(files.len(), 2);
     assert_eq!(files[0].name, "报告.pdf");
-    assert_eq!(files[0].path.as_deref(), Some("/home/u/attachments/s/报告.pdf"));
+    assert_eq!(
+        files[0].path.as_deref(),
+        Some("/home/u/attachments/s/报告.pdf")
+    );
     assert_eq!(files[0].size, 2048);
     assert!(files[0].error.is_none());
     // 未落盘项：path 缺失、error 是唯一线索——丢了它 agent 就只会看到
@@ -4931,16 +4938,18 @@ async fn agent_emit_delivers_to_subscribed_modules() {
     assert!(host.has_event_subscribers(), "挂上订阅者后闸门应打开");
 
     // 订阅的事件 → 到达。
-    agent.emit(agent_module_management::protocol::BackendEvent::ToolResult {
-        session_id: "s1".into(),
-        team_id: None,
-        tool_name: "bash".into(),
-        result: "ok".into(),
-        tool_call_id: String::new(),
-        timed_out: false,
-        branch_id: String::new(),
-        elapsed_ms: Some(12),
-    });
+    agent.emit(
+        agent_module_management::protocol::BackendEvent::ToolResult {
+            session_id: "s1".into(),
+            team_id: None,
+            tool_name: "bash".into(),
+            result: "ok".into(),
+            tool_call_id: String::new(),
+            timed_out: false,
+            branch_id: String::new(),
+            elapsed_ms: Some(12),
+        },
+    );
     assert_eq!(*seen.lock().unwrap(), vec!["ToolResult".to_string()]);
 
     // 没订阅的事件 → 被名字闸门挡掉（连序列化都不做）。
@@ -5244,4 +5253,196 @@ async fn deleting_api_profile_drops_session_overrides() {
         agent.model.session_providers.get("sA").is_none(),
         "no stale override may survive"
     );
+}
+
+// ── 坏档入口的 fail-closed（2026-11 跨组闭环）────────────────────────
+//
+// 失败态下 `append_event` 只 warn、`write_to_disk` 拒绝落盘——继续跑 turn
+// 只会产出一条"重启后不存在"的假回复。这里钉住三件事：
+// ① LLM / 工具调用计数为 0；② 不 append 任何假回复；③ 错误对前端可见。
+
+struct CountingTool(Arc<AtomicUsize>);
+
+#[async_trait::async_trait]
+impl Tool for CountingTool {
+    fn name(&self) -> &str {
+        "count_me"
+    }
+
+    fn description(&self) -> &str {
+        "must never run when the session store failed to load"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    async fn execute(&self, _arguments: serde_json::Value) -> Result<String, ToolError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok("ran".into())
+    }
+}
+
+fn corrupt_session_path(name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "echo-loop-{name}-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&path, "{ 坏档").unwrap();
+    path
+}
+
+/// 直接入口：坏档 + `process_message` → 拒绝本轮，模型/工具 0 调用、
+/// 无假回复，错误进 `BackendEvent::Error`。
+#[tokio::test]
+async fn corrupt_session_load_rejects_turn_before_any_model_or_tool_call() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let mut tools = crate::tool::ToolRegistry::new();
+    tools.register(Arc::new(CountingTool(Arc::clone(&tool_calls))));
+    let agent = Agent::new(
+        Arc::new(MockProvider {
+            calls: Arc::clone(&calls),
+            reply: "不应出现的回复".into(),
+        }),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(InstanceRegistry::new()),
+    );
+
+    let path = corrupt_session_path("turn-corrupt");
+    agent.set_session_persist_path(&path);
+    let (bridge, handle) = crate::create_bridge();
+    let bridge = Arc::new(bridge);
+    agent.attach(Arc::new(handle));
+
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "local user".into(), None);
+    let error = agent
+        .process_message(&session, "你好")
+        .await
+        .expect_err("坏档必须拒绝本轮");
+    assert!(error.to_string().contains("加载失败"), "{error}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "LLM 调用必须为 0");
+    assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "工具调用必须为 0");
+    assert!(
+        session.history.lock().is_empty(),
+        "不能 append 任何假回复 / 假历史"
+    );
+
+    let errors = {
+        let mut rx = bridge.event_rx.lock().await;
+        let mut errors = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let BackendEvent::Error { message, .. } = event {
+                errors.push(message);
+            }
+        }
+        errors
+    };
+    assert!(
+        errors.iter().any(|message| message.contains("加载失败")),
+        "错误必须对前端可见: {errors:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 命令入口：坏档时 `SendMessage` 必须拒绝并可见报错，不创建会话、不跑模型。
+#[tokio::test]
+async fn send_message_on_corrupt_session_store_is_refused_visibly() {
+    use agent_module_management::protocol::BackendCommand;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::clone(&calls),
+        reply: "不应出现的回复".into(),
+    })));
+    agent.set_team_id(Some("alice".into()));
+    let path = corrupt_session_path("send-corrupt");
+    agent.set_session_persist_path(&path);
+
+    let events: Arc<std::sync::Mutex<Vec<BackendEvent>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&events);
+    agent.attach_event_sink(Arc::new(move |event: BackendEvent| {
+        sink.lock().expect("events poisoned").push(event);
+    }));
+
+    agent
+        .apply_command(BackendCommand::SendMessage {
+            session_id: "local:tui::local_user".into(),
+            content: "你好".into(),
+            images: Vec::new(),
+            files: Vec::new(),
+            team_id: Some("alice".into()),
+        })
+        .await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "LLM 调用必须为 0");
+    assert!(
+        agent.trunk.history_for("local:tui::local_user").is_none(),
+        "拒绝必须发生在建会话/写历史之前"
+    );
+    let errors: Vec<String> = events
+        .lock()
+        .expect("events poisoned")
+        .iter()
+        .filter_map(|event| match event {
+            BackendEvent::Error { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errors.iter().any(|message| message.contains("已拒绝发送")),
+        "错误必须可见: {errors:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 旁路：绕过 `process_message` 直接走 `record_incoming_and_snapshot` /
+/// `process_recorded_message`，坏档同样必须拒绝——模型/工具 0 调用、
+/// 不 append 假历史/假回复。
+#[tokio::test]
+async fn corrupt_session_load_rejects_recorded_message_bypass() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::clone(&calls),
+        reply: "不应出现的回复".into(),
+    }));
+    let path = corrupt_session_path("recorded-corrupt");
+    agent.set_session_persist_path(&path);
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "local user".into(), None);
+
+    let error = agent
+        .record_incoming_and_snapshot(&session, "你好")
+        .await
+        .expect_err("坏档必须拒绝记录入站事件");
+    assert!(error.contains("不是合法会话文档"), "{error}");
+    assert!(session.history.lock().is_empty(), "拒绝必须发生在写入之前");
+
+    let error = agent
+        .process_recorded_message(
+            &session,
+            "你好",
+            Vec::new(),
+            tokio_util::sync::CancellationToken::new(),
+            "branch-bypass",
+        )
+        .await
+        .expect_err("坏档必须拒绝旁路 turn");
+    assert!(error.to_string().contains("不是合法会话文档"), "{error}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "LLM 调用必须为 0");
+    assert!(
+        session.history.lock().is_empty(),
+        "不能 append 任何假回复 / 假历史"
+    );
+    let _ = std::fs::remove_file(&path);
 }

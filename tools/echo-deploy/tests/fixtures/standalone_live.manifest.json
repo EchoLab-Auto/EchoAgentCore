@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "description": "Opt-in live Core+Panel standalone user-systemd acceptance fixture. Executed by tests/standalone_live.rs; it is a test plan/expectation manifest, not a release manifest.",
+  "opt_in_env": "ECHO_DEPLOY_RUN_STANDALONE_LIVE",
+  "core_root": "/home/evence/.local/share/echo-agent-core/source",
+  "core_binary": "/home/evence/.local/share/echo-agent-core/source/target/debug/echo-agent-core",
+  "core_binary_env": "ECHO_DEPLOY_STANDALONE_CORE_BINARY",
+  "panel_root": "/home/evence/.local/share/echo-agent-panel/source",
+  "panel_binary": "/home/evence/.local/share/echo-agent-panel/source/target/debug/echo-agent-panel",
+  "panel_binary_env": "ECHO_DEPLOY_STANDALONE_PANEL_BINARY",
+  "core_template": "standalone_core.toml",
+  "panel_template": "standalone_panel.toml",
+  "r1_index": "standalone_r1_index.html",
+  "r2_index": "standalone_r2_index.html",
+  "bad_panel": "standalone_bad_panel.sh",
+  "release_r1": "standalone-r1",
+  "release_r2": "standalone-r2",
+  "release_r2_bad": "standalone-r2-bad",
+  "instance_prefix": "standalone-live",
+  "management_protocol": "management-contract-1",
+  "required_modules": [
+    "echo-agent.kernel.protocol",
+    "echo-agent.loop.single"
+  ],
+  "forbidden_ports": [
+    3132,
+    3133
+  ],
+  "max_help_seconds": 60,
+  "max_startup_seconds": 120,
+  "max_transaction_seconds": 600,
+  "max_total_seconds": 1800,
+  "systemd_execution_timeout_seconds": 120
+}

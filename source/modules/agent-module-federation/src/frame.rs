@@ -125,6 +125,25 @@ pub struct NodeCaps {
     /// 提升版本号会把所有旧节点拒之门外（版本是精确匹配），代价远大于收益。
     #[serde(default)]
     pub panel_ready: bool,
+    /// 可远程调用工具的**完整定义**（名 + 描述 + 参数 schema），2026-11。
+    ///
+    /// 与 `tools` 同一个真源（工具自己的 `remote_capable()` 声明），但带上
+    /// schema：大脑侧注册 `<peer>__<tool>` 时直接用对端通告，不再"复制本机
+    /// 同名工具的 schema 猜参数"（两边模块版本不同就会猜错，模型按错的
+    /// schema 传参、对端必然失败）。
+    ///
+    /// ## 兼容（不提升协议版本）
+    ///
+    /// - 旧节点**不发**本字段 → `serde(default)` 得空表。大脑侧**不猜**
+    ///   schema：不自动注册 `<peer>__<tool>` 代理（并记 warn），但仍可经
+    ///   `node://<peer>/…` 显式调用；旧节点本身完全不受影响；
+    /// - 非空定义表里缺某个工具（或定义缺 `parameters`）→ 跳过该工具，
+    ///   不用本机同名 schema 补、也不伪造空 object；
+    /// - 新节点发给旧节点 → 未知字段被 serde 忽略（无 `deny_unknown_fields`）；
+    /// - `tools` 仍是**准入名单**（策略与候选集照旧按它算），本字段只补
+    ///   schema，不改变谁能被调用。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_definitions: Vec<echo_defs::tool::ToolDefinition>,
 }
 
 /// 工具调用请求。`args` 为该工具本机 schema 的 JSON。
@@ -416,6 +435,7 @@ mod tests {
                 workspaces: vec!["/srv/proj".into()],
                 active_turns: 0,
                 panel_ready: true,
+                tool_definitions: Vec::new(),
             },
             advertise: Some("ws://10.0.0.5:3133".into()),
         };
@@ -424,6 +444,54 @@ mod tests {
         assert!(text.contains("advertise"));
         let back: FedFrame = serde_json::from_str(&text).unwrap();
         assert_eq!(back, frame);
+    }
+
+    /// 兼容（2026-11）：**旧节点不发 `tool_definitions`**，必须照常解析；
+    /// 新节点发定义时能被读回；空定义不写上线（不放大握手帧）。
+    #[test]
+    fn node_caps_tolerates_missing_and_present_tool_definitions() {
+        // 旧节点的 Hello：没有新字段。
+        let old_json = r#"{
+            "node_id": "node-old",
+            "protocol_version": 1,
+            "version": "0.0.9",
+            "caps": {
+                "tools": ["bash"],
+                "subagent": true,
+                "workspaces": ["/srv/proj"],
+                "active_turns": 2,
+                "panel_ready": true
+            }
+        }"#;
+        let hello: NodeHello = serde_json::from_str(old_json).expect("old node hello parses");
+        assert_eq!(hello.caps.tools, vec!["bash".to_string()]);
+        assert!(
+            hello.caps.tool_definitions.is_empty(),
+            "缺字段 = 空表，大脑侧走本机 schema 回退"
+        );
+
+        // 新节点：定义随 caps 过线，可读回。
+        let caps = NodeCaps {
+            tools: vec!["bash".into()],
+            tool_definitions: vec![echo_defs::tool::ToolDefinition {
+                name: "bash".into(),
+                description: "run a command".into(),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                })),
+            }],
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&caps).unwrap();
+        assert!(text.contains("tool_definitions"), "{text}");
+        let back: NodeCaps = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, caps);
+
+        // 空定义：序列化时省略（旧节点看到的形状与升级前一致）。
+        let empty = serde_json::to_string(&NodeCaps::default()).unwrap();
+        assert!(!empty.contains("tool_definitions"), "{empty}");
     }
 
     #[test]

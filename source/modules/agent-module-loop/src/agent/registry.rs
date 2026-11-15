@@ -73,11 +73,7 @@ pub trait TeamAdmin: Send + Sync {
     ///
     /// 启停由 `profile.enabled` 携带（2026-11 单轨）：不再另传一个 `enabled`
     /// ——两个参数并存时，"配置里写 false、实际却实例化了"这种分叉迟早出现。
-    fn save_profile(
-        self: Arc<Self>,
-        id: &str,
-        profile: TeamMember,
-    ) -> Result<(), String>;
+    fn save_profile(self: Arc<Self>, id: &str, profile: TeamMember) -> Result<(), String>;
 
     /// 删除一个人格。
     fn delete_profile(&self, id: &str) -> Result<(), String>;
@@ -95,6 +91,23 @@ pub trait TeamAdmin: Send + Sync {
 
     /// 取一个运行中的人格（含 profile）。
     fn get_running(&self, id: &str) -> Option<RunningAgent>;
+
+    /// 等这个人格**上一代**的下线收尾跑完（默认实现 = 没事可等）。
+    ///
+    /// 为什么这条在管理面上：禁用是"摘实例 + 停后台任务 + 等 turn 排空 +
+    /// 最终保存"，收尾是异步的（不能在持有注册表写锁时 await）。重新启用
+    /// 之前必须先等它，否则新一代的加载/落盘会和上一代的最终保存交错——旧代
+    /// 后落地就把新代的数据盖回旧快照（2026-11 C，"无两代写者"）。
+    ///
+    /// `Err` = 上一代**没收干净**（turn 排不干净 / 后台任务停不下来）：调用方
+    /// 必须**放弃**这次重建，不能"等不到就当它好了"（2026-11 C 复审）。
+    fn await_retirement<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        let _ = id;
+        Box::pin(async { Ok(()) })
+    }
 
     /// 哪些人格引用了某个 API profile 名。
     fn api_ref_owners(&self, name: &str) -> Vec<String>;

@@ -26,6 +26,8 @@ mod tool_dispatch;
 mod tool_exec;
 pub mod tools_host;
 mod turn;
+pub mod upgrade;
+pub mod writer_pause;
 mod workspace_commands;
 pub mod workspace_mirror;
 pub mod prodoc_tool;
@@ -67,7 +69,26 @@ pub(crate) use echo_defs::llm::TURN_CANCELLED;
 /// Graceful-shutdown drain window: how long to wait for in-flight turns to
 /// finish before force-cancelling (self-update interruption guard).
 const SHUTDOWN_DRAIN_SECS: u64 = 120;
+/// 人格退场：等**所有登记/排队 turn 退出**（含 commit / cleanup）的上限。
+///
+/// 超时 ≠ "大概跑完了"：收尾会明确返回失败——最终快照不写，retirement 保持
+/// 未完成（沿用同一把判断，禁止新一代重建）。这是"真等待"与"sleep 猜"的
+/// 分界线（2026-11 C 复审）。
+const RETIRE_TURN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// 收尾时等后台任务退出的上限（超过 → 显式 abort + join，绝不 drop 到 detach）。
+const BACKGROUND_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// abort 之后再等它退出的上限（仍不退出 = 真停不下来 → 收尾判失败）。
+const BACKGROUND_ABORT_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
+
+/// 收尾时"排不干净"的处理口径（见 [`Agent::drain_and_stop`]）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FlushMode {
+    /// 人格退场：没排干净 = 收尾未完成——不写最终快照，且调用方禁止新代重建。
+    Strict,
+    /// 进程退出：尽力而为（写完最后一次就退出，问题只记日志）。
+    BestEffort,
+}
 
 /// 循环模块 id（见 modules.rs）。只有一个模式：每会话一条时间线。
 ///
@@ -149,6 +170,63 @@ pub struct Agent {
     pub(crate) ports: groups::ModulePorts,
     /// 反向弱引用（我在哪个 manager 里 + 告警去重）。
     pub(crate) manager: groups::ManagerLink,
+    /// 本代的后台任务（周期保存 / 模块热重载）与它们的取消令牌。
+    ///
+    /// 2026-11 C：此前 `tokio::spawn` 的返回值直接丢弃、任务内部持有
+    /// `Arc<Agent>`——人格被禁用/删除后**没有**任何东西能让它停下（它自己
+    /// 也不会退出），于是旧实例永久驻留、继续周期落盘（与重建出来的新一代
+    /// 形成"两代写者"）。收进这里之后：句柄可 join、令牌可取消、退场可等。
+    pub(crate) background: BackgroundTasks,
+    /// 是否已经进入退场（禁用/删除）。置位后不再接新输入、不再起后台任务。
+    pub(crate) retired: std::sync::atomic::AtomicBool,
+}
+
+/// 一代人格实例的后台任务册（见 [`Agent::background`]）。
+pub(crate) struct BackgroundTasks {
+    /// 本代后台任务的退出令牌。与 `turns.cancel`（在飞 turn）分开：
+    /// 取消在飞 turn 不该顺手把周期保存也停掉，反之亦然。
+    cancel: tokio_util::sync::CancellationToken,
+    /// 周期保存是否已经起过（幂等闸）。
+    save_started: std::sync::atomic::AtomicBool,
+    /// 已登记的任务句柄（退场时取走并 join）。
+    tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+impl BackgroundTasks {
+    fn new() -> Self {
+        Self {
+            cancel: tokio_util::sync::CancellationToken::new(),
+            save_started: std::sync::atomic::AtomicBool::new(false),
+            tasks: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// 登记一个任务句柄（同步锁，绝不跨 await 持有）。
+    fn register(&self, handle: tokio::task::JoinHandle<()>) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(handle);
+    }
+
+    /// 取走全部句柄（之后由调用方逐个 await，锁已释放）。
+    fn take(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        std::mem::take(
+            &mut *self
+                .tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// 当前还挂在册上的任务数（测试用：验证退场后任务已收走）。
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
 }
 
 /// spawn 执行闭包类型（子任务拉起）。
@@ -275,7 +353,9 @@ impl Agent {
         let timeline_host: std::sync::Arc<crate::timeline::TrunkTimelineHost> =
             std::sync::Arc::new(crate::timeline::TrunkTimelineHost::new(trunk.clone()));
         let timeline_projector: std::sync::Arc<
-            agent_module_transcript::timeline::TimelineProjector<crate::timeline::TrunkTimelineHost>,
+            agent_module_transcript::timeline::TimelineProjector<
+                crate::timeline::TrunkTimelineHost,
+            >,
         > = std::sync::Arc::new(agent_module_transcript::timeline::TimelineProjector::new(
             timeline_host,
         ));
@@ -360,6 +440,8 @@ impl Agent {
             modules: groups::ModuleSubsystem::new(module_host),
             ports: groups::ModulePorts::unlinked(),
             manager: groups::ManagerLink::default(),
+            background: BackgroundTasks::new(),
+            retired: std::sync::atomic::AtomicBool::new(false),
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale
         // source labels are dropped; the trunk history is never evicted.
@@ -376,6 +458,10 @@ impl Agent {
     }
 
     /// Graceful shutdown: stop background tasks and flush sessions to disk.
+    ///
+    /// 进程退出路径：先让在飞 turn 收尾（自更新重启不该切断正在生成的
+    /// 回复），再统一停后台任务 + 最终保存。与人格退场（[`Self::retire`]）
+    /// 共用 [`Self::drain_and_stop`]，区别只在"排不干净时是否仍写最终快照"。
     pub async fn shutdown(&self) {
         // Graceful drain: reject new work, let in-flight turns finish so a
         // self-update restart does not cut off an ongoing reply.
@@ -384,11 +470,37 @@ impl Agent {
             session_id: None,
             message: "Core 正在重启：等待当前回复完成…".into(),
         });
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(SHUTDOWN_DRAIN_SECS);
-        while !self.turns.active_inbound_turns.is_empty() && std::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // 真等待（watch 计数），不再 sleep 轮询猜"大概跑完了吧"（2026-11 C 复审）。
+        let window = std::time::Duration::from_secs(SHUTDOWN_DRAIN_SECS);
+        if let Err(left) = self.wait_inbound_turns_idle(window).await {
+            tracing::warn!(
+                team = ?self.team_id(),
+                left,
+                "shutdown drain window elapsed; in-flight turns still running"
+            );
         }
+        // 进程要退出了：数据比"绝对不与写者竞态"更重要，排不干净也写一次
+        // （best-effort，异常都在 drain_and_stop 里告警）。
+        if let Err(error) = self.drain_and_stop(FlushMode::BestEffort).await {
+            tracing::warn!(team = ?self.team_id(), %error, "shutdown flush incomplete");
+        }
+        // 停过的一代不可再启动：迟到的 `start_background_tasks` 必须被拒绝，
+        // 否则退出过程中会凭空多出一个写者。
+        self.retired.store(true, Ordering::Release);
+    }
+
+    /// 停后台任务 → 等 turn 排空 → 最终保存（`shutdown` / `retire` 的共同收尾）。
+    ///
+    /// 顺序刻意是"先停写者、再等读者、最后写一次"：
+    /// 1. 取消在飞 turn / 后台任务的令牌；
+    /// 2. join 后台任务——**超时也 abort + join**，绝不让 JoinHandle 在 drop
+    ///    时 detach（detach = 任务继续跑，最终保存和它赛跑）；
+    /// 3. 真等所有登记/排队 turn 退出（含 commit / cleanup），不是 sleep 猜；
+    /// 4. 以上都干净（或调用方接受 best-effort）之后才写最终快照。
+    ///
+    /// 返回 `Err` = 收尾**没有**完成：`FlushMode::Strict` 下最终快照不写
+    /// （或写了但失败），由调用方保持"retirement 未完成"以禁止新一代重建。
+    async fn drain_and_stop(&self, mode: FlushMode) -> Result<(), String> {
         self.cancel_all_inbound_turns();
         if let Ok(guard) = self.ports.subagent.read() {
             if let Some(runtime) = guard.as_ref() {
@@ -396,7 +508,175 @@ impl Agent {
             }
         }
         self.turns.cancel.cancel();
-        self.trunk.save_now().await;
+        self.background.cancel.cancel();
+        let background = self.join_background_tasks().await;
+        let turns = self
+            .wait_inbound_turns_idle(RETIRE_TURN_DRAIN_TIMEOUT)
+            .await;
+        // 严格模式（人格退场）：任何一处没停干净都不写最终快照——只要还有
+        // 写者可能落在后面，写下去就是"旧快照后落地盖掉新数据"。
+        if mode == FlushMode::Strict {
+            if let Err(error) = &background {
+                return Err(format!("后台任务未停干净，跳过最终保存：{error}"));
+            }
+            if let Err(left) = turns {
+                return Err(format!("{left} 个 turn 在排空窗口内未退出，跳过最终保存"));
+            }
+        } else {
+            if let Err(error) = &background {
+                tracing::warn!(team = ?self.team_id(), %error, "background task did not stop");
+            }
+            if let Err(left) = turns {
+                tracing::warn!(team = ?self.team_id(), left, "turns still running at flush");
+            }
+        }
+        // 最终快照必须**带结果**（2026-11 跨组闭环）：旧接口 `save_now()`
+        // 无论拒写（加载失败 / 陈旧快照 / 已有档未加载）还是 IO 失败
+        // （锁/指纹/写 tmp/rename）都返回 `()`，Strict 退休会把"没写成"
+        // 当成成功并放开重建屏障——重启后这段对话却不存在。
+        match self.trunk.save_now_checked().await {
+            Ok(()) => Ok(()),
+            Err(error) if mode == FlushMode::Strict => Err(format!(
+                "最终保存失败，retirement 未完成（rebuild stays blocked）：{error}"
+            )),
+            Err(error) => {
+                // 进程退出（BestEffort）：数据比"绝对成功"更重要，已经尽力；
+                // 失败只记日志，不阻断退出。
+                tracing::warn!(
+                    team = ?self.team_id(),
+                    %error,
+                    "final session save failed at shutdown"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// join 全部已登记的后台任务（超时 → 显式 abort → 再 join）。
+    ///
+    /// `timeout(d, handle)` 在超时那一刻会**消费**句柄：直接 drop 等于 detach
+    /// ——任务继续持有 `Arc<Agent>` 跑，最终保存与它竞态。所以这里对 `&mut`
+    /// 句柄设超时，超时后 `abort()` 再等一次；仍不退出才算"真停不下来"
+    /// （返回 Err，由调用方决定不写最终快照 / 保持 retirement 未完成）。
+    async fn join_background_tasks(&self) -> Result<(), String> {
+        let handles = self.background.take();
+        let mut stuck = 0usize;
+        for mut handle in handles {
+            match tokio::time::timeout(BACKGROUND_JOIN_TIMEOUT, &mut handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) if error.is_cancelled() => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, team = ?self.team_id(), "background task ended abnormally")
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        team = ?self.team_id(),
+                        "background task did not stop in time; aborting and joining"
+                    );
+                    handle.abort();
+                    match tokio::time::timeout(BACKGROUND_ABORT_JOIN_TIMEOUT, &mut handle).await {
+                        Ok(_) => {}
+                        Err(_) => stuck += 1,
+                    }
+                }
+            }
+        }
+        if stuck == 0 {
+            Ok(())
+        } else {
+            Err(format!("{stuck} 个后台任务 abort 后仍未退出"))
+        }
+    }
+
+    // ── 生命周期（2026-11 C）───────────────────────────────────────────
+
+    /// **同步**标记"这一代开始退场"：立刻不接新输入、后台任务收到取消。
+    ///
+    /// 供 `AgentManager` 在同步上下文里调用（`set_enabled` 是同步 API，
+    /// 且当时正持有注册表写锁——绝不能在锁内 await）。真正的收尾
+    /// （join 任务 + 等 turn 排空 + 最终保存）由 [`Self::finish_retire`]
+    /// 异步完成。
+    pub fn begin_retire(&self) {
+        // 先置 retired 再取消：`try_register_inbound_turn` 的入口检查与入表
+        // 复查都以它为准，顺序反了会漏掉"刚登记、令牌还没人取消"的 turn。
+        self.retired.store(true, Ordering::Release);
+        self.turns.draining.store(true, Ordering::Release);
+        // 新的一轮入站消息在 draining 检查处被挡下；已在飞的由取消令牌停掉。
+        self.cancel_all_inbound_turns();
+        self.background.cancel.cancel();
+        self.turns.cancel.cancel();
+        tracing::info!(
+            team = ?self.team_id(),
+            "persona retiring: no new input, background tasks stopping"
+        );
+    }
+
+    /// 异步收尾：停后台任务 → 等 turn 排空 → 最终保存。幂等（可重复调用）。
+    ///
+    /// 返回 `Err` = 没排干净（见 [`Self::drain_and_stop`]）：调用方必须把这次
+    /// 退场视为**未完成**，继续禁止该 id 重建（否则新一代会和上一代的残留
+    /// 写者 / 迟到 commit 互踩）。
+    pub async fn finish_retire(&self) -> Result<(), String> {
+        let result = self.drain_and_stop(FlushMode::Strict).await;
+        match &result {
+            Ok(()) => tracing::info!(
+                team = ?self.team_id(),
+                "persona retired: background stopped, turns drained, sessions flushed"
+            ),
+            Err(error) => tracing::error!(
+                team = ?self.team_id(),
+                %error,
+                "persona retirement incomplete: final save skipped, rebuild stays blocked"
+            ),
+        }
+        result
+    }
+
+    /// 退场一步到位（进程内的"禁用/删除"）；同步 + 异步两段合起来。
+    ///
+    /// 失败只记日志：调用点通常是进程收尾，已无补救动作（`finish_retire` 里
+    /// 已经 error 级记录）。需要感知结果的调用方直接用 `begin/finish` 两段。
+    pub async fn retire(&self) {
+        self.begin_retire();
+        let _ = self.finish_retire().await;
+    }
+
+    /// 是否已进入退场（禁用/删除/已 shutdown 之后不再接受任何新工作）。
+    pub fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+
+    /// 启动本代人格的**全部**后台任务（周期保存 + 模块热重载）。
+    ///
+    /// **唯一启动入口，且必须在"最终配置"之后调用**：构造
+    /// （`RunningAgent::bound`）只负责把实例接起来，不替组合根决定"配置齐了
+    /// 没有"。启动期由组合根在 `apply_capabilities` + `set_loop_runner` 之后
+    /// 调用；运行期重建由 `process_commands` 在同样的"应用能力之后"调用
+    /// （2026-11 C 复审）。
+    ///
+    /// **停止状态不可重启**：已退场的一代直接拒绝——退场后还有迟到路径来
+    /// 启动任务，等于给最终保存再造一个写者。
+    pub fn start_background_tasks(self: &Arc<Self>) {
+        if self.is_retired() {
+            tracing::warn!(
+                team = ?self.team_id(),
+                "refusing to start background tasks on a retired persona"
+            );
+            return;
+        }
+        self.start_session_save_task();
+        let agent = Arc::clone(self);
+        // 模块热重载要先读配置（async）；起它不需要阻塞调用方。
+        // **句柄在拉起处就登记**：让模块重载任务自己登记的话，"还在读配置"
+        // 的那一小段不在册——退场 `take()` 会漏 join，它随后可能挂载模块。
+        let handle = tokio::spawn(async move { agent.run_module_reload_task().await });
+        self.background.register(handle);
+    }
+
+    /// 已在册的后台任务数（测试用）。
+    #[cfg(test)]
+    pub(crate) fn background_task_count(&self) -> usize {
+        self.background.len()
     }
 
     /// Set the TOML config file that `[agent]` changes are persisted to.
@@ -500,14 +780,49 @@ impl Agent {
 
     /// Spawn a periodic session save task.
     pub fn start_session_save_task(self: &Arc<Self>) {
+        // 已退场的一代绝不再起写者（否则禁用后又被某个迟到路径启动）。
+        // 检查放在**幂等闸之前**：退场后的一次拒绝不该把 `save_started`
+        // 永久占住（否则"检查通过 → 恰好退场"那条竞态会顺带把闸门关上）。
+        if self.is_retired() {
+            tracing::warn!(
+                team = ?self.team_id(),
+                "refusing to start session save task on a retired persona"
+            );
+            return;
+        }
+        // 幂等（2026-11 C）：重复调用不会再起第二个写者。
+        if self
+            .background
+            .save_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            tracing::debug!(team = ?self.team_id(), "session save task already running");
+            return;
+        }
         let agent = Arc::clone(self);
-        let cancel = self.turns.cancel.clone();
-        tokio::spawn(async move {
+        // 本代后台任务的**独立**令牌（与在飞 turn 的取消分开）。
+        let cancel = self.background.cancel.clone();
+        let handle = tokio::spawn(async move {
+            // 拉起与退场撞车时（令牌已取消）：一次都不写，避免与最终保存
+            // 抢同一份快照。
+            if cancel.is_cancelled() || agent.is_retired() {
+                return;
+            }
+            // 本轮写操作的共享读锁（升级 pause 拿写锁）。只在本轮 tick 内持有，
+            // 绝不跨空闲持有——否则升级永远等不到 writer pause。
+            let writers = Arc::clone(&agent.turns.upgrade_writers);
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             let mut ticks: u64 = 0;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
+                        // 等读锁也可能被 pause 挡住：同时等取消令牌，退场时能退出。
+                        // guard 持有到本轮 save + probe（含可能的 emit）全部结束。
+                        let _writers = tokio::select! {
+                            guard = writers.read() => guard,
+                            _ = cancel.cancelled() => break,
+                        };
                         agent.trunk.maybe_save().await;
                         // 时间线探针（2026-10）：每 10 分钟采样一次时间线窗口
                         // 状态，供"面板历史无声消失"类事故定位——见
@@ -521,6 +836,7 @@ impl Agent {
                 }
             }
         });
+        self.background.register(handle);
     }
 
     /// 热重载技能：合并发现「出厂层（skills_dirs）+ 用户层（skills_dir，
@@ -1255,7 +1571,9 @@ impl Agent {
     }
 
     /// 本 agent 的会话级覆盖（自己的内存表）。
-    pub fn session_api_overrides(&self) -> Vec<agent_module_management::protocol::SessionApiOverrideEntry> {
+    pub fn session_api_overrides(
+        &self,
+    ) -> Vec<agent_module_management::protocol::SessionApiOverrideEntry> {
         self.model.session_api.snapshot()
     }
 

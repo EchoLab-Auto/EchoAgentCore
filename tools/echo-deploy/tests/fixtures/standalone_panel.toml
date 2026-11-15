@@ -1,0 +1,29 @@
+# Minimal isolated Panel configuration for tests/standalone_live.rs.
+#
+# Rendered into the test temp tree with a random loopback port. The real
+# rendered launcher overrides the static directory with the selected release's
+# web/ directory, so `static_dir` below is only a harmless placeholder.
+#
+# No access token, no Panel federation key, no real Core/API credentials, and
+# no real user data or media directory is read.
+
+[logging]
+level = "info"
+format = "text"
+log_file = ""
+
+[server]
+bind_address = "127.0.0.1:@PANEL_PORT@"
+static_dir = "@TMP_ROOT@/web-placeholder"
+media_dir = "@TMP_ROOT@/media"
+media_cache_dir = "@TMP_ROOT@/media-cache"
+access_token = ""
+require_token = false
+
+[core]
+connect_url = "ws://127.0.0.1:@MANAGEMENT_PORT@"
+access_token = ""
+
+[federation]
+panel_key = ""
+discover = false

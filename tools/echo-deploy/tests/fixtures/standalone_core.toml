@@ -1,0 +1,41 @@
+# Minimal isolated Core configuration for tests/standalone_live.rs.
+#
+# The test renders @TMP_ROOT@ and @MANAGEMENT_PORT@ into a fresh private
+# temporary tree and starts the real Core through the real rendered launcher
+# unit. This file is a template only: it is never read as, copied from, or
+# merged with a real Core config, and it contains no credentials.
+#
+# - no agent personas / teams: [agent.teams.*] is deliberately absent
+# - QQ disabled: [adapters.qq] enabled = false
+# - federation disabled: explicit listen = "" means no inbound listener
+# - provider points at 127.0.0.1:9 with an empty key: no turn is ever started
+# - all discovered/writable paths are inside the test temp root
+
+[logging]
+level = "info"
+format = "text"
+log_file = ""
+
+[agent]
+provider = "deepseek"
+model = "deepseek-v4-flash"
+base_url = "http://127.0.0.1:9"
+api_key = ""
+skills_dir = "@TMP_ROOT@/skills"
+skills_dirs = []
+modules_dir = "@TMP_ROOT@/modules"
+
+[modules.system_prompt]
+text = ""
+
+[core]
+management_address = "127.0.0.1:@MANAGEMENT_PORT@"
+management_access_token = ""
+
+[federation]
+enabled = false
+listen = ""
+advertise = ""
+
+[adapters.qq]
+enabled = false

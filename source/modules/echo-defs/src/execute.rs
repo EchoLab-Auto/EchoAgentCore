@@ -429,6 +429,7 @@ mod tests {
             session_id: "s1".into(),
             branch_id: "b1".into(),
             team_id: None,
+            peer: None,
             cancel: None,
         }
     }
@@ -593,6 +594,7 @@ mod tests {
             session_id: "sess-42".into(),
             branch_id: "branch-7".into(),
             team_id: Some("alix".into()),
+            peer: None,
             cancel: None,
         };
         let result = ex

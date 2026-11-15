@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "description": "Opt-in live Core control-socket isolation smoke fixture. Executed by tests/core_live.rs; it is a test plan/expectation manifest, not a release manifest.",
+  "opt_in_env": "ECHO_DEPLOY_RUN_CORE_LIVE",
+  "core_binary_env": "ECHO_DEPLOY_CORE_BINARY",
+  "core_root": "/home/evence/.local/share/echo-agent-core/source",
+  "core_binary": "/home/evence/.local/share/echo-agent-core/source/target/debug/echo-agent-core",
+  "config_template": "core_live.toml",
+  "release_id": "core-live-smoke",
+  "management_host": "127.0.0.1",
+  "provider_url": "http://127.0.0.1:9",
+  "transaction_prefix": "core-live",
+  "expected_phases": {
+    "status_initial": "idle",
+    "prepare": "prepared",
+    "status_prepared": "prepared",
+    "cancel": "idle",
+    "status_cancelled": "idle",
+    "status_final": "idle"
+  },
+  "writer_scope_covered": [
+    "management_command_writes",
+    "in_flight_turns",
+    "periodic_session_save",
+    "module_reload_watcher"
+  ],
+  "writer_scope_not_covered": [
+    "user_arbitrary_subprocesses"
+  ],
+  "prepare_requires": [
+    "external_stop_user_arbitrary_subprocesses"
+  ],
+  "ready_requires": [
+    "external_release_identity_check"
+  ],
+  "required_modules": [
+    "echo-agent.kernel.protocol",
+    "echo-agent.loop.single"
+  ],
+  "forbidden_ports": [
+    3132,
+    3133
+  ],
+  "max_help_seconds": 30,
+  "max_startup_seconds": 60,
+  "max_control_seconds": 30,
+  "max_shutdown_seconds": 20,
+  "max_total_seconds": 180,
+  "require_ready": true,
+  "require_systemd_scope": true,
+  "module_evidence": "if_present"
+}

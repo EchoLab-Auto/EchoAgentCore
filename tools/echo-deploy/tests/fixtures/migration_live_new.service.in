@@ -1,0 +1,7 @@
+[Unit]
+Description=migration-live new unit @INSTANCE@ (@ROLE@); migration only enables it, never starts it
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+[Install]
+WantedBy=default.target

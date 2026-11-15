@@ -83,12 +83,17 @@ impl Target {
     /// 会话写命令（清理 / 归档 / 压缩）全都要读改事件日志：未加载时动手改的
     /// 只是一份空内存，而落盘又被"文件已存在且没读过"的守卫挡住——命令会
     /// 报成功却什么都没发生。所以三个命令统一走这里。
+    ///
+    /// 跨组闭环（2026-11）：用 `ensure_loaded_or_err`——加载失败（坏档 /
+    /// 读失败）必须把原因**交还调用方**（发 `BackendEvent::Error`），
+    /// 不能"命令报成功、实际什么都没写"。失败态是负缓存，不会每轮重试，
+    /// 管理修复出口（`retry_failed_load` / `recover_failed_load`）不受影响。
     async fn resolve_loaded(
         host: &Arc<dyn SessionCommandHost>,
         team_id: Option<String>,
     ) -> Result<Self, String> {
         let target = Self::resolve(host, team_id)?;
-        target.trunk.ensure_loaded().await;
+        target.trunk.ensure_loaded_or_err().await?;
         Ok(target)
     }
 
@@ -161,8 +166,8 @@ impl SessionCommandHandler {
                     Ok(target) => target,
                     Err(message) => {
                         self.host.emit(BackendEvent::Error {
-                            session_id: None,
-                            message,
+                            session_id: Some(session.clone()),
+                            message: format!("会话历史不可用，已拒绝清理：{message}"),
                         });
                         return Ok(());
                     }
@@ -187,8 +192,8 @@ impl SessionCommandHandler {
                     Ok(target) => target,
                     Err(message) => {
                         self.host.emit(BackendEvent::Error {
-                            session_id: None,
-                            message,
+                            session_id: Some(session.clone()),
+                            message: format!("会话历史不可用，已拒绝归档：{message}"),
                         });
                         return Ok(());
                     }
@@ -220,17 +225,23 @@ impl SessionCommandHandler {
                 let session = require_session(session_id, "压缩")?;
                 // 与旧实现同一区间：默认保留 40 条，硬边界 10..=500。
                 let keep = keep_recent.unwrap_or(40).clamp(10, 500);
+                // 压缩同样是**会话写操作**：目标必须先加载。加载失败时
+                // 错误可见、不进入压缩（压空内存 / 写不出去都会"报成功却
+                // 什么都没发生"）。team 解析也在这里做（失败回 `team 不存在`）。
+                let target = match Target::resolve_loaded(&self.host, team_id.clone()).await {
+                    Ok(target) => target,
+                    Err(message) => {
+                        self.host.emit(BackendEvent::Error {
+                            session_id: Some(session.clone()),
+                            message: format!("会话历史不可用，已拒绝压缩：{message}"),
+                        });
+                        return Ok(());
+                    }
+                };
                 // 压缩要 provider + 策略模块 → 委托宿主（见模块注释的表）。
-                // team 解析也在宿主里做：失败要回 `team {id} 不存在`。
-                let result = self.host.compact(team_id.clone(), &session, keep).await;
+                let result = self.host.compact(team_id, &session, keep).await;
                 match result {
                     Ok(message) => {
-                        let target = match Target::resolve_loaded(&self.host, team_id).await {
-                            Ok(target) => target,
-                            // 压缩已经成功、宿主也已发过终态；这里只是没法
-                            // 重发时间线（拿不到 trunk）。不当成失败。
-                            Err(_) => return Ok(()),
-                        };
                         self.after_write(&target, &session, message).await;
                     }
                     Err(message) => {
@@ -322,13 +333,29 @@ mod tests {
     use std::sync::Mutex;
 
     /// 记录调用的假宿主。
-    #[derive(Default)]
+    ///
+    /// `trunk` 是**同一个** Arc（不再是每次新造）：坏档用例要预先给 store
+    /// 设好持久化路径并触发 Failed，命令必须打在同一份 store 上才看得见。
     struct FakeHost {
         events: Mutex<Vec<BackendEvent>>,
         cleared_sessions: Mutex<Vec<String>>,
         snapshots: Mutex<Vec<String>>,
         compact_calls: Mutex<Vec<(Option<String>, String, usize)>>,
         compact_result: Mutex<Option<Result<String, String>>>,
+        trunk: Arc<TrunkStore>,
+    }
+
+    impl Default for FakeHost {
+        fn default() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+                cleared_sessions: Mutex::new(Vec::new()),
+                snapshots: Mutex::new(Vec::new()),
+                compact_calls: Mutex::new(Vec::new()),
+                compact_result: Mutex::new(None),
+                trunk: Arc::new(TrunkStore::new(1000)),
+            }
+        }
     }
 
     impl SessionCommandHost for FakeHost {
@@ -339,7 +366,7 @@ mod tests {
             None
         }
         fn trunk(&self) -> Arc<TrunkStore> {
-            Arc::new(TrunkStore::new(1000))
+            Arc::clone(&self.trunk)
         }
         fn forget_session_provider(&self, session_id: &str) {
             self.cleared_sessions
@@ -377,6 +404,55 @@ mod tests {
     fn handler() -> (SessionCommandHandler, Arc<FakeHost>) {
         let host = Arc::new(FakeHost::default());
         (SessionCommandHandler::new(host.clone()), host)
+    }
+
+    /// 会话档坏掉时，写命令必须**失败可见**（Error 事件 + 不执行清理），
+    /// 不能"报成功却什么都没发生"。管理修复出口（retry/recover）不经过这里，
+    /// 不会被入口门禁停掉。
+    #[tokio::test]
+    async fn corrupt_session_file_refuses_write_command_with_visible_error() {
+        let path = std::env::temp_dir().join(format!(
+            "echo-session-cmd-corrupt-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, "{ 坏档").unwrap();
+
+        let trunk = Arc::new(TrunkStore::new(1000));
+        trunk.set_persist_path(&path);
+        let host = Arc::new(FakeHost {
+            trunk: Arc::clone(&trunk),
+            ..Default::default()
+        });
+        let handler = SessionCommandHandler::new(host.clone());
+
+        handler
+            .handle(
+                "ClearHistory",
+                serde_json::json!({ "team_id": null, "session_id": "s1" }),
+            )
+            .await
+            .expect("命令属于本域")
+            .expect("加载失败走事件回执，不把命令本身当异常");
+        assert!(
+            host.cleared_sessions.lock().unwrap().is_empty(),
+            "加载失败时不得执行清理（那会报成功却什么都没清）"
+        );
+        let events = host.events.lock().unwrap();
+        let error = events
+            .iter()
+            .find_map(|event| match event {
+                BackendEvent::Error {
+                    session_id,
+                    message,
+                } => Some((session_id.clone(), message.clone())),
+                _ => None,
+            })
+            .expect("失败必须对用户可见（Error 事件）");
+        assert_eq!(error.0.as_deref(), Some("s1"), "错误要能定位到会话");
+        assert!(error.1.contains("会话历史不可用"), "{}", error.1);
+        drop(events);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

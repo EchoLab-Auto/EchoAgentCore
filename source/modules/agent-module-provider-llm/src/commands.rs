@@ -21,8 +21,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use echo_defs::api_profile::{ReasoningEffort, ThinkingMode};
 use agent_module_management::protocol::{BackendCommand, BackendEvent};
+use echo_defs::api_profile::{ReasoningEffort, ThinkingMode};
 
 /// 本模块处理的命令名（`RenameApi` 是**进程级**命令，归组合根，不在此列）。
 pub const COMMANDS: [&str; 17] = [
@@ -47,7 +47,11 @@ pub const COMMANDS: [&str; 17] = [
     "RequestChatGptStatus",
 ];
 
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+/// 宿主接缝的返回类型：`async fn` 在 trait 对象里不可用，只能装箱。
+///
+/// 公开它是因为宿主实现者要照着写签名（`impl ProviderCommandHost for …`）：
+/// 自己拼 `Pin<Box<dyn Future<Output = ()> + Send + 'a>>` 容易写错生命周期。
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// `UpdateApiConfig` 的参数包。
 ///
@@ -114,20 +118,38 @@ pub trait ProviderCommandHost: Send + Sync {
     fn emit(&self, event: BackendEvent);
 }
 
-/// 进行中登录的两个槽。
+/// 进行中登录的两个槽（**实例级**：由持有命令域的宿主 / 模块实例持有）。
 ///
-/// **必须是进程级单例，不能挂在 `ProviderCommandHandler` 上。** 命令派发是
-/// 「一条命令 new 一个处理器」（见 `lib.rs` 的 `with_command_handler_async`），
-/// 处理器在命令返回时就 drop 了——挂在上面的槽等于每次命令都从空开始，于是：
+/// ## 为什么不是进程级
+///
+/// 这里曾是一个**进程级单例**：文件级的 `static` 槽位里塞
+/// `OnceLock<LoginSlots>`。它解决了下面那个真实的事故，代价却是
+/// **整个进程只有一份**：同一进程里的第二套宿主（第二个 Core、
+/// 测试里的隔离实例）会看到别人进行中的登录——`Submit` 把授权码投给了另一个
+/// 宿主的任务（对方的任务收到一份与自己的 `state`/`pkce` 不匹配的 code），
+/// `Cancel` 也可能取消错目标。`source/modules/core/tests/no_global_state.rs`
+/// 的 P1 棘轮把这条拦下，本结构因此改成实例级。
+///
+/// ## 为什么也不能挂在单个 handler 上
+///
+/// 命令派发是「一条命令 new 一个处理器」（见 `lib.rs` 的
+/// `with_command_handler_async`），处理器在命令返回时就 drop 了——挂在上面的
+/// 槽等于每次命令都从空开始，于是：
 ///
 /// * `StartChatGptLogin` 把投递端存进去，随处理器一起消失；
 /// * 用户粘链接时 `SubmitChatGptLoginCode` 拿到的是**另一个**空槽，只能回
 ///   「当前没有进行中的登录」——用户手里的链接本身是好的；
 /// * `CancelChatGptLogin` 同样看不到，取消不生效，1455 被占到超时为止。
 ///
-/// 单例在这里不是将就而是语义正确：一个进程只有一份 `127.0.0.1:1455`，
-/// 也就只可能有一次进行中的登录。
-struct LoginSlots {
+/// ## 所以槽的生命周期是「长于一条命令、短于一个进程」
+///
+/// 由模块实例（`lib.rs` 的 `module`）或显式注入的宿主持有，每条命令的处理器
+/// 借同一份 `Arc<LoginSlots>`。同一宿主内跨命令可见（上面的事故不复现），
+/// 不同宿主之间互不可见（门禁要的隔离）。
+///
+/// 顺带一条旧论证仍然成立：一份槽就对应一个 `127.0.0.1:1455`，所以并发登录
+/// 互斥的粒度天然是「一个宿主一次」。
+pub struct LoginSlots {
     /// 取消开关。只存发送端，登录任务拿接收端：用户在面板点取消时发信号，
     /// `select!` 让任务提前结束——**drop 掉 `PendingLogin` 会释放 1455 端口**，
     /// 所以取消是"真的放掉"。不放掉的后果很具体：用户取消后重试会撞上自己。
@@ -139,25 +161,102 @@ struct LoginSlots {
     manual: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>,
 }
 
-impl LoginSlots {
-    fn global() -> &'static Self {
-        static SLOTS: std::sync::OnceLock<LoginSlots> = std::sync::OnceLock::new();
-        SLOTS.get_or_init(|| Self {
+impl Default for LoginSlots {
+    fn default() -> Self {
+        Self {
             cancel: tokio::sync::Mutex::new(None),
             manual: tokio::sync::Mutex::new(None),
-        })
+        }
     }
 }
 
-/// 命令处理器。
+impl LoginSlots {
+    /// 一份空槽。**一个宿主一份**：同一进程里两套宿主各造各的，互不可见。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 共享句柄：宿主/模块持有它，每条命令 clone 一份给处理器。
+    pub fn shared() -> Arc<Self> {
+        Arc::new(Self::new())
+    }
+
+    /// 是否有进行中的登录（观测与测试用）。
+    pub async fn is_pending(&self) -> bool {
+        self.cancel.lock().await.is_some() || self.manual.lock().await.is_some()
+    }
+
+    /// 占用取消槽，返回登录任务要等的接收端。
+    ///
+    /// 已有进行中的登录 → `Err`（面向用户的文案，由命令面原样回给面板）。
+    /// 通道在占槽这一步就建好：哨兵方案的接收端会被立刻 drop，那时用户点
+    /// 取消会静默失败。
+    pub(crate) async fn reserve_cancel(
+        &self,
+    ) -> Result<tokio::sync::oneshot::Receiver<()>, String> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let mut slot = self.cancel.lock().await;
+        if slot.is_some() {
+            return Err("已有 ChatGPT 登录在进行中：先在浏览器完成它，或点「取消」后重试".into());
+        }
+        *slot = Some(sender);
+        Ok(receiver)
+    }
+
+    /// 登记手工提交投递端（拿到授权 URL 之后）。
+    pub(crate) async fn set_manual(&self, sender: tokio::sync::oneshot::Sender<String>) {
+        *self.manual.lock().await = Some(sender);
+    }
+
+    /// 取走手工提交投递端（用户粘了一次码）。取走即失效：一次登录只认一次。
+    pub(crate) async fn take_manual(&self) -> Option<tokio::sync::oneshot::Sender<String>> {
+        self.manual.lock().await.take()
+    }
+
+    /// 取走取消投递端（用户点了取消）。
+    pub(crate) async fn take_cancel(&self) -> Option<tokio::sync::oneshot::Sender<()>> {
+        self.cancel.lock().await.take()
+    }
+
+    /// 清空两个槽（预检失败 / 登录结束 / 被取消）。
+    ///
+    /// 不清的话下一次登录会被告知"已有登录在进行"——槽是宿主级的，
+    /// 所以这条清理也只影响本宿主。
+    pub(crate) async fn clear(&self) {
+        self.cancel.lock().await.take();
+        self.manual.lock().await.take();
+    }
+}
+
+/// 命令处理器（**一条命令一个**：它只活一次派发）。
+///
+/// 它不持有登录状态的所有权，只借宿主（模块实例）那一份 [`LoginSlots`]——
+/// 见 [`LoginSlots`] 文档里的生命周期论证。
 pub struct ProviderCommandHandler {
     host: Arc<dyn ProviderCommandHost>,
+    /// 登录槽：来自**持有它的那一层**（模块实例 / 宿主），处理器只是借用者。
+    slots: Arc<LoginSlots>,
 }
 
 impl ProviderCommandHandler {
-    /// 用宿主接缝构造处理器。
+    /// 用宿主接缝构造处理器，并**自备一份**登录槽。
+    ///
+    /// 只适合"一个处理器就是一个宿主"的场景（单命令直接派发、单测）。
+    /// 生产路径——模块的 `with_command_handler_async`，每条命令 new 一个
+    /// 处理器——必须用 [`Self::with_login_slots`] 传模块/宿主持有的那一份，
+    /// 否则"登录进行中"的状态会在命令之间丢失（真实事故）。
     pub fn new(host: Arc<dyn ProviderCommandHost>) -> Self {
-        Self { host }
+        Self::with_login_slots(host, LoginSlots::shared())
+    }
+
+    /// 用宿主接缝 + 宿主持有的登录槽构造处理器（模块接线用这个）。
+    pub fn with_login_slots(host: Arc<dyn ProviderCommandHost>, slots: Arc<LoginSlots>) -> Self {
+        Self { host, slots }
+    }
+
+    /// 本处理器借用的登录槽（宿主观测 / 测试用）。
+    pub fn login_slots(&self) -> &Arc<LoginSlots> {
+        &self.slots
     }
 
     /// 处理一条命令；`None` = 不是本域。
@@ -274,8 +373,10 @@ impl ProviderCommandHandler {
             }
             BackendCommand::StartChatGptLogin => self.start_chatgpt_login().await,
             BackendCommand::SubmitChatGptLoginCode { input } => {
-                let mut slot = LoginSlots::global().manual.lock().await;
-                match slot.take() {
+                // 槽在**宿主持有的那份** `LoginSlots` 里（不是进程级、也不是
+                // 处理器自带）：上一条命令 `StartChatGptLogin` 存进来的投递端，
+                // 在这里仍然可见。
+                match self.slots.take_manual().await {
                     Some(sender) => {
                         // 接收端已 drop = 登录任务已经结束（超时/取消/别处成功）。
                         // 这不是错误，但要说清楚——用户以为粘了就能成。
@@ -285,8 +386,7 @@ impl ProviderCommandHandler {
                     }
                     None => {
                         let error =
-                            "当前没有进行中的登录：先点「登录 ChatGPT」拿到授权链接"
-                                .to_string();
+                            "当前没有进行中的登录：先点「登录 ChatGPT」拿到授权链接".to_string();
                         // 槽空 = 这次 pending 已经失效（Core 重启过 / 登录自己
                         // 结束了）。前端**只靠 ChatGptLoginResult 清 pending**，
                         // 不发它，界面会一直停在"等待授权…"，用户就对着一个
@@ -301,8 +401,8 @@ impl ProviderCommandHandler {
                 }
             }
             BackendCommand::CancelChatGptLogin => {
-                let mut slot = LoginSlots::global().cancel.lock().await;
-                match slot.take() {
+                // 与 submit 同一份宿主持有的槽：同宿主内跨命令可见，别的宿主看不到。
+                match self.slots.take_cancel().await {
                     Some(cancel) => {
                         // 发送失败 = 任务已经自己结束了（成功 / 超时），
                         // 这不算错误：用户点取消时它恰好完成，是正常竞态。
@@ -328,6 +428,7 @@ impl ProviderCommandHandler {
             )),
         }
     }
+
     /// 发起一次登录：预检 → 绑端口 → 回推 URL → 后台等回调。
     ///
     /// **立刻返回**：`handle` 不该挂 5 分钟。URL 一拿到就回推，等回调的部分
@@ -338,22 +439,15 @@ impl ProviderCommandHandler {
         // 先占槽再干活：两个并发请求不能都通过"槽是空的"检查。
         // 通道在这一步就建好（而不是先放哨兵再换）：哨兵的接收端会被立刻
         // drop，那时取消请求会静默失败。
-        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-        {
-            let mut slot = LoginSlots::global().cancel.lock().await;
-            if slot.is_some() {
-                return Err(
-                    "已有 ChatGPT 登录在进行中：先在浏览器完成它，或点「取消」后重试".into(),
-                );
-            }
-            *slot = Some(cancel_tx);
-        }
+        //
+        // 槽是**宿主持有的那一份**（`self.slots`）：占住它对同一宿主的后续
+        // 命令可见，对别的宿主不可见——进程级单例的病就在后一半。
+        let cancel_rx = self.slots.reserve_cancel().await?;
 
         // 预检在绑端口**之前**：地区被拒时没必要占住 1455（codex CLI 也用
         // 这个端口）。失败也要清槽，否则接下来永远"已有登录在进行"。
         let fail = |error: String| async move {
-            LoginSlots::global().cancel.lock().await.take();
-            LoginSlots::global().manual.lock().await.take();
+            self.slots.clear().await;
             self.host.emit(BackendEvent::ChatGptLoginResult {
                 ok: false,
                 email: String::new(),
@@ -381,15 +475,11 @@ impl ProviderCommandHandler {
         // 手工提交授权码的通道：局域网 / 远程部署时**唯一**能走通的路
         // （回调固定打浏览器那台的 localhost:1455，Core 收不到）。
         let (manual_tx, manual_rx) = tokio::sync::oneshot::channel();
-        {
-            let mut slot = LoginSlots::global().manual.lock().await;
-            *slot = Some(manual_tx);
-        }
+        self.slots.set_manual(manual_tx).await;
 
         let host = Arc::clone(&self.host);
-        // 单例的 `&'static` 引用可以直接 move 进任务（Copy），不需要 Arc。
-        let slot = &LoginSlots::global().cancel;
-        let manual_slot = &LoginSlots::global().manual;
+        // 槽归宿主所有：把那份 `Arc` 移进任务（而不是借用进程级单例）。
+        let slots = Arc::clone(&self.slots);
         tokio::spawn(async move {
             // 两条输入竞争：HTTP 回调（本机浏览器）与手工粘贴（远程浏览器）。
             // 取消单独 select 一层——它要**立刻**释放端口：drop 掉 pending 会把
@@ -399,8 +489,7 @@ impl ProviderCommandHandler {
                 _ = cancel_rx => Err("登录已取消".to_string()),
             };
             // 无论成败都清两个槽：不清的话下一次登录会被告知"已有登录在进行"。
-            slot.lock().await.take();
-            manual_slot.lock().await.take();
+            slots.clear().await;
             match outcome {
                 Ok(auth) => host.emit(BackendEvent::ChatGptLoginResult {
                     ok: true,
@@ -516,21 +605,21 @@ mod tests {
         }
     }
 
+    /// 造一个处理器 + 它自备的那份槽（`ProviderCommandHandler::new` 的语义：
+    /// 一个处理器就是一个宿主）。
     fn handler() -> (ProviderCommandHandler, Arc<FakeHost>) {
         let host = Arc::new(FakeHost::default());
         (ProviderCommandHandler::new(host.clone()), host)
     }
 
-    /// 登录槽是**进程级**的，而 cargo 并行跑测试——涉及它的用例必须串行，
-    /// 否则一条用例塞进去的槽会被另一条看到，测试随机变红。
-    static LOGIN_TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-    /// 拿到串行锁并清空两个槽（每条涉及登录的用例入口都调它）。
-    async fn lock_login_slots() -> tokio::sync::MutexGuard<'static, ()> {
-        let guard = LOGIN_TEST_GUARD.lock().await;
-        *LoginSlots::global().cancel.lock().await = None;
-        *LoginSlots::global().manual.lock().await = None;
-        guard
+    /// 造一个**共享宿主持有槽**的处理器——这正是 `lib.rs` 的接线方式
+    /// （每条命令 new 一个处理器，但都借同一份 `Arc<LoginSlots>`）。
+    fn handler_with(slots: &Arc<LoginSlots>) -> (ProviderCommandHandler, Arc<FakeHost>) {
+        let host = Arc::new(FakeHost::default());
+        (
+            ProviderCommandHandler::with_login_slots(host.clone(), Arc::clone(slots)),
+            host,
+        )
     }
 
     #[tokio::test]
@@ -674,7 +763,6 @@ mod tests {
     /// 没有进行中的登录时提交授权码，要明确报错（用户以为粘了就能成）。
     #[tokio::test]
     async fn submit_code_without_login_is_an_error() {
-        let _guard = lock_login_slots().await;
         let (h, host) = handler();
         let out = h
             .handle(
@@ -699,7 +787,6 @@ mod tests {
     /// 让面板显示"已取消"而端口仍被别的进程占着，用户点了没反应。
     #[tokio::test]
     async fn cancel_without_login_is_an_error() {
-        let _guard = lock_login_slots().await;
         let (h, host) = handler();
         let out = h
             .handle("CancelChatGptLogin", serde_json::Value::Null)
@@ -715,51 +802,121 @@ mod tests {
         );
     }
 
-
-
     /// 命令派发是「一条命令 new 一个处理器」（`lib.rs` 的
-    /// `with_command_handler_async`）。登录槽若挂在处理器上，`StartChatGptLogin`
-    /// 存的投递端会随那条命令的处理器一起 drop，用户粘链接时**新建的处理器**
-    /// 只能看到空槽——于是明明手里有链接，却被告知"当前没有进行中的登录"。
+    /// `with_command_handler_async`）。**槽必须活得比一条命令长**：模块（或
+    /// 宿主）持有 `Arc<LoginSlots>`，每个处理器用 `with_login_slots` 借同一份。
+    /// 于是 `StartChatGptLogin` 存下的投递端，在用户粘链接时的**另一条命令**
+    /// 里仍然可见。
     ///
     /// 这是真实事故（局域网登录时用户复制了地址栏链接，提交必失败），
-    /// 所以这里用**两个独立实例**验证，而不是一个实例自说自话。
+    /// 所以这里用**两条独立命令各自的处理器**验证，而不是一个实例自说自话。
     #[tokio::test]
-    async fn manual_code_slot_is_visible_to_another_handler_instance() {
-        let _guard = lock_login_slots().await;
+    async fn manual_code_slot_is_shared_across_commands_of_one_host() {
+        let slots = LoginSlots::shared();
 
-        // 实例 A = StartChatGptLogin 那条命令。真实路径要跑网络预检和绑 1455，
+        // 第一条命令 = `StartChatGptLogin`。真实路径要跑网络预检和绑 1455，
         // 不适合单测；这里直接放投递端，等价于它做完的那一步。
         let (tx, rx) = tokio::sync::oneshot::channel();
-        *LoginSlots::global().manual.lock().await = Some(tx);
-        drop(handler()); // A 的命令已经返回，处理器已被丢弃
+        slots.set_manual(tx).await;
+        drop(handler_with(&slots)); // 这条命令已经返回，处理器已被丢弃
 
-        // 实例 B = 用户粘链接时的那条命令，**全新构造**。
-        let (h, _host) = handler();
+        // 第二条命令 = 用户粘链接时的那条，**全新构造**的处理器，但同一个宿主。
+        let (h, _host) = handler_with(&slots);
         let url = "http://localhost:1455/auth/callback?code=abc&state=xyz";
         let out = h
-            .handle("SubmitChatGptLoginCode", serde_json::json!({ "input": url }))
+            .handle(
+                "SubmitChatGptLoginCode",
+                serde_json::json!({ "input": url }),
+            )
             .await
             .expect("应被本域认领");
-        assert!(out.is_ok(), "跨实例提交应成功，实际: {out:?}");
+        assert!(out.is_ok(), "跨命令提交应成功，实际: {out:?}");
         assert_eq!(rx.await.expect("登录任务应收到用户粘的链接"), url);
     }
 
     /// 取消同理：看不到槽就意味着"取消按钮点了没反应"，而 1455 一直被占着。
     #[tokio::test]
-    async fn cancel_slot_is_visible_to_another_handler_instance() {
-        let _guard = lock_login_slots().await;
+    async fn cancel_slot_is_shared_across_commands_of_one_host() {
+        let slots = LoginSlots::shared();
 
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        *LoginSlots::global().cancel.lock().await = Some(tx);
-        drop(handler());
+        let cancel_rx = slots.reserve_cancel().await.expect("首个登录应能占槽");
+        drop(handler_with(&slots));
 
-        let (h, _host) = handler();
+        let (h, _host) = handler_with(&slots);
         let out = h
             .handle("CancelChatGptLogin", serde_json::Value::Null)
             .await
             .expect("应被本域认领");
-        assert!(out.is_ok(), "跨实例取消应成功，实际: {out:?}");
-        assert!(rx.await.is_ok(), "登录任务应收到取消信号");
+        assert!(out.is_ok(), "跨命令取消应成功，实际: {out:?}");
+        assert!(cancel_rx.await.is_ok(), "登录任务应收到取消信号");
+    }
+
+    /// **两个独立宿主互不干扰**（P1 的实例级口径）。
+    ///
+    /// 宿主 A 有进行中的登录时，宿主 B 的 Submit / Cancel 必须各自看到
+    /// "没有进行中的登录"，而且**不许**把 A 的投递端取走——否则 A 的登录
+    /// 永远收不到码（这正是进程级 `OnceLock` 单例的病：同一进程里第二套宿主
+    /// 会串到第一套的登录上）。
+    #[tokio::test]
+    async fn two_independent_hosts_do_not_share_login_slots() {
+        // 宿主 A / B 各持一份槽——生产里就是两个模块实例（两个 Core / 两套宿主）。
+        let slots_a = LoginSlots::shared();
+        let slots_b = LoginSlots::shared();
+
+        // A：登录进行中（取消槽被占 + 手工投递端已登记）。
+        let cancel_rx_a = slots_a
+            .reserve_cancel()
+            .await
+            .expect("A 的首个登录应能占槽");
+        let (manual_tx, manual_rx) = tokio::sync::oneshot::channel();
+        slots_a.set_manual(manual_tx).await;
+
+        // B：完全看不到 A 的状态。
+        assert!(!slots_b.is_pending().await, "B 不该认为有登录在进行");
+        let (h_b, host_b) = handler_with(&slots_b);
+        let out = h_b
+            .handle(
+                "SubmitChatGptLoginCode",
+                serde_json::json!({ "input": "http://localhost:1455/auth/callback?code=b&state=b" }),
+            )
+            .await
+            .expect("应被本域认领");
+        assert!(out.is_err(), "B 没有登录在跑，不能因为 A 有就成功");
+        assert!(out.unwrap_err().contains("没有进行中的登录"));
+        assert!(
+            host_b
+                .events()
+                .iter()
+                .any(|e| matches!(e, BackendEvent::ChatGptLoginResult { ok: false, .. })),
+            "B 的无登录提交同样要广播 ChatGptLoginResult（自愈）"
+        );
+        let out = h_b
+            .handle("CancelChatGptLogin", serde_json::Value::Null)
+            .await
+            .expect("应被本域认领");
+        assert!(out.is_err(), "B 没有登录在跑，取消必须报错");
+
+        // A 的两条通道都没被 B 动过：A 自己的提交能到、取消端还在。
+        let (h_a, _host_a) = handler_with(&slots_a);
+        let url = "http://localhost:1455/auth/callback?code=a&state=a";
+        let out = h_a
+            .handle(
+                "SubmitChatGptLoginCode",
+                serde_json::json!({ "input": url }),
+            )
+            .await
+            .expect("应被本域认领");
+        assert!(out.is_ok(), "A 的提交应成功（投递端没被 B 取走）: {out:?}");
+        assert_eq!(manual_rx.await.expect("A 的登录任务应收到码"), url);
+        assert!(
+            slots_a.is_pending().await,
+            "A 仍在登录中（取消槽没被 B 取走）"
+        );
+        let out = h_a
+            .handle("CancelChatGptLogin", serde_json::Value::Null)
+            .await
+            .expect("应被本域认领");
+        assert!(out.is_ok(), "A 自己取消应生效: {out:?}");
+        assert!(cancel_rx_a.await.is_ok(), "A 的登录任务应收到取消信号");
     }
 }

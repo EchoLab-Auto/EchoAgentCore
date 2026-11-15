@@ -2509,7 +2509,9 @@ fn restore_timeline_renumbers_mixed_ord_strictly_increasing() {
         timeline.push(message);
     }
 
-    store.restore_timeline(timeline);
+    store
+        .restore_timeline(timeline)
+        .expect("empty timeline accepts restore");
 
     let snapshot = store.timeline_snapshot();
     let ords: Vec<u64> = snapshot.iter().map(|m| m.ord).collect();
@@ -2701,4 +2703,1055 @@ fn timeline_page_at_start_and_beyond_bounds() {
     assert_eq!(page.len(), 3);
     assert_eq!(page.last().unwrap().content, "m4");
     assert!(more);
+}
+
+// ── 数据保护：加载失败不得变成"覆盖授权"（2026-11）─────────────────────
+//
+// 事故形状（A）：`read_persist_file()` 把"没有路径 / 读失败"都压成 `None`，
+// `deserialize()` 把"非法 JSON"压成 `0`；两条路都直接把 `LoadStage` 推到
+// `Full` 并清掉 dirty。于是**一次读失败 = 下一次 append 之后整份历史被
+// 新数据覆盖**。下面这批用例锁住"区分三态 + 失败不写盘 + 可观察"。
+
+fn user_event(session: &str, content: &str) -> echo_session::SessionEvent {
+    echo_session::SessionEvent::UserMessage(echo_session::event::UserMessage {
+        session: Some(session.to_string()),
+        content: content.into(),
+        timestamp: 1700000000,
+        message_sequence: None,
+        source: None,
+        images: vec![],
+        files: vec![],
+    })
+}
+
+/// 非法 JSON：不得被当作"空档"，且**绝不覆盖**原文件；失败要可观察。
+#[tokio::test]
+async fn corrupt_document_is_never_overwritten_and_is_observable() {
+    let path = temp_sessions_path("protect-corrupt");
+    let _ = std::fs::remove_file(&path);
+    let corrupt = "{ this is not json at all";
+    std::fs::write(&path, corrupt).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    assert_eq!(store.load_from_file().await, 0);
+    assert!(
+        !store.is_loaded(),
+        "解析失败不能声明已加载（那等于给覆盖发许可）"
+    );
+    let error = store.load_error().expect("加载失败必须可观察");
+    assert!(
+        matches!(error, PersistLoadError::Invalid { .. }),
+        "应分类为格式非法: {error:?}"
+    );
+
+    // 之后有新数据要落盘：必须**保持原文件不动**，脏位保持（等人工处理）。
+    store.append_event(user_event("local:tui::local_user", "新的"));
+    store.save_now().await;
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        corrupt,
+        "非法档不得被覆盖"
+    );
+    assert!(store.is_dirty(), "没写出去就不能清脏位");
+}
+
+/// 读失败（这里是"路径是个目录"）不能被当成"没有文件"。
+#[tokio::test]
+async fn read_error_is_not_mistaken_for_a_missing_file() {
+    let path = temp_sessions_path("protect-readerror");
+    let _ = std::fs::remove_file(&path);
+    std::fs::create_dir_all(&path).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    assert_eq!(store.load_from_file().await, 0);
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+    let error = store.load_error().expect("读失败必须可观察");
+    assert!(
+        matches!(error, PersistLoadError::Read { .. }),
+        "应分类为读失败: {error:?}"
+    );
+    // 原目录原样保留。
+    assert!(path.is_dir());
+    let _ = std::fs::remove_dir_all(&path);
+}
+
+/// 真的没有文件 = 新人格：不是错误，仍然允许第一次落盘。
+#[tokio::test]
+async fn missing_file_is_not_an_error() {
+    let path = temp_sessions_path("protect-missing");
+    let _ = std::fs::remove_file(&path);
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    assert_eq!(store.load_from_file().await, 0);
+    assert!(store.load_error().is_none(), "没有文件不是错误");
+    assert!(store.is_loaded());
+
+    store.append_event(user_event("local:tui::local_user", "第一条"));
+    store.save_now().await;
+    assert!(path.exists(), "新人格第一次保存必须能写出去");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 合法空档（v6 空文档）仍按"已加载"处理——区分失败与空数据。
+#[tokio::test]
+async fn legal_empty_document_is_not_an_error() {
+    let path = temp_sessions_path("protect-empty");
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "version": 6, "header": null, "identities": [], "timeline": [], "events": []
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    assert_eq!(store.load_from_file().await, 0);
+    assert!(store.load_error().is_none(), "空数据不是错误");
+    assert!(store.is_loaded());
+    let _ = std::fs::remove_file(&path);
+}
+
+// ── 写盘快照一致性（B1）：快照之后 append 的数据不能被 dirty=false 吞掉 ──
+
+/// 快照完成 → 写盘提交之间又 append 了一条：本轮写出去的是旧快照，
+/// 新数据必须**仍然**是脏的（否则下一次周期保存不会发生 → 重启后丢失）。
+#[tokio::test]
+async fn append_between_snapshot_and_commit_keeps_dirty() {
+    let path = temp_sessions_path("dirty-generation");
+    let _ = std::fs::remove_file(&path);
+
+    let store = std::sync::Arc::new(TrunkStore::new(1000));
+    store.set_persist_path(&path);
+    store.append_event(user_event("local:tui::local_user", "第一条"));
+
+    // 确定性地把一条 append 塞进"快照之后、提交之前"的那条 await 窗口里
+    // （真实并发下这个窗口只有一次 fs await 宽，测试必须能精确命中）。
+    let weak = std::sync::Arc::downgrade(&store);
+    *store
+        .hooks
+        .before_commit
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(move || {
+        if let Some(store) = weak.upgrade() {
+            store.append_event(user_event("local:tui::local_user", "快照之后"));
+        }
+    }));
+
+    store.save_now().await;
+    assert!(
+        store.is_dirty(),
+        "写盘期间 append 的数据不能被 dirty=false 吞掉（lost update）"
+    );
+
+    // 下一轮保存把两条都写出去，此后才允许变干净。
+    store.save_now().await;
+    assert!(!store.is_dirty());
+
+    let restored = TrunkStore::new(1000);
+    restored.set_persist_path(&path);
+    restored.load_from_file().await;
+    assert_eq!(restored.event_log().len(), 2, "两条事件都要在盘上");
+    let _ = std::fs::remove_file(&path);
+}
+
+// ── 克隆共享状态（B2）────────────────────────────────────────────────
+
+/// `TrunkStore` 的克隆必须共享 dirty / header / persist_path（外加
+/// save_lock）——会话命令层就是把 `agent.trunk.clone()` 包进
+/// `Arc<TrunkStore>` 再写盘的；各持一份状态会出现"清空历史落盘了，
+/// 本体还觉得自己是脏的 / 反过来"。
+#[tokio::test]
+async fn clone_shares_dirty_header_and_persist_path() {
+    let path = temp_sessions_path("clone-shared");
+    let _ = std::fs::remove_file(&path);
+
+    let store = TrunkStore::new(1000);
+    let clone = store.clone();
+
+    // 路径：克隆之后设的也要可见（克隆时拷贝值就会漏）。
+    store.set_persist_path(&path);
+    assert_eq!(
+        clone.persist_path(),
+        Some(path.clone()),
+        "克隆必须共享 persist_path"
+    );
+    // header：分支/续跑元数据，克隆写、本体读。
+    clone.set_header(echo_session::SessionHeader::top_level("trunk"));
+    assert!(store.header().is_some(), "克隆必须共享 header");
+    // dirty：克隆 mark，本体落盘才应该清。
+    clone.mark_dirty();
+    assert!(store.is_dirty(), "克隆必须共享 dirty");
+    clone.save_now().await;
+    assert!(
+        !store.is_dirty(),
+        "经克隆落盘 == 本 store 落盘（同一份文件、同一把写锁）"
+    );
+    assert!(path.exists());
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 失败态卡住不写；文件修好之后可以**显式**重试（不是自动重读）。
+#[tokio::test]
+async fn retry_load_recovers_after_the_file_is_repaired() {
+    let path = temp_sessions_path("protect-retry");
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, "not json").unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.load_from_file().await;
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+
+    // 失败态下 ensure_loaded 不反复读盘（stage 保持 Failed）。
+    store.ensure_loaded().await;
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+
+    // 修好文件 → 显式重试 → 恢复正常（并且能落盘了）。
+    // （"修文件"= 把坏档换成一份合法档：这里先删掉再写，模拟运维替换。）
+    let _ = std::fs::remove_file(&path);
+    let good = TrunkStore::new(1000);
+    good.set_persist_path(&path);
+    good.get_or_create(&SessionKey::local_tui(), "u".into(), None);
+    good.append_event(user_event("local:tui::local_user", "修好了"));
+    good.save_now().await;
+    assert!(good.is_loaded());
+
+    assert_eq!(store.retry_load().await, 1, "修复后应恢复出身份");
+    assert!(store.is_loaded());
+    assert!(store.load_error().is_none());
+    let _ = std::fs::remove_file(&path);
+}
+
+// ── 2026-11 第二轮纠正：失败负缓存 / 严格校验 / 指纹并发 / 显式恢复 ──────
+
+fn write_json_file(path: &std::path::Path, value: &serde_json::Value) {
+    std::fs::write(path, serde_json::to_string(value).unwrap()).unwrap();
+}
+
+fn event_json(event: &echo_session::SessionEvent) -> serde_json::Value {
+    serde_json::to_value(event).unwrap()
+}
+
+fn v6_document(events: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({
+        "version": 6,
+        "header": null,
+        "identities": [],
+        "timeline": [],
+        "events": events,
+    })
+}
+
+/// Failed 是负缓存：即使原文件被人工修好，自动路径也不重试；只有显式
+/// `retry_failed_load` 才允许再读一次。
+#[tokio::test]
+async fn failed_load_is_negative_cached_until_explicit_retry() {
+    let path = temp_sessions_path("round2-negative-cache");
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, "{ definitely not json").unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    assert_eq!(store.load_from_file().await, 0);
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+
+    // 人工修好文件：自动路径（ensure_loaded / load_from_file）仍然不重试。
+    let event = user_event("local:tui::local_user", "修复后应能显式加载");
+    write_json_file(&path, &v6_document(vec![event_json(&event)]));
+    store.ensure_loaded().await;
+    assert_eq!(store.load_stage(), LoadStage::Failed, "Failed 必须负缓存");
+    assert_eq!(store.load_from_file().await, 0);
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+    assert!(store.event_log().is_empty(), "失败期间不能追加任何事件");
+
+    // 显式出口：干净空 store 才允许清负缓存，然后重试一次。
+    store.retry_failed_load().expect("clean store may retry");
+    assert_eq!(store.load_stage(), LoadStage::Untouched);
+    store.ensure_loaded().await;
+    assert_eq!(store.load_stage(), LoadStage::Full);
+    assert_eq!(store.event_log().len(), 1);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 当前版 v6 的坏事件必须在**任何 store 变更之前**被拒绝；重复加载也
+/// 不会把前面合法的事件追加进去（旧实现的 filter_map + 重试会重复 append）。
+#[tokio::test]
+async fn current_version_bad_event_is_rejected_without_partial_append() {
+    let path = temp_sessions_path("round2-bad-event");
+    let _ = std::fs::remove_file(&path);
+    let good = event_json(&user_event("local:tui::local_user", "合法事件"));
+    let bad = serde_json::json!({"kind": "future_unknown_event", "content": "坏事件"});
+    let original = v6_document(vec![good, bad]);
+    write_json_file(&path, &original);
+    let original_text = std::fs::read_to_string(&path).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    assert_eq!(store.load_from_file().await, 0);
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+    assert!(store.event_log().is_empty(), "坏档不能部分追加事件");
+    let error = store.load_error().expect("坏事件必须可观察");
+    assert!(
+        matches!(
+            error,
+            PersistLoadError::Corrupt {
+                section: "events",
+                index: 1,
+                ..
+            }
+        ),
+        "应定位到 events[1]: {error:?}"
+    );
+
+    // 第二轮加载仍然不追加（负缓存 + 解析前失败）。
+    assert_eq!(store.load_from_file().await, 0);
+    assert!(store.event_log().is_empty());
+
+    // 新事件也不能把坏档覆盖掉。
+    store.append_event(user_event("local:tui::local_user", "失败后的新事件"));
+    store.save_now().await;
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        original_text,
+        "坏档原文件必须保持不变"
+    );
+    assert!(store.is_dirty(), "没写出去就不能清脏位");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 未来版本（version > PERSIST_VERSION）直接拒绝，不能因为 events 看起来
+/// 合法就放行。
+#[tokio::test]
+async fn future_version_document_is_rejected_and_original_kept() {
+    let path = temp_sessions_path("round2-future-version");
+    let _ = std::fs::remove_file(&path);
+    let event = user_event("local:tui::local_user", "未来版本事件");
+    let mut document = v6_document(vec![event_json(&event)]);
+    document["version"] = serde_json::json!(7);
+    write_json_file(&path, &document);
+    let original = std::fs::read_to_string(&path).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    assert_eq!(store.load_from_file().await, 0);
+    let error = store.load_error().expect("未来版本必须可观察");
+    assert!(
+        matches!(
+            error,
+            PersistLoadError::UnsupportedVersion {
+                version: 7,
+                supported: 6,
+                ..
+            }
+        ),
+        "应报告 v7 > v6: {error:?}"
+    );
+    store.append_event(user_event("local:tui::local_user", "也不许覆盖"));
+    store.save_now().await;
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 加载不允许在非空 store 上重载/合并：文件事件不能追加到已有事件后面。
+#[tokio::test]
+async fn load_into_non_empty_store_is_rejected_before_read() {
+    let path = seed_session_file("round2-not-empty", &[("qq:dm:1:1", "种子历史")]).await;
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.append_event(user_event("local:tui::local_user", "加载前的新事件"));
+    assert_eq!(store.load_from_file().await, 0);
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+    assert!(matches!(
+        store.load_error(),
+        Some(PersistLoadError::NotEmpty { .. })
+    ));
+    assert_eq!(store.event_log().len(), 1, "已有新事件保持原样");
+    assert_eq!(
+        store.event_log()[0].session(),
+        Some("local:tui::local_user")
+    );
+
+    store.save_now().await;
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "非空 store 的加载拒绝不能授权覆盖原文件"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `load_from_file` 完成时只 note 加载开始前的代次：解析期间 mark_dirty
+/// 不能被 `note_persisted(当前 dirty_generation())` 吞掉。
+#[tokio::test]
+async fn load_notes_generation_captured_before_read() {
+    let path = seed_session_file("round2-load-generation", &[("qq:dm:1:1", "历史")]).await;
+    let store = std::sync::Arc::new(TrunkStore::new(1000));
+    store.set_persist_path(&path);
+    let weak = std::sync::Arc::downgrade(&store);
+    *store
+        .hooks
+        .before_load_commit
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(move || {
+        if let Some(store) = weak.upgrade() {
+            store.mark_dirty();
+        }
+    }));
+
+    store.ensure_loaded().await;
+    assert!(store.is_loaded());
+    assert!(
+        store.is_dirty(),
+        "加载期间 mark_dirty 的代次必须保留（不能被完成时的当前代次吞掉）"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 解析期间 append 的新事件不能被文件历史插到后面/前面造成错序；隔离
+/// 提交检测到非空后明确拒绝，保留新事件、原文件不动、失败可观察。
+#[tokio::test]
+async fn append_during_load_is_rejected_not_reordered() {
+    let path = seed_session_file("round2-load-append", &[("qq:dm:1:1", "文件历史")]).await;
+    let before = std::fs::read_to_string(&path).unwrap();
+    let store = std::sync::Arc::new(TrunkStore::new(1000));
+    store.set_persist_path(&path);
+    let weak = std::sync::Arc::downgrade(&store);
+    *store
+        .hooks
+        .before_load_commit
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(move || {
+        if let Some(store) = weak.upgrade() {
+            store.append_event(user_event("local:tui::local_user", "加载期间的新事件"));
+        }
+    }));
+
+    store.ensure_loaded().await;
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+    assert!(matches!(
+        store.load_error(),
+        Some(PersistLoadError::ConcurrentWrite { events: 1, .. })
+    ));
+    assert_eq!(store.event_log().len(), 1, "新事件不能被丢弃");
+    assert_eq!(
+        store.event_log()[0].session(),
+        Some("local:tui::local_user")
+    );
+    assert!(store.is_dirty(), "新事件还没落盘");
+
+    // 非空 store 不允许隐式恢复；原文件也不许被覆盖。
+    assert!(store.retry_failed_load().is_err());
+    store.save_now().await;
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `restore_timeline` 只能整表替换**空时间线**：失败期间/并发 append 的
+/// 新条目不能被恢复动作覆盖。
+#[test]
+fn restore_timeline_refuses_to_overwrite_non_empty_timeline() {
+    let store = TrunkStore::new(1000);
+    push_user(&store, "已有的新条目");
+    let before = store.timeline_snapshot();
+    let error = store
+        .restore_timeline(vec![
+            agent_module_management::protocol::TimelineMessage::backend(
+                "来自文件".to_string(),
+                "local:tui::local_user".to_string(),
+                1,
+                None,
+            ),
+        ])
+        .expect_err("非空时间线必须拒绝整表覆盖");
+    assert!(error.contains("refusing whole-table replace"), "{error}");
+    let after = store.timeline_snapshot();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].content, before[0].content, "已有条目不能被覆盖");
+}
+
+/// 跨独立 store 的陈旧快照保存必须明确拒绝（不能靠 path_save_lock 排队
+/// 让后写的旧快照覆盖新快照）。
+#[tokio::test]
+async fn independent_store_stale_snapshot_save_is_rejected() {
+    let path = seed_session_file("round2-stale", &[("qq:dm:1:1", "种子")]).await;
+
+    let first = TrunkStore::new(1000);
+    first.set_persist_path(&path);
+    first.load_from_file().await;
+    assert!(first.is_loaded());
+
+    let stale = TrunkStore::new(1000);
+    stale.set_persist_path(&path);
+    stale.load_from_file().await;
+    assert!(stale.is_loaded());
+
+    first.append_event(user_event("qq:dm:1:1", "来自第一个 store"));
+    first.save_now().await;
+    assert!(
+        first.last_save_error().is_none(),
+        "第一个 store 基于最新快照，保存应成功: {:?}",
+        first.last_save_error()
+    );
+
+    stale.append_event(user_event("qq:dm:1:1", "来自陈旧 store"));
+    stale.save_now().await;
+    assert!(
+        matches!(
+            stale.last_save_error(),
+            Some(PersistSaveError::StaleSnapshot { .. })
+        ),
+        "陈旧快照必须明确拒绝: {:?}",
+        stale.last_save_error()
+    );
+    assert!(stale.is_dirty(), "被拒绝的保存不能清脏位");
+    let disk = std::fs::read_to_string(&path).unwrap();
+    assert!(disk.contains("来自第一个 store"));
+    assert!(!disk.contains("来自陈旧 store"), "旧快照不能覆盖新快照");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 同一 store 的磁盘文件被外部写者改掉：保存也要拒绝（指纹不匹配）。
+#[tokio::test]
+async fn external_file_change_after_load_rejects_save() {
+    let path = seed_session_file("round2-external", &[("qq:dm:1:1", "种子")]).await;
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.load_from_file().await;
+
+    std::fs::write(&path, "外部写者写入的完全不同的内容").unwrap();
+    store.append_event(user_event("qq:dm:1:1", "本 store 的新事件"));
+    store.save_now().await;
+    assert!(matches!(
+        store.last_save_error(),
+        Some(PersistSaveError::StaleSnapshot { .. })
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "外部写者写入的完全不同的内容"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// clone 共享指纹基线：clone 写成功后，本体继续写**不应**被误判为陈旧。
+#[tokio::test]
+async fn clone_shares_origin_so_sequential_saves_are_not_stale() {
+    let path = seed_session_file("round2-clone-origin", &[("qq:dm:1:1", "种子")]).await;
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.load_from_file().await;
+    let clone = store.clone();
+
+    clone.append_event(user_event("qq:dm:1:1", "clone 写入"));
+    clone.save_now().await;
+    assert!(
+        clone.last_save_error().is_none(),
+        "{:?}",
+        clone.last_save_error()
+    );
+
+    store.append_event(user_event("qq:dm:1:1", "本体写入"));
+    store.save_now().await;
+    assert!(
+        store.last_save_error().is_none(),
+        "{:?}",
+        store.last_save_error()
+    );
+
+    let disk = std::fs::read_to_string(&path).unwrap();
+    assert!(disk.contains("clone 写入"));
+    assert!(disk.contains("本体写入"));
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 全量加载后的重复 `load_from_file` 是幂等空操作，不会重复追加事件。
+#[tokio::test]
+async fn loaded_store_does_not_reload_or_duplicate_events() {
+    let path = seed_session_file("round2-reload", &[("qq:dm:1:1", "种子")]).await;
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.load_from_file().await;
+    store.append_event(user_event("qq:dm:1:1", "新事件"));
+    assert_eq!(store.event_log().len(), 2);
+
+    assert_eq!(store.load_from_file().await, 0);
+    assert_eq!(store.event_log().len(), 2, "不允许重载/重复追加");
+    store.save_now().await;
+    assert!(store.last_save_error().is_none());
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 显式恢复出口：必须由调用方给出确切备份路径；不自动命名、不覆盖已有
+/// 备份；移走坏档后空 store 可以写一份新档。
+#[tokio::test]
+async fn explicit_recovery_moves_bad_file_only_to_caller_path() {
+    let path = temp_sessions_path("round2-recover");
+    let backup = temp_sessions_path("round2-recover-backup");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&backup);
+    let corrupt = "{ broken session document";
+    std::fs::write(&path, corrupt).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    assert_eq!(store.load_from_file().await, 0);
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+
+    store
+        .recover_failed_load(Some(&backup))
+        .await
+        .expect("clean failed store may be explicitly recovered");
+    assert!(!path.exists(), "坏档已按调用方路径移走");
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), corrupt);
+    assert_eq!(store.load_stage(), LoadStage::Full);
+    assert!(store.load_error().is_none());
+
+    store.append_event(user_event("local:tui::local_user", "恢复后的新事件"));
+    store.save_now().await;
+    assert!(path.exists(), "恢复后第一次保存必须能写新档");
+    assert!(
+        store.last_save_error().is_none(),
+        "{:?}",
+        store.last_save_error()
+    );
+
+    let restored = TrunkStore::new(1000);
+    restored.set_persist_path(&path);
+    restored.load_from_file().await;
+    assert_eq!(restored.event_log().len(), 1);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&backup);
+}
+
+/// 恢复 API 不能在有新数据时静默丢数据。
+#[tokio::test]
+async fn explicit_recovery_refuses_non_empty_store() {
+    let path = temp_sessions_path("round2-recover-nonempty");
+    let backup = temp_sessions_path("round2-recover-nonempty-backup");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&backup);
+    std::fs::write(&path, "{ broken").unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.load_from_file().await;
+    store.append_event(user_event("local:tui::local_user", "失败期间的新数据"));
+
+    assert!(store.retry_failed_load().is_err());
+    assert!(store.recover_failed_load(Some(&backup)).await.is_err());
+    assert!(path.exists(), "拒绝恢复时坏档必须原地不动");
+    assert!(!backup.exists(), "拒绝恢复时不能产生备份");
+    assert_eq!(store.event_log().len(), 1, "新数据必须保留");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&backup);
+}
+
+/// 加载期间新写入的**时间线条目**也不能被文件时间线整表覆盖。
+#[tokio::test]
+async fn timeline_during_load_is_rejected_not_overwritten() {
+    let path = temp_sessions_path("round2-load-timeline");
+    let _ = std::fs::remove_file(&path);
+    let seed = TrunkStore::new(1000);
+    seed.set_persist_path(&path);
+    seed.get_or_create(&SessionKey::parse("qq:dm:1:1").unwrap(), "u".into(), None);
+    seed.append_event(user_event("qq:dm:1:1", "文件事件"));
+    seed.push_timeline(agent_module_management::protocol::TimelineMessage::backend(
+        "文件时间线".to_string(),
+        "qq:dm:1:1".to_string(),
+        1,
+        None,
+    ));
+    seed.save_now().await;
+    assert!(path.exists());
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let store = std::sync::Arc::new(TrunkStore::new(1000));
+    store.set_persist_path(&path);
+    let weak = std::sync::Arc::downgrade(&store);
+    *store
+        .hooks
+        .before_load_commit
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(move || {
+        if let Some(store) = weak.upgrade() {
+            store.push_timeline(agent_module_management::protocol::TimelineMessage::backend(
+                "加载期间的新时间线".to_string(),
+                "local:tui::local_user".to_string(),
+                2,
+                None,
+            ));
+        }
+    }));
+
+    store.ensure_loaded().await;
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+    assert!(matches!(
+        store.load_error(),
+        Some(PersistLoadError::ConcurrentWrite { timeline: 1, .. })
+    ));
+    let timeline = store.timeline_snapshot();
+    assert_eq!(timeline.len(), 1, "新时间线不能被整表覆盖");
+    assert_eq!(timeline[0].content, "加载期间的新时间线");
+    store.save_now().await;
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 两个独立 store 同时保存：路径锁 + 指纹必须保证**恰好一个**成功，另一个
+/// 明确 StaleSnapshot（不能两个都通过检查后互相覆盖）。
+#[tokio::test]
+async fn concurrent_independent_saves_leave_one_stale_rejected() {
+    let path = seed_session_file("round2-concurrent-stale", &[("qq:dm:1:1", "种子")]).await;
+
+    let first = TrunkStore::new(1000);
+    first.set_persist_path(&path);
+    first.load_from_file().await;
+    let second = TrunkStore::new(1000);
+    second.set_persist_path(&path);
+    second.load_from_file().await;
+
+    first.append_event(user_event("qq:dm:1:1", "并发 A"));
+    second.append_event(user_event("qq:dm:1:1", "并发 B"));
+    tokio::join!(first.save_now(), second.save_now());
+
+    let first_stale = matches!(
+        first.last_save_error(),
+        Some(PersistSaveError::StaleSnapshot { .. })
+    );
+    let second_stale = matches!(
+        second.last_save_error(),
+        Some(PersistSaveError::StaleSnapshot { .. })
+    );
+    assert!(
+        first_stale ^ second_stale,
+        "必须恰好一个陈旧写者被拒：first={:?}, second={:?}",
+        first.last_save_error(),
+        second.last_save_error()
+    );
+    let disk = std::fs::read_to_string(&path).unwrap();
+    assert!(disk.contains("并发 A") ^ disk.contains("并发 B"));
+    assert!(!(disk.contains("并发 A") && disk.contains("并发 B")));
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 显式恢复不允许覆盖已存在的备份文件（备份路径由调用方给，也必须安全）。
+#[tokio::test]
+async fn explicit_recovery_refuses_existing_backup_path() {
+    let path = temp_sessions_path("round2-recover-existing");
+    let backup = temp_sessions_path("round2-recover-existing-backup");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&backup);
+    std::fs::write(&path, "{ broken").unwrap();
+    std::fs::write(&backup, "已有备份不能覆盖").unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.load_from_file().await;
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+
+    let error = store
+        .recover_failed_load(Some(&backup))
+        .await
+        .expect_err("已存在的备份路径必须拒绝");
+    assert!(error.contains("备份路径已存在"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&backup).unwrap(),
+        "已有备份不能覆盖"
+    );
+    assert!(path.exists(), "拒绝恢复时原坏档仍在原地");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&backup);
+}
+
+// ── 2026-11 第二轮补充：历史变更代次 vs 加载提交 ────────────────────────
+//
+// 验收边界：`clear_history` / `clear_session` / `apply_compaction` 与加载
+// 提交共用 `commit_barrier`，并推进 `history_epoch`。加载提交在写锁内
+// 比对代次——解析期间发生的清空/压缩不能被"安装文件历史"覆盖。
+//
+// 为什么单靠空 store 检查不够：清空之后 store 恰好是空的，空检查会放行，
+// 文件里的旧历史就会把刚清掉的内容装回来。
+
+/// 加载解析期间发生 clear_history：提交必须被拒，store 保持空（清空赢），
+/// 原文件既不被加载提交覆盖、也不被失败态 store 写空。
+#[tokio::test]
+async fn clear_history_during_load_is_not_overwritten_by_file_history() {
+    let path = seed_session_file("round2-clear-vs-load", &[("qq:dm:1:1", "文件历史")]).await;
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let store = std::sync::Arc::new(TrunkStore::new(1000));
+    store.set_persist_path(&path);
+    let weak = std::sync::Arc::downgrade(&store);
+    *store
+        .hooks
+        .before_load_commit
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(move || {
+        if let Some(store) = weak.upgrade() {
+            // 确定性模拟"解析完成 → 提交"窗口里用户点了清空。
+            let (events, timeline) = store.clear_history_in_memory();
+            assert_eq!(events, 0, "加载尚未提交，清空看到的是空日志");
+            assert_eq!(timeline, 0);
+        }
+    }));
+
+    store.ensure_loaded().await;
+    assert_eq!(store.load_stage(), LoadStage::Failed);
+    assert!(
+        matches!(
+            store.load_error(),
+            Some(PersistLoadError::ConcurrentWrite {
+                events: 0,
+                timeline: 0,
+                ..
+            })
+        ),
+        "代次变化必须可观察为并发写冲突: {:?}",
+        store.load_error()
+    );
+    assert!(store.event_log().is_empty(), "清空后不能被文件历史装回来");
+    assert!(store.timeline_snapshot().is_empty());
+
+    store.save_now().await;
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "加载提交和失败态保存都不能改写原文件"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 清空/压缩都要推进历史代次（加载提交的比对依据），且各自的工作都在
+/// `commit_barrier` 写锁内完成（同步、不跨 await）。
+#[tokio::test]
+async fn clear_session_and_compaction_advance_history_epoch() {
+    let store = TrunkStore::new(1000);
+    store.get_or_create(&SessionKey::parse("qq:dm:1:1").unwrap(), "u".into(), None);
+    for index in 0..4 {
+        store.append_event(user_event("qq:dm:1:1", &format!("事件 {index}")));
+    }
+    let before_clear_session = store.history_epoch();
+    store.clear_session("qq:dm:1:1").await;
+    assert!(
+        store.history_epoch() > before_clear_session,
+        "clear_session 必须推进 history_epoch"
+    );
+    assert!(store.event_log().is_empty());
+
+    for index in 0..4 {
+        store.append_event(user_event("qq:dm:1:1", &format!("压缩前 {index}")));
+    }
+    let before_compaction = store.history_epoch();
+    let summary = CompactionSummary {
+        session: Some("qq:dm:1:1".into()),
+        summary: "前三条压缩成摘要".into(),
+        replaced_count: 3,
+    };
+    let applied = store
+        .apply_compaction(1, &[summary], None)
+        .await
+        .expect("4 条事件、替换前 3 条应当可以压缩");
+    assert_eq!(applied.total_replaced, 3);
+    assert!(
+        store.history_epoch() > before_compaction,
+        "apply_compaction 必须推进 history_epoch"
+    );
+
+    let before_clear_history = store.history_epoch();
+    store.clear_history().await;
+    assert!(
+        store.history_epoch() > before_clear_history,
+        "clear_history 必须推进 history_epoch"
+    );
+    assert!(store.event_log().is_empty());
+}
+
+/// 上层入口的 fail-closed 面：`ensure_loaded_or_err` 在 Failed 负缓存下
+/// 必须返回错误（不能装作加载成功去跑 turn），显式重试成功后才 Ok。
+#[tokio::test]
+async fn ensure_loaded_or_err_reports_failure_until_explicit_retry() {
+    let path = temp_sessions_path("round2-ensure-or-err");
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, "{ broken").unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    let error = store
+        .ensure_loaded_or_err()
+        .await
+        .expect_err("坏档必须让入口拿到错误，而不是空历史");
+    assert!(!error.is_empty(), "错误必须可读");
+    assert!(store.is_load_failed());
+    assert!(!store.is_loaded());
+
+    // 人工修好文件后，自动路径仍是负缓存（不每轮重读），错误仍在。
+    let event = user_event("local:tui::local_user", "修复后的历史");
+    write_json_file(&path, &v6_document(vec![event_json(&event)]));
+    assert!(store.ensure_loaded_or_err().await.is_err());
+    assert!(store.event_log().is_empty(), "负缓存期间不能追加事件");
+
+    store.retry_failed_load().expect("干净空 store 可显式重试");
+    store
+        .ensure_loaded_or_err()
+        .await
+        .expect("修复后应加载成功");
+    assert!(store.is_loaded());
+    assert_eq!(store.event_log().len(), 1);
+    let _ = std::fs::remove_file(&path);
+}
+
+// ── checked 落盘接口（2026-11 跨组闭环：退休收尾必须知道真正写没写成）──
+
+/// 纯内存 store：没有磁盘目标 = 成功（代次对齐），不能报"永久 dirty"。
+#[tokio::test]
+async fn save_now_checked_accepts_memory_only_store() {
+    let store = TrunkStore::new(1000);
+    push_user(&store, "只在内存里的一条");
+    assert!(store.is_dirty(), "前置：有未落盘改动");
+
+    store
+        .save_now_checked()
+        .await
+        .expect("memory-only 没有磁盘目标，必须算成功");
+    assert!(!store.is_dirty(), "代次要对齐，不能留下永久 dirty");
+    assert!(store.last_save_error().is_none());
+}
+
+/// 坏档 + 有路径：`save_now_checked` 必须 `Err`（且原文件不被覆盖）。
+///
+/// 同时钉住"不读 `last_save_error` 判本次结果"：加载失败**不进**那个槽
+/// （它不是一次"写失败"，而是一次拒绝写）。只看那个槽会把本次失败误判成
+/// 成功——这正是 Strict 退休曾把坏档当"写得成"的原因。
+#[tokio::test]
+async fn save_now_checked_reports_load_failure_and_keeps_the_corrupt_file() {
+    let path = temp_sessions_path("checked-load-failed");
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, "{ 坏档").unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    assert!(store.ensure_loaded_or_err().await.is_err());
+    assert!(
+        store.last_save_error().is_none(),
+        "前置：加载失败不进 save_error 槽（只看它会误判）"
+    );
+
+    let error = store.save_now_checked().await.expect_err("坏档必须报错");
+    assert!(
+        matches!(error, PersistSaveError::LoadFailed { .. }),
+        "{error:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "原文件必须原样保留"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 已有档但 body 未加载：无改动 = 没东西要写（Ok）；有未落盘改动 = Err。
+#[tokio::test]
+async fn save_now_checked_not_loaded_skip_depends_on_dirty() {
+    let path = seed_session_file("checked-not-loaded", &[("qq:dm:1:1", "已有历史")]).await;
+
+    let clean = TrunkStore::new(1000);
+    clean.set_persist_path(&path);
+    clean.ensure_metadata().await;
+    assert!(!clean.is_loaded());
+    assert!(!clean.is_dirty());
+    clean
+        .save_now_checked()
+        .await
+        .expect("没改动 = 没有东西要写，不算失败");
+
+    let dirty = TrunkStore::new(1000);
+    dirty.set_persist_path(&path);
+    dirty.ensure_metadata().await;
+    dirty.mark_dirty();
+    assert!(
+        matches!(
+            dirty.save_now_checked().await,
+            Err(PersistSaveError::NotLoaded { .. })
+        ),
+        "有改动却写不出去，必须报错"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// rename 失败（父目录不可写）必须 `Err`，且原文件保持不动、dirty 保留。
+///
+/// 确定性做法：预建 `path.tmp`（可写）与 `path.save-lock`，再把父目录设为
+/// 只读——写 tmp 能成功（文件已存在，截断只需文件写权限），rename 需要
+/// 目录写权限 → 必然失败。root 无视权限位：探测到就跳过，不制造假失败。
+#[cfg(unix)]
+#[tokio::test]
+async fn save_now_checked_reports_rename_failure_and_keeps_the_original() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!(
+        "echo-checked-rename-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sessions.json");
+
+    let seed = TrunkStore::new(1000);
+    seed.set_persist_path(&path);
+    seed.append_event(user_event("local:tui::local_user", "种子"));
+    seed.save_now().await;
+    assert!(path.exists(), "前置：种子档写出来");
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.load_from_file().await;
+    assert!(store.is_loaded());
+    store.append_event(user_event("local:tui::local_user", "新的一条"));
+    assert!(store.is_dirty());
+
+    // 预建 tmp 与锁文件：只读目录下"打开已有文件"仍允许，rename 不允许。
+    std::fs::write(format!("{}.tmp", path.display()), "").unwrap();
+    std::fs::write(format!("{}.save-lock", path.display()), "").unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    // root 无视目录权限：探测到就跳过（不把环境差异当成产品失败）。
+    let probe = dir.join("probe");
+    if std::fs::write(&probe, b"x").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let before = std::fs::read_to_string(&path).unwrap();
+    let error = store
+        .save_now_checked()
+        .await
+        .expect_err("rename 失败必须报错");
+    assert!(matches!(error, PersistSaveError::Io { .. }), "{error:?}");
+    assert!(
+        error.to_string().contains("rename 失败"),
+        "必须是提交阶段失败：{error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "原文件必须原样保留"
+    );
+    assert!(store.is_dirty(), "没写成就不能清 dirty");
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }

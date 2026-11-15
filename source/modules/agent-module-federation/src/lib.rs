@@ -24,6 +24,8 @@ pub mod router;
 pub use admin::{Emit as FederationEmit, FederationAdminHost};
 pub use commands::COMMANDS as FEDERATION_COMMANDS;
 pub use connection::{decode_invite, encode_invite, generate_token, InvitePayload, INVITE_SCHEME};
+/// 工具定义（握手能力通告的载荷形状；与工具层同一词汇，不另造 wire 类型）。
+pub use echo_defs::tool::ToolDefinition;
 pub use error::FederationError;
 pub use frame::{
     call_origin, new_call_id, FedError, FedFrame, InvokeRequest, InvokeResult, InvokeVerdict,
@@ -39,7 +41,7 @@ pub use ports::{
     RemoteQuerier, RemoteSubagentNotifier,
 };
 pub use remote_tool::{
-    proxy_schema, remote_tool_name, remote_tool_prefix, sanitize_peer_component, RemoteTool,
+    advertised_schema, remote_tool_name, remote_tool_prefix, sanitize_peer_component, RemoteTool,
 };
 pub use router::{remote_tool_candidates, ExecutorPolicy, InvokeRouter, PendingInvoke};
 

@@ -66,6 +66,23 @@ pub enum ShellEvent {
 
 pub type ShellEmit = Arc<dyn Fn(ShellEvent) + Send + Sync>;
 
+/// 一次会话操作的**调用主体**（唯一合法来源：传输层 / 宿主执行链注入）。
+///
+/// - `team`：本地 persona（来自 `ToolContext.team_id` 或面板命令的显式 team）；
+/// - `peer`：跨节点来源（联邦 router 从链路注入的 `node_id`）——**绝不从
+///   工具参数读取**，`__team_id` 一类魔术键已废弃；
+/// - `manage`：宿主显式管理路径（面板 / 进程级清理），只由
+///   [`crate::commands::ShellCommandHost`] 的宿主实现构造，模型与远端
+///   工具无法伪造。
+///
+/// `Default` = 无主体（进程级旧路径）：只能操作无归属的本地会话。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Caller<'a> {
+    pub team: Option<&'a str>,
+    pub peer: Option<&'a str>,
+    pub manage: bool,
+}
+
 /// 输出行来源流。
 #[derive(Clone, Copy, Debug)]
 enum StreamKind {
@@ -159,6 +176,12 @@ struct ShellSession {
     session_id: String,
     /// 归属 team（persona）：面板按当前 agent 过滤；None = 进程级（旧路径）。
     team_id: Option<String>,
+    /// 归属**远端节点**（联邦 peer 的 node_id）：远端 `bash-start` 起的会话
+    /// 记在这里。与 `team_id` 互斥（远端调用没有本地 persona 坐标）。
+    ///
+    /// 授权只看这个字段 + 传输层注入的 `ToolContext.peer`，**不看会话 id**：
+    /// id 只是句柄（`sh-1` 可枚举），随机化也只是降低撞见概率，不能当授权。
+    owner_peer: Option<String>,
     workdir: String,
     created_at_ms: i64,
     last_active_ms: std::sync::atomic::AtomicI64,
@@ -179,7 +202,12 @@ impl ShellSession {
     fn info(&self) -> ShellSessionInfo {
         ShellSessionInfo {
             session_id: self.session_id.clone(),
-            team_id: self.team_id.clone(),
+            // 远端来源会话没有本地 persona：用 `peer:<node_id>` 作为显示归属
+            // （面板全量视图可见、按 persona 过滤时不会串到某个智能体名下）。
+            team_id: self
+                .team_id
+                .clone()
+                .or_else(|| self.owner_peer.as_ref().map(|peer| format!("peer:{peer}"))),
             workdir: self.workdir.clone(),
             created_at_ms: self.created_at_ms,
             last_active_ms: self
@@ -226,10 +254,25 @@ impl ShellManager {
     }
 
     /// 启动一个新会话；超过上限时报错。
+    /// 起一条**本机**会话（`owner_peer` = None）。保留旧签名供宿主/面板用。
     pub async fn start(
         &self,
         workdir: Option<String>,
         team_id: Option<String>,
+        emit: &ShellEmit,
+    ) -> Result<ShellSessionInfo, String> {
+        self.start_owned(workdir, team_id, None, emit).await
+    }
+
+    /// 起一条会话并绑定归属主体（本地 persona 或远端 peer），二者互斥。
+    ///
+    /// 归属在**创建时**确定，之后不可转移：`bash-exec` / `bash-stop` 的授权
+    /// 只比对调用主体与会话归属（见 [`Self::ensure_access`]）。
+    pub async fn start_owned(
+        &self,
+        workdir: Option<String>,
+        team_id: Option<String>,
+        owner_peer: Option<String>,
         emit: &ShellEmit,
     ) -> Result<ShellSessionInfo, String> {
         let dir = workdir.filter(|d| !d.trim().is_empty()).unwrap_or_else(|| {
@@ -270,7 +313,12 @@ impl ShellManager {
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
-        let session_id = format!("sh-{seq}");
+        // id 是**句柄**不是授权：加随机后缀只为降低"猜中/撞见"的概率，
+        // 授权仍由 [`ShellManager::ensure_access`] 按归属主体判定。
+        let session_id = format!(
+            "sh-{seq}-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        );
         let now = chrono::Utc::now().timestamp_millis();
         // 两路读取任务随会话建立、与生共死；通道容量即背压水位。
         let (tx, rx) = mpsc::channel::<OutputLine>(OUTPUT_BUFFER_LINES);
@@ -279,6 +327,7 @@ impl ShellManager {
         let session = Arc::new(ShellSession {
             session_id: session_id.clone(),
             team_id,
+            owner_peer,
             workdir: dir,
             created_at_ms: now,
             last_active_ms: std::sync::atomic::AtomicI64::new(now),
@@ -340,23 +389,47 @@ impl ShellManager {
         self.sessions.lock().get(session_id).map(|s| s.info())
     }
 
-    /// 会话归属校验（2026-10 修复）：LLM 工具路径要求请求者与被操作
-    /// 会话同属一个 persona——此前 exec/stop 只查存在性，任意会话知道
-    /// id（如 `sh-1`）即可操作其他智能体的 shell。Panel 管理路径
-    /// （按 team 路由的命令）不经过本校验（用户本就按 agent 操作）。
+    /// 会话归属校验：**主体只来自可信注入**，不来自参数、不来自会话 id。
     ///
-    /// 双方都有 team 且不同 → 拒绝；会话无归属（面板 legacy 会话）或
-    /// 请求者无归属（旧路径）→ 放行（保守兼容）。
-    pub fn ensure_owned_by(
-        &self,
-        session_id: &str,
-        requester_team: Option<&str>,
-    ) -> Result<(), String> {
+    /// 规则（2026-11 收紧）：
+    ///
+    /// | 会话归属 | 调用主体 | 结果 |
+    /// |---|---|---|
+    /// | `owner_peer = Some(p)` | `peer = Some(p)` | 放行 |
+    /// | `owner_peer = Some(p)` | 本地 persona / 其他 peer（非管理路径） | **拒绝** |
+    /// | `owner_peer = Some(p)` | `manage = true`（面板/宿主显式管理） | 放行 |
+    /// | 本地 persona `team = t` | `peer = Some(_)`（跨 peer） | **拒绝** |
+    /// | 本地 persona `team = t` | `team = t` 或 `team = None` | 放行 |
+    /// | 本地 persona `team = t` | `team = 其他` | **拒绝** |
+    ///
+    /// `manage` 是**宿主显式管理路径**（面板按用户操作、进程级清理）的必要
+    /// 兼容口：只由宿主侧的 `ShellCommandHost` 构造，模型/远端工具无法伪造。
+    pub fn ensure_access(&self, session_id: &str, caller: &Caller<'_>) -> Result<(), String> {
         let sessions = self.sessions.lock();
         let Some(session) = sessions.get(session_id) else {
             return Ok(()); // 不存在：交给后续操作报"找不到"（错误信息更准确）
         };
-        if let (Some(owner), Some(requester)) = (session.team_id.as_deref(), requester_team) {
+        if let Some(owner) = session.owner_peer.as_deref() {
+            // 远端会话：只有同一来源 peer（或显式管理路径）能操作。
+            if caller.manage || caller.peer == Some(owner) {
+                return Ok(());
+            }
+            return Err(match caller.peer {
+                Some(peer) => format!(
+                    "shell 会话 {session_id} 属于远端节点「{owner}」，节点「{peer}」无权操作"
+                ),
+                None => format!(
+                    "shell 会话 {session_id} 属于远端节点「{owner}」，本机智能体无权操作（仅管理面可清理）"
+                ),
+            });
+        }
+        // 本地会话：远端 peer 一律拒绝（跨 peer 默认拒绝）。
+        if let Some(peer) = caller.peer {
+            return Err(format!(
+                "shell 会话 {session_id} 属于本机智能体，远端节点「{peer}」无权操作"
+            ));
+        }
+        if let (Some(owner), Some(requester)) = (session.team_id.as_deref(), caller.team) {
             if owner != requester {
                 return Err(format!(
                     "shell 会话 {session_id} 属于智能体「{owner}」，当前智能体无权操作"
@@ -609,7 +682,9 @@ pub fn shell_emit_for(translate: impl Fn(ShellEvent) + Send + Sync + 'static) ->
 }
 
 /// 把 ShellEvent 翻译为 BackendEvent。
-pub fn shell_event_to_backend(event: ShellEvent) -> agent_module_management::protocol::BackendEvent {
+pub fn shell_event_to_backend(
+    event: ShellEvent,
+) -> agent_module_management::protocol::BackendEvent {
     use agent_module_management::protocol::BackendEvent;
     match event {
         ShellEvent::Started(session) => BackendEvent::ShellSessionStarted { session },
@@ -664,31 +739,168 @@ mod tests {
             .session_id
     }
 
-    /// 归属校验（2026-10）：他 persona 不得操作本 persona 的 shell 会话。
+    /// 归属校验：他 persona 不得操作本 persona 的 shell 会话。
     #[tokio::test]
-    async fn ensure_owned_by_rejects_cross_team_access() {
+    async fn ensure_access_rejects_cross_team_access() {
         let mgr = ShellManager::new();
         let info = mgr
             .start(Some("/tmp".into()), Some("EchoCode".into()), &quiet_emit())
             .await
             .expect("start");
         // 同 team：放行
-        mgr.ensure_owned_by(&info.session_id, Some("EchoCode"))
-            .expect("same team");
-        // 无请求者（旧路径/面板）：保守放行
-        mgr.ensure_owned_by(&info.session_id, None)
+        mgr.ensure_access(
+            &info.session_id,
+            &Caller {
+                team: Some("EchoCode"),
+                ..Default::default()
+            },
+        )
+        .expect("same team");
+        // 无主体（进程级旧路径）：保留兼容
+        mgr.ensure_access(&info.session_id, &Caller::default())
             .expect("no requester");
         // 他 team：拒绝
         let err = mgr
-            .ensure_owned_by(&info.session_id, Some("alix"))
+            .ensure_access(
+                &info.session_id,
+                &Caller {
+                    team: Some("alix"),
+                    ..Default::default()
+                },
+            )
             .expect_err("cross team");
         assert!(err.contains("无权操作"), "{err}");
         // 不存在的会话：放行（交给后续操作报"找不到"）
-        mgr.ensure_owned_by("sh-999", Some("alix"))
-            .expect("missing session");
+        mgr.ensure_access(
+            "sh-999",
+            &Caller {
+                team: Some("alix"),
+                ..Default::default()
+            },
+        )
+        .expect("missing session");
         mgr.stop(&info.session_id, &quiet_emit())
             .await
             .expect("stop");
+    }
+
+    /// 远端归属（2026-11）：远端 `bash-start` 起的会话只归来源 peer。
+    ///
+    /// 这条锁的是此前的真洞：远端调用 `requester = None` 时归属校验
+    /// "双方都有 team 才比较"直接放行——任何能调 `bash` 的 peer 知道 id
+    /// （`sh-1` 可枚举）就能在别人的会话里执行命令。
+    #[tokio::test]
+    async fn remote_owned_sessions_reject_local_and_other_peers() {
+        let mgr = ShellManager::new();
+        let info = mgr
+            .start_owned(
+                Some("/tmp".into()),
+                None,
+                Some("node-gpu".into()),
+                &quiet_emit(),
+            )
+            .await
+            .expect("start");
+        // 同一来源 peer：放行
+        mgr.ensure_access(
+            &info.session_id,
+            &Caller {
+                peer: Some("node-gpu"),
+                ..Default::default()
+            },
+        )
+        .expect("owner peer");
+        // 其他 peer：拒绝
+        let err = mgr
+            .ensure_access(
+                &info.session_id,
+                &Caller {
+                    peer: Some("node-evil"),
+                    ..Default::default()
+                },
+            )
+            .expect_err("cross peer");
+        assert!(err.contains("无权操作"), "{err}");
+        // 本地 persona：拒绝（跨 peer 与本地 persona 默认隔离）
+        let err = mgr
+            .ensure_access(
+                &info.session_id,
+                &Caller {
+                    team: Some("EchoCode"),
+                    ..Default::default()
+                },
+            )
+            .expect_err("local persona");
+        assert!(err.contains("无权操作"), "{err}");
+        // 显式管理路径：放行（面板清理泄漏会话的必要兼容口）
+        mgr.ensure_access(
+            &info.session_id,
+            &Caller {
+                manage: true,
+                ..Default::default()
+            },
+        )
+        .expect("management path");
+        // 面板展示：远端会话带 `peer:<node>` 归属，不串进任何 persona 列表。
+        assert_eq!(
+            mgr.session_info(&info.session_id)
+                .expect("info")
+                .team_id
+                .as_deref(),
+            Some("peer:node-gpu")
+        );
+        assert!(mgr.list(Some("EchoCode")).is_empty());
+        mgr.stop(&info.session_id, &quiet_emit())
+            .await
+            .expect("stop");
+    }
+
+    /// 本地会话：远端 peer 一律拒绝（跨 peer 默认拒绝）。
+    #[tokio::test]
+    async fn local_sessions_reject_remote_peers() {
+        let mgr = ShellManager::new();
+        let info = mgr
+            .start(Some("/tmp".into()), Some("EchoCode".into()), &quiet_emit())
+            .await
+            .expect("start");
+        let err = mgr
+            .ensure_access(
+                &info.session_id,
+                &Caller {
+                    peer: Some("node-gpu"),
+                    ..Default::default()
+                },
+            )
+            .expect_err("remote peer on local session");
+        assert!(err.contains("无权操作"), "{err}");
+        mgr.stop(&info.session_id, &quiet_emit())
+            .await
+            .expect("stop");
+    }
+
+    /// 会话 id 只是句柄：序号之外必须有随机后缀（降低可枚举性），
+    /// 但授权不依赖它——真正的门是 `ensure_access`。
+    #[tokio::test]
+    async fn session_ids_are_not_guessable_sequence_only() {
+        let mgr = ShellManager::new();
+        let a = mgr
+            .start(Some("/tmp".into()), None, &quiet_emit())
+            .await
+            .expect("start a");
+        let b = mgr
+            .start(Some("/tmp".into()), None, &quiet_emit())
+            .await
+            .expect("start b");
+        assert!(a.session_id.starts_with("sh-"));
+        assert_ne!(a.session_id, b.session_id);
+        // `sh-<seq>` 后必须还有一段随机后缀。
+        let suffix = a
+            .session_id
+            .strip_prefix("sh-1-")
+            .expect("id 形状应为 sh-<seq>-<random>");
+        assert_eq!(suffix.len(), 8, "随机后缀长度固定 8: {}", a.session_id);
+        mgr.stop(&a.session_id, &quiet_emit()).await.expect("stop");
+        mgr.stop(&b.session_id, &quiet_emit()).await.expect("stop");
     }
 
     /// 进程存在性检查（信号 0，不实际发送信号）。

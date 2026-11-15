@@ -39,9 +39,9 @@ pub mod admin;
 pub mod api_admin;
 pub mod api_pool;
 pub mod balance;
-pub mod commands;
-/// 供应商 / API 命令域（全模块化 S5：13 条命令的归属关系）。
 pub mod chatgpt;
+/// 供应商 / API 命令域（全模块化 S5：17 条命令的归属关系）。
+pub mod commands;
 pub mod host_keys;
 pub mod metrics;
 /// 各协议客户端（OpenAI 兼容 / Anthropic Messages / Ollama）。
@@ -105,7 +105,7 @@ pub struct ProviderConfig {
     pub reasoning_effort: ReasoningEffort,
 }
 
-/// 构造模块：命令域（13 条 API / provider 命令）。
+/// 构造模块：命令域（17 条 API / provider 命令）。
 ///
 /// **零参数**（全模块化 S6）：宿主能力经服务表解析（[`host_keys::PROVIDER_HOST`]），
 /// 不再由组合根把 `Arc<dyn ProviderCommandHost>` 塞进来。于是"哪个模块需要
@@ -116,12 +116,40 @@ pub struct ProviderConfig {
 /// [`create_provider`]（它要 `AgentConfig`、要重建链、要广播——那些是宿主的
 /// 动作）。本模块"启用"的含义是**它的命令域可以被派发**；禁用后这些命令回落
 /// 到宿主的兜底分支并明确报"模块未启用"。
+///
+/// ## 登录槽归**模块实例**（不是进程）
+///
+/// ChatGPT 登录是跨命令的状态（`Start` 存投递端，`Submit`/`Cancel` 在**后来的
+/// 命令**里取），而处理器是「一条命令 new 一个」。所以状态既不能挂在处理器上
+/// （命令一返回就丢），也不能是进程级 `static`（第二套宿主会串到第一套的登录
+/// 上，且被 P1 门禁拦下）。
+///
+/// 这里在构造模块时建**一份** [`commands::LoginSlots`]，命令闭包持有它、
+/// 每条命令 clone 给处理器：同一模块实例（= 同一宿主）内跨命令可见，两个
+/// 模块实例（= 两套宿主）互不可见。想由宿主自己持有槽（显式表达"登录归谁"）
+/// 用 [`module_with_login_slots`]。
 pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
-    use echo_module::{BuiltinModule, Inject, ModuleManifest, ServiceSlot};
+    module_with_login_slots(version, commands::LoginSlots::shared())
+}
+
+/// 与 [`module`] 相同，但**登录槽由调用方（宿主）持有**。
+///
+/// 两种用法都合法：
+///
+/// - 一个宿主一个模块实例（常规）：用 [`module`]，槽跟着模块实例走；
+/// - 宿主想显式持有（同一进程里跑两套完整宿主、测试里要直接观测/预置槽）：
+///   自己造 `Arc<LoginSlots>` 交进来——两套宿主各交各的，天然隔离。
+pub fn module_with_login_slots(
+    version: &str,
+    login_slots: Arc<commands::LoginSlots>,
+) -> Arc<dyn echo_module::Module> {
+    use echo_module::{BuiltinModule, ModuleManifest, ServiceSlot};
 
     let host = ServiceSlot::<Arc<dyn commands::ProviderCommandHost>>::new();
     let bind = host.clone();
     let serve = host.clone();
+    // 登录槽跟模块实例同寿命：它就是"这个宿主的登录状态"的owner。
+    let slots = login_slots;
     let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
         .expect("agent-module-provider-llm 的 module.toml 解析失败");
     Arc::new(
@@ -133,13 +161,15 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve = serve.clone();
+            // 每条命令 clone 一次：处理器只借，不拥有（见 `commands::LoginSlots`）。
+            let slots = Arc::clone(&slots);
             Box::pin(async move {
                 let Some(host) = serve.get() else {
                     return Err(format!(
                         "命令 {name} 到 {MODULE_ID} 时模块尚未挂载（宿主接缝未绑定）"
                     ));
                 };
-                commands::ProviderCommandHandler::new(host)
+                commands::ProviderCommandHandler::with_login_slots(host, slots)
                     .handle(&name, payload)
                     .await
                     .unwrap_or_else(|| {
@@ -478,5 +508,244 @@ mod tests {
         let d = ProviderConfig::default();
         assert_eq!(d.thinking, ThinkingMode::Enabled);
         assert_eq!(d.reasoning_effort, ReasoningEffort::Max);
+    }
+}
+
+/// 登录槽的**宿主隔离**：两个模块实例 = 两套宿主。
+///
+/// 这一组用例走**真实派发路径**（`Module::mount` → `with_command_handler_async`
+/// → `ProviderCommandHandler::with_login_slots`），不是直接调处理器——因为要
+/// 钉住的正是"槽归谁"这件事：进程级 `static`（改动前的实现）在这里必然
+/// 串台，而实例级 `Arc<LoginSlots>` 不会。
+///
+/// 不读真实 OAuth 凭据、不发网络登录：需要"进行中的登录"的用例直接往宿主
+/// 的槽里放投递端（等价于 `StartChatGptLogin` 做完的那一步）。
+#[cfg(test)]
+mod login_slot_owner_tests {
+    use super::*;
+    use agent_module_management::protocol::BackendEvent;
+    use commands::{ApiUpdate, BoxFuture, LoginSlots, ProviderCommandHost};
+    use echo_context::Disposer;
+    use echo_module::{CommandFuture, Module, MountContext};
+    use std::sync::Mutex;
+
+    /// 只为收事件而存在的宿主接缝（其它接缝一律空实现）。
+    #[derive(Default)]
+    struct RecordingHost {
+        events: Mutex<Vec<BackendEvent>>,
+    }
+
+    impl RecordingHost {
+        fn events(&self) -> Vec<BackendEvent> {
+            self.events.lock().unwrap().clone()
+        }
+        fn login_results(&self) -> Vec<(bool, Option<String>)> {
+            self.events()
+                .into_iter()
+                .filter_map(|e| match e {
+                    BackendEvent::ChatGptLoginResult { ok, error, .. } => Some((ok, error)),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    impl ProviderCommandHost for RecordingHost {
+        fn switch_model<'a>(&'a self, _model: &'a str) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn switch_provider<'a>(&'a self, _provider: &'a str) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn set_system_prompt<'a>(&'a self, _prompt: &'a str) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn system_prompt(&self) -> BoxFuture<'_, String> {
+            Box::pin(async { String::new() })
+        }
+        fn update_api<'a>(&'a self, _update: ApiUpdate) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn switch_api<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn set_session_api<'a>(
+            &'a self,
+            _session_id: &'a str,
+            _profile: &'a str,
+        ) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn clear_session_api<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn remote_api_profiles<'a>(
+            &'a self,
+            _peer: &'a str,
+        ) -> BoxFuture<'a, Result<(Option<serde_json::Value>, Vec<serde_json::Value>), String>>
+        {
+            Box::pin(async { Ok((None, Vec::new())) })
+        }
+        fn test_api<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn query_api_balance<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn query_api_metrics<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn delete_api<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn emit(&self, event: BackendEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    /// 起一套"宿主"：独立 `Ctx` + 独立宿主接缝 + 独立模块实例（独立登录槽）。
+    ///
+    /// 返回的 `Disposer` 必须活到用例结束——它 drop 就把服务槽清空
+    /// （`ServiceSlot::bind` 的卸载语义），那时命令会被当成"模块未挂载"。
+    fn boot(slots: Arc<LoginSlots>) -> (Arc<dyn Module>, Arc<RecordingHost>, Vec<Disposer>) {
+        let ctx = Arc::new(echo_context::Ctx::default());
+        let host = Arc::new(RecordingHost::default());
+        let keep_service = ctx
+            .provide(
+                &host_keys::PROVIDER_HOST,
+                Arc::clone(&host) as Arc<dyn ProviderCommandHost>,
+            )
+            .expect("宿主接缝注册");
+        let module = module_with_login_slots("0.0.0-login-slot-test", slots);
+        let mounted = module
+            .mount(&MountContext::new().with_ctx(Arc::clone(&ctx)))
+            .expect("mount 不得失败");
+        let mut keep = vec![keep_service];
+        keep.extend(mounted);
+        (module, host, keep)
+    }
+
+    fn dispatch<'a>(
+        module: &'a dyn Module,
+        name: &'a str,
+        payload: serde_json::Value,
+    ) -> CommandFuture<'a> {
+        module
+            .handle_command_async(name, payload)
+            .unwrap_or_else(|| panic!("{name} 应被 provider 模块认领"))
+    }
+
+    /// 一个新宿主**看不到**另一个宿主进行中的登录。
+    #[tokio::test]
+    async fn a_second_host_cannot_see_the_first_hosts_login() {
+        let slots_a = LoginSlots::shared();
+        let slots_b = LoginSlots::shared();
+        let (module_a, host_a, _keep_a) = boot(Arc::clone(&slots_a));
+        let (module_b, host_b, _keep_b) = boot(Arc::clone(&slots_b));
+
+        // 宿主 A 的登录已走到"等用户粘码"这一步（不放网络登录，直接放投递端）。
+        let (manual_tx, manual_rx) = tokio::sync::oneshot::channel();
+        slots_a.set_manual(manual_tx).await;
+
+        // 宿主 B 的提交：必须报"没有进行中的登录"，且事件只发到 B。
+        let out = dispatch(
+            module_b.as_ref(),
+            "SubmitChatGptLoginCode",
+            serde_json::json!({ "input": "http://localhost:1455/auth/callback?code=b&state=b" }),
+        )
+        .await;
+        assert!(out.is_err(), "B 没有登录在跑，不能因为 A 有就成功: {out:?}");
+        assert!(out.unwrap_err().contains("没有进行中的登录"));
+        assert_eq!(
+            host_b.login_results(),
+            vec![(
+                false,
+                Some("当前没有进行中的登录：先点「登录 ChatGPT」拿到授权链接".to_string())
+            )],
+            "B 要广播 ChatGptLoginResult 让界面自愈"
+        );
+        assert!(host_a.events().is_empty(), "A 不该收到 B 的命令事件");
+
+        // 宿主 B 的取消同理（也不能把 A 的取消端取走）。
+        let out = dispatch(
+            module_b.as_ref(),
+            "CancelChatGptLogin",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert!(out.is_err(), "B 没有登录在跑，取消必须报错: {out:?}");
+
+        // A 的投递端还在 A 手上：A 自己的提交能送到。
+        let url = "http://localhost:1455/auth/callback?code=a&state=a";
+        let out = dispatch(
+            module_a.as_ref(),
+            "SubmitChatGptLoginCode",
+            serde_json::json!({ "input": url }),
+        )
+        .await;
+        assert!(out.is_ok(), "A 的提交应成功: {out:?}");
+        assert_eq!(manual_rx.await.expect("A 的登录任务应收到码"), url);
+    }
+
+    /// 同一个宿主里跨命令可见（回归：曾经按命令 new 处理器导致槽丢失）。
+    #[tokio::test]
+    async fn commands_of_one_host_share_its_login_slots() {
+        let slots = LoginSlots::shared();
+        let (module, host, _keep) = boot(Arc::clone(&slots));
+        let url = "http://localhost:1455/auth/callback?code=abc&state=xyz";
+
+        // 第一条命令留下的状态（等价于 `StartChatGptLogin` 做完的那一步）。
+        let (manual_tx, manual_rx) = tokio::sync::oneshot::channel();
+        slots.set_manual(manual_tx).await;
+        let cancel_rx = slots.reserve_cancel().await.expect("占取消槽");
+
+        // 第二条命令（全新处理器）能取到它。
+        let out = dispatch(
+            module.as_ref(),
+            "SubmitChatGptLoginCode",
+            serde_json::json!({ "input": url }),
+        )
+        .await;
+        assert!(out.is_ok(), "同宿主跨命令提交应成功: {out:?}");
+        assert_eq!(manual_rx.await.expect("登录任务应收到用户粘的链接"), url);
+        assert!(host.events().is_empty(), "成功的提交不该发错误事件");
+
+        // 取消也跨命令可见。
+        let out = dispatch(
+            module.as_ref(),
+            "CancelChatGptLogin",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert!(out.is_ok(), "同宿主跨命令取消应成功: {out:?}");
+        assert!(cancel_rx.await.is_ok(), "登录任务应收到取消信号");
+    }
+
+    /// 没登录时的两条命令都只**报错 + 广播自愈事件**（行为不变）。
+    #[tokio::test]
+    async fn no_login_in_progress_reports_and_heals_the_panel() {
+        let slots = LoginSlots::shared();
+        let (module, host, _keep) = boot(slots);
+
+        let out = dispatch(
+            module.as_ref(),
+            "SubmitChatGptLoginCode",
+            serde_json::json!({ "input": "code" }),
+        )
+        .await;
+        assert!(out.is_err());
+        let out = dispatch(
+            module.as_ref(),
+            "CancelChatGptLogin",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert!(out.is_err());
+        assert_eq!(
+            host.login_results().len(),
+            2,
+            "两次都要发 ChatGptLoginResult"
+        );
+        assert!(host.login_results().iter().all(|(ok, _)| !ok));
     }
 }

@@ -56,7 +56,7 @@ pub mod commands;
 pub mod store;
 
 pub use commands::{SessionCommandHandler, SessionCommandHost};
-pub use store::TrunkStore;
+pub use store::{PersistLoadError, TrunkStore};
 
 /// 模块 id（`core.toml` 的 `enabled_modules` / 面板清单同一口径）。
 /// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。

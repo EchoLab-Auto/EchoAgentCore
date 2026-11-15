@@ -38,38 +38,160 @@ fn resolve_tool_path(workspace: &std::path::Path, raw: &str) -> PathBuf {
 /// [`resolve_tool_path`]）。
 ///
 /// 在创建目录**之前**调用：`../..` 逃逸不会在区外留下空目录；同时覆盖
-/// 「既有符号链接指向区外」的情况（目标自身或最近祖先解析到区外即拒绝）。
+/// 「既有符号链接指向区外」与「悬空符号链接」两种情况。
+///
+/// 关键点：`Path::exists()` / `canonicalize()` 都会把悬空链接当成
+/// 「不存在」，旧实现因此回退到父目录（父目录在工作区内）而放行，随后
+/// `fs::write` 跟随链接把内容写到区外。这里改用 `symlink_metadata` 判断
+/// 节点本身是否存在：悬空链接一律拒绝（目标不可解析，无法证明落在工作区）。
 fn guard_relative_path(
     workspace: &std::path::Path,
     path: &std::path::Path,
 ) -> Result<(), ToolError> {
     let root = workspace_root(workspace);
-    // 目标已存在（含符号链接）：其自身 canonical 必须在工作区内。
-    if let Ok(canonical) = path.canonicalize() {
-        if !canonical.starts_with(&root) {
-            return Err(ToolError::Execution(
-                "access denied: path outside workspace".into(),
-            ));
-        }
-        return Ok(());
-    }
-    // 目标尚不存在：以最近的已存在祖先为准（创建前校验）。
-    let mut probe = path.parent();
-    while let Some(candidate) = probe {
-        if candidate.exists() {
-            let canonical = candidate
-                .canonicalize()
-                .map_err(|e| ToolError::Execution(format!("cannot resolve path: {e}")))?;
-            if !canonical.starts_with(&root) {
-                return Err(ToolError::Execution(
-                    "access denied: path outside workspace".into(),
-                ));
-            }
+
+    // 1) 目标自身（symlink_metadata 不跟随链接，能区分不存在与悬空链接）。
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            canonical_guard_target(&root, path, meta.file_type().is_symlink())?;
             return Ok(());
         }
-        probe = candidate.parent();
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(ToolError::Execution(format!("cannot stat path: {e}"))),
+    }
+
+    // 2) 目标尚不存在：最近的已存在祖先必须落在工作区内。逐级用
+    //    symlink_metadata 探测——父目录若是悬空链接，`exists()` 会说
+    //    false，于是旧实现会一路回到工作区根而误放行。
+    let mut probe = path.parent();
+    while let Some(candidate) = probe {
+        match std::fs::symlink_metadata(candidate) {
+            Ok(meta) => {
+                canonical_guard_target(&root, candidate, meta.file_type().is_symlink())?;
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => probe = candidate.parent(),
+            Err(e) => return Err(ToolError::Execution(format!("cannot stat path: {e}"))),
+        }
     }
     Err(ToolError::Execution("cannot resolve path".into()))
+}
+
+/// 解析 `path` 的 canonical 形式并判定工作区归属。
+///
+/// `is_symlink` 来自 `symlink_metadata`：只有节点本身是链接时，
+/// `canonicalize` 的 NotFound 才意味着「悬空链接」而不是「路径不存在」。
+fn canonical_guard_target(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    is_symlink: bool,
+) -> Result<PathBuf, ToolError> {
+    match path.canonicalize() {
+        Ok(canonical) if canonical.starts_with(root) => Ok(canonical),
+        Ok(_) => Err(ToolError::Execution(
+            "access denied: path outside workspace".into(),
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && is_symlink => {
+            Err(ToolError::Execution(format!(
+                "access denied: dangling symlink in relative path ({} has no resolvable target)",
+                path.display()
+            )))
+        }
+        Err(e) => Err(ToolError::Execution(format!("cannot resolve path: {e}"))),
+    }
+}
+
+/// 必需字符串参数：缺失或非字符串都立即失败。
+///
+/// 不能用 `args["x"].as_str().unwrap_or("")`：参数错误会被静默降级成空串，
+/// 对 `write_file` 就是「把文件清空」。所有校验在任何文件系统操作之前完成。
+fn required_str<'a>(args: &'a Value, name: &str) -> Result<&'a str, ToolError> {
+    match args.get(name) {
+        Some(Value::String(value)) => Ok(value.as_str()),
+        Some(_) => Err(ToolError::InvalidArguments(format!(
+            "{name} must be a string"
+        ))),
+        None => Err(ToolError::InvalidArguments(format!("{name} required"))),
+    }
+}
+
+/// 可选无符号整数参数：缺失/null → None，其余非整数立即失败。
+fn optional_u64(args: &Value, name: &str) -> Result<Option<u64>, ToolError> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => number.as_u64().map(Some).ok_or_else(|| {
+            ToolError::InvalidArguments(format!("{name} must be a non-negative integer"))
+        }),
+        Some(_) => Err(ToolError::InvalidArguments(format!(
+            "{name} must be an integer"
+        ))),
+    }
+}
+
+/// read_file 单次返回的最大行数（防 LLM 上下文爆炸）。
+const READ_MAX_LINES: usize = 100_000;
+/// 整读上限；超过后只允许 `start_line`/`end_line` 流式分段。
+const READ_MAX_BYTES: u64 = 10 * 1024 * 1024;
+/// 分段扫描的硬上限（避免误扫超大日志/磁盘镜像）。
+const READ_MAX_SCAN_BYTES: u64 = 256 * 1024 * 1024;
+
+/// 流式读取 `[start_line, end_line]`（1-indexed，inclusive），返回
+/// `(总行数, 起始行, 结束行, 带行号的行)`。
+///
+/// 内存只与返回段大小相关（最多 [`READ_MAX_LINES`] 行），因此 >10MB 的
+/// 文件也能分段读，不必退回 bash。`end_line` 未给时读到末尾；超过
+/// `start + READ_MAX_LINES - 1` 的部分按上限截断（由调用方提示）。
+fn read_file_range(
+    path: &std::path::Path,
+    start_line: Option<u64>,
+    end_line: Option<u64>,
+) -> Result<(usize, usize, usize, Vec<String>), ToolError> {
+    use std::io::BufRead;
+
+    let start = match start_line {
+        Some(0) => {
+            return Err(ToolError::InvalidArguments(
+                "start_line must be >= 1".into(),
+            ))
+        }
+        Some(value) => value as usize,
+        None => 1,
+    };
+    if let Some(end) = end_line {
+        if (end as usize) < start {
+            return Err(ToolError::InvalidArguments(format!(
+                "end_line ({end}) must be >= start_line ({start})"
+            )));
+        }
+    }
+    let end_limit = end_line
+        .map(|value| value as usize)
+        .unwrap_or(usize::MAX)
+        .min(start.saturating_add(READ_MAX_LINES - 1));
+
+    let file =
+        std::fs::File::open(path).map_err(|e| ToolError::Execution(format!("read error: {e}")))?;
+    let mut total = 0usize;
+    let mut lines = Vec::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line.map_err(|e| ToolError::Execution(format!("read error: {e}")))?;
+        total += 1;
+        if total >= start && total <= end_limit {
+            lines.push(format!("{:>5} │ {}", total, line));
+        }
+    }
+    if total == 0 {
+        if start != 1 {
+            return Err(ToolError::Execution(format!(
+                "start_line {start} exceeds file length 0"
+            )));
+        }
+    } else if start > total {
+        return Err(ToolError::Execution(format!(
+            "start_line {start} exceeds file length {total}"
+        )));
+    }
+    Ok((total, start, end_limit.min(total), lines))
 }
 
 // ── ReadFileTool ──
@@ -105,13 +227,17 @@ impl Tool for ReadFileTool {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to the file, relative to project root or absolute"}
+                "path": {"type": "string", "description": "Path to the file, relative to project root or absolute"},
+                "start_line": {"type": "integer", "description": "Optional first line to read (1-indexed, inclusive). Omit to start at line 1"},
+                "end_line": {"type": "integer", "description": "Optional last line to read (1-indexed, inclusive). Omit to read to the end (capped at 100000 lines)"}
             },
             "required": ["path"]
         })
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let path_str = args["path"].as_str().unwrap_or("");
+        let start_line = optional_u64(&args, "start_line")?;
+        let end_line = optional_u64(&args, "end_line")?;
         let path = resolve_tool_path(&self.workspace, path_str);
 
         // 相对路径的穿越防护；绝对路径是显式意图（与 write/edit 同一约定）。
@@ -122,44 +248,70 @@ impl Tool for ReadFileTool {
             .canonicalize()
             .map_err(|e| ToolError::Execution(format!("file not found: {e}")))?;
 
-        // 大小上限：先查 metadata，超大文件直接拒绝，避免一次性读入
-        // 撑爆内存与 LLM 上下文。
-        const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10MB
         let size = std::fs::metadata(&canonical)
             .map_err(|e| ToolError::Execution(format!("stat error: {e}")))?
             .len();
-        if size > MAX_READ_BYTES {
+        let segmented = start_line.is_some() || end_line.is_some();
+        if size > READ_MAX_SCAN_BYTES {
             return Err(ToolError::Execution(format!(
-                "文件过大（{} 字节，超过 10MB 上限），请用 search_code 或分段读取",
+                "文件过大（{} 字节，超过 256MB 扫描上限），请用 search_code 定位或 bash 分段读取",
+                size
+            )));
+        }
+        if size > READ_MAX_BYTES && !segmented {
+            return Err(ToolError::Execution(format!(
+                "文件过大（{} 字节，超过 10MB 整读上限），请改用 start_line/end_line 分段读取或 search_code 定位",
                 size
             )));
         }
 
-        let content = std::fs::read_to_string(&canonical)
-            .map_err(|e| ToolError::Execution(format!("read error: {e}")))?;
+        let (total_lines, start, end, mut lines) = if segmented {
+            // 分段读：流式扫描，不把整个文件读进内存（>10MB 也可用）。
+            read_file_range(&canonical, start_line, end_line)?
+        } else {
+            // 不传分段参数：行为与旧版一致（整读前 100000 行）。
+            let content = std::fs::read_to_string(&canonical)
+                .map_err(|e| ToolError::Execution(format!("read error: {e}")))?;
+            let total = content.lines().count();
+            let end = total.min(READ_MAX_LINES);
+            let lines = content
+                .lines()
+                .take(READ_MAX_LINES)
+                .enumerate()
+                .map(|(index, line)| format!("{:>5} │ {}", index + 1, line))
+                .collect();
+            (total, 1usize, end, lines)
+        };
 
-        // 行数上限：超长内容截断并标注，防止 LLM 上下文爆炸。
-        const MAX_LINES: usize = 100_000;
-        let total_lines = content.lines().count();
-        let truncated = total_lines > MAX_LINES;
-        let mut lines: Vec<String> = content
-            .lines()
-            .take(MAX_LINES)
-            .enumerate()
-            .map(|(i, line)| format!("{:>5} │ {}", i + 1, line))
-            .collect();
+        // 只有「因单次行数上限而少显示」才算截断；用户显式要求的
+        // start_line/end_line 子区间不算。
+        let truncated = if segmented {
+            end < total_lines && end < end_line.map(|value| value as usize).unwrap_or(usize::MAX)
+        } else {
+            end < total_lines
+        };
         if truncated {
             lines.push(format!(
-                "… [内容已截断：共 {} 行，仅显示前 {} 行，请用 search_code 定位或分段读取]",
-                total_lines, MAX_LINES
+                "… [内容已截断：共 {} 行，当前显示 {}-{} 行；可用 start_line/end_line 继续分段读取]",
+                total_lines, start, end
             ));
         }
 
+        let range = if segmented {
+            if end >= start {
+                format!(", showing {start}-{end}")
+            } else {
+                ", showing 0 lines".to_string()
+            }
+        } else {
+            String::new()
+        };
         let summary = format!(
-            "{} ({}) {} lines{}",
+            "{} ({}) {} lines{}{}",
             path_str,
             canonical.display(),
             total_lines,
+            range,
             if truncated { " (truncated)" } else { "" }
         );
         Ok(format!("{summary}\n{}", lines.join("\n")))
@@ -268,7 +420,7 @@ impl Tool for SearchCodeTool {
         "search_code"
     }
     fn description(&self) -> &str {
-        "Search for a pattern in source files. Returns matching file paths and line numbers. Use this to find function definitions, imports, or specific code patterns."
+        "Search project source files for a pattern. Default mode is literal, case-insensitive text; set regex=true for a regular expression. Returns matching file paths and line numbers. Skips node_modules/target/.git/dist and files larger than 2MB."
     }
     // ── 远程面声明（2026-11 S8）──
     /// 本工具是"无会话依赖的纯操作"，可被别的节点直接调用。
@@ -283,8 +435,9 @@ impl Tool for SearchCodeTool {
         json!({
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Text or regex pattern to search for"},
-                "path": {"type": "string", "description": "Directory to search in (default: source/)", "default": "source"}
+                "pattern": {"type": "string", "description": "Literal text (default) or regular expression (regex=true) to search for. Literal search is case-insensitive"},
+                "path": {"type": "string", "description": "Directory to search in (default: source/)", "default": "source"},
+                "regex": {"type": "boolean", "description": "Treat pattern as a regular expression (default: false = literal). Regex mode is case-sensitive unless the pattern uses (?i)", "default": false}
             },
             "required": ["pattern"]
         })
@@ -294,7 +447,25 @@ impl Tool for SearchCodeTool {
         if pattern.is_empty() {
             return Err(ToolError::InvalidArguments("pattern required".into()));
         }
-        let dir_rel = args["path"].as_str().unwrap_or("source");
+        if pattern.chars().count() > 4096 {
+            return Err(ToolError::InvalidArguments(
+                "pattern too long (max 4096 chars)".into(),
+            ));
+        }
+        let use_regex = match args.get("regex") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return Err(ToolError::InvalidArguments(
+                    "regex must be a boolean".into(),
+                ))
+            }
+        };
+        let dir_rel = match args.get("path") {
+            None | Some(Value::Null) => "source",
+            Some(Value::String(value)) => value.as_str(),
+            Some(_) => return Err(ToolError::InvalidArguments("path must be a string".into())),
+        };
         let dir = resolve_tool_path(&self.workspace, dir_rel);
         // 同 list_files：相对路径穿越防护（绝对路径按显式意图放行）。
         if !dir_rel.starts_with('/') {
@@ -305,52 +476,266 @@ impl Tool for SearchCodeTool {
                 "directory not found: {dir_rel}"
             )));
         }
+        if !dir.is_dir() {
+            return Err(ToolError::Execution(format!("not a directory: {dir_rel}")));
+        }
+
+        /// 默认字面量（沿用旧行为的大小写不敏感）；regex=true 才按正则解释。
+        enum Matcher {
+            Literal(String),
+            Regex(regex::Regex),
+        }
+        impl Matcher {
+            fn is_match(&self, line: &str) -> bool {
+                match self {
+                    Matcher::Literal(needle) => line.to_lowercase().contains(needle),
+                    Matcher::Regex(regex) => regex.is_match(line),
+                }
+            }
+        }
+        let matcher = if use_regex {
+            let regex = regex::RegexBuilder::new(pattern)
+                .size_limit(2 * 1024 * 1024)
+                .build()
+                .map_err(|e| ToolError::InvalidArguments(format!("invalid regex: {e}")))?;
+            Matcher::Regex(regex)
+        } else {
+            Matcher::Literal(pattern.to_lowercase())
+        };
+
+        const MAX_RESULTS: usize = 50;
+        // 单文件上限 2MB：打包产物/生成代码不扫。
+        const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+        // 只搜项目源码/配置类型（旧白名单缺 ts/tsx/js/jsx/vue）。
+        const SOURCE_EXTENSIONS: &[&str] = &[
+            "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "vue", "svelte", "py", "rb", "go",
+            "java", "kt", "kts", "c", "h", "cc", "cpp", "cxx", "hpp", "cs", "php", "swift",
+            "scala", "sh", "bash", "zsh", "sql", "html", "htm", "css", "scss", "sass", "less",
+            "json", "jsonc", "toml", "yaml", "yml", "xml", "md", "markdown",
+        ];
+        // 构建产物/依赖目录不扫（`depth() == 0` 是用户显式指定的根，
+        // 即使名字叫 target 也照搜——尊重显式 path）。
+        fn is_ignored_dir(entry: &walkdir::DirEntry) -> bool {
+            entry.depth() > 0
+                && entry.file_type().is_dir()
+                && matches!(
+                    entry.file_name().to_str(),
+                    Some(
+                        "node_modules"
+                            | "target"
+                            | ".git"
+                            | "dist"
+                            | "build"
+                            | ".next"
+                            | ".venv"
+                            | "__pycache__"
+                            | "coverage"
+                            | "vendor"
+                    )
+                )
+        }
 
         let mut results: Vec<String> = Vec::new();
-        let pattern_lower = pattern.to_lowercase();
-        for entry in walkdir::WalkDir::new(&dir)
+        let mut truncated = false;
+        let mut skipped_large = 0usize;
+        'walk: for entry in walkdir::WalkDir::new(&dir)
             .max_depth(10)
             .into_iter()
-            .filter_map(|e| e.ok())
+            .filter_entry(|entry| !is_ignored_dir(entry))
+            .filter_map(|entry| entry.ok())
         {
             if !entry.file_type().is_file() {
                 continue;
             }
             let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !matches!(
-                ext,
-                "rs" | "toml" | "md" | "json" | "sh" | "py" | "yaml" | "yml"
-            ) {
+            let is_source = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| SOURCE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+                .unwrap_or(false);
+            if !is_source {
                 continue;
             }
-            if let Ok(content) = std::fs::read_to_string(path) {
-                for (i, line) in content.lines().enumerate() {
-                    if line.to_lowercase().contains(&pattern_lower) {
-                        let rel = path.strip_prefix(&self.workspace).unwrap_or(path);
-                        results.push(format!("{}:{}: {}", rel.display(), i + 1, line.trim()));
-                        if results.len() >= 50 {
-                            break;
-                        }
-                    }
-                }
+            // 大文件（打包产物/生成代码）直接跳过；metadata 取不到也跳过。
+            if entry
+                .metadata()
+                .map(|meta| meta.len() > MAX_FILE_BYTES)
+                .unwrap_or(true)
+            {
+                skipped_large += 1;
+                continue;
             }
-            if results.len() >= 50 {
-                break;
+            let Ok(content) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            for (index, line) in content.lines().enumerate() {
+                if !matcher.is_match(line) {
+                    continue;
+                }
+                if results.len() >= MAX_RESULTS {
+                    truncated = true;
+                    break 'walk;
+                }
+                let rel = path.strip_prefix(&self.workspace).unwrap_or(path);
+                results.push(format!("{}:{}: {}", rel.display(), index + 1, line.trim()));
             }
         }
+
         if results.is_empty() {
-            Ok(format!("No matches found for '{}' in {}", pattern, dir_rel))
+            let mut message = format!("No matches found for '{}' in {}", pattern, dir_rel);
+            if skipped_large > 0 {
+                message.push_str(&format!("\n（已跳过 {skipped_large} 个超过 2MB 的文件）"));
+            }
+            Ok(message)
         } else {
-            results.truncate(50);
-            Ok(format!(
-                "{} matches for '{}':\n{}",
-                results.len(),
-                pattern,
-                results.join("\n")
-            ))
+            let mut summary = format!("{} matches for '{}'", results.len(), pattern);
+            if truncated {
+                summary.push_str(&format!(
+                    " (结果已截断：仅显示前 {MAX_RESULTS} 条，请缩小 path 或使用更精确的模式)"
+                ));
+            }
+            if skipped_large > 0 {
+                summary.push_str(&format!("（跳过 {skipped_large} 个超过 2MB 的文件）"));
+            }
+            Ok(format!("{summary}:\n{}", results.join("\n")))
         }
     }
+}
+
+/// 临时文件清理守卫：rename 成功前 Drop 掉临时文件，避免失败留下垃圾。
+struct PendingFile(Option<PathBuf>);
+
+impl PendingFile {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for PendingFile {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// 原子上写：同目录临时文件 + `rename`，避免写到一半留下截断文件。
+///
+/// 语义与边界：
+/// - 先完整写入临时文件并 `sync_all`，最后一步才 `rename`；任何中途失败
+///   都不会动原文件（旧实现 `fs::write` 会先截断再写）。
+/// - 目标是符号链接时写到其真实目标：`rename` 会把链接本身替换成普通文件，
+///   必须避免丢掉链接语义；悬空链接无法解析目标，明确报错。
+/// - 既有文件保留权限位（Unix mode）；新建文件沿用 umask 默认权限。
+/// - 非普通文件（目录/FIFO 等）拒绝，避免 rename 把设备节点替换掉。
+/// - 不保留硬链接关系与扩展属性（rename 换代 inode，与常见编辑器原子保存
+///   一致）；父目录必须可写（原子提交的固有限制）。
+fn write_file_atomic(path: &std::path::Path, content: &str) -> Result<(), ToolError> {
+    let write_target = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => path.canonicalize().map_err(|e| {
+            ToolError::Execution(format!("write: dangling symlink {}: {e}", path.display()))
+        })?,
+        Ok(_) => path.to_path_buf(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(e) => return Err(ToolError::Execution(format!("stat: {e}"))),
+    };
+
+    // 既有目标：必须是普通文件，且当前用户确实有写权限（只读文件应像旧版
+    // 一样失败；`rename` 本身只看父目录权限，不能代替这项检查）。
+    let existing_permissions = match std::fs::metadata(&write_target) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                return Err(ToolError::Execution(format!(
+                    "write: not a regular file: {}",
+                    write_target.display()
+                )));
+            }
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&write_target)
+                .map_err(|e| ToolError::Execution(format!("write: {e}")))?;
+            Some(meta.permissions())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(ToolError::Execution(format!("stat: {e}"))),
+    };
+
+    let parent = write_target
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+
+    // 同目录短名临时文件（不拼原文件名，避免接近 NAME_MAX 时超长）；
+    // create_new 保证并发写不会共用同一个临时文件。
+    let mut temp_path: Option<PathBuf> = None;
+    let mut file: Option<std::fs::File> = None;
+    for attempt in 0..100u32 {
+        let candidate = parent.join(format!(
+            ".echo-tmp-{}-{nonce}-{attempt}",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // 既有文件先以 0600 打开，写完再恢复原权限，避免临时文件在
+            // 写入过程中比目标更宽松。
+            if existing_permissions.is_some() {
+                options.mode(0o600);
+            }
+        }
+        match options.open(&candidate) {
+            Ok(opened) => {
+                temp_path = Some(candidate);
+                file = Some(opened);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(ToolError::Execution(format!(
+                    "write: cannot create temp file in {}: {e}",
+                    parent.display()
+                )))
+            }
+        }
+    }
+    let (Some(temp_path), Some(mut file)) = (temp_path, file) else {
+        return Err(ToolError::Execution(
+            "write: cannot allocate a temp file".into(),
+        ));
+    };
+    let mut cleanup = PendingFile(Some(temp_path.clone()));
+
+    let prepared = (|| -> std::io::Result<()> {
+        if let Some(permissions) = existing_permissions {
+            file.set_permissions(permissions)?;
+        }
+        std::io::Write::write_all(&mut file, content.as_bytes())?;
+        file.sync_all()
+    })();
+    drop(file);
+    if let Err(e) = prepared {
+        return Err(ToolError::Execution(format!("write: {e}")));
+    }
+
+    std::fs::rename(&temp_path, &write_target).map_err(|e| {
+        ToolError::Execution(format!(
+            "write: cannot commit {}: {e}",
+            write_target.display()
+        ))
+    })?;
+    cleanup.disarm();
+
+    // rename 的持久化依赖父目录落盘；best effort，失败不影响已写入的内容。
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 // ── WriteFileTool ──
@@ -393,11 +778,13 @@ impl Tool for WriteFileTool {
         })
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        let path_str = args["path"].as_str().unwrap_or("");
+        let path_str = required_str(&args, "path")?;
         if path_str.is_empty() {
             return Err(ToolError::InvalidArguments("path required".into()));
         }
-        let content = args["content"].as_str().unwrap_or("");
+        // content 必须在**任何文件系统操作之前**解析：缺失/非字符串是参数
+        // 错误，不能 `unwrap_or("")` 静默变成「清空文件」；合法空串保留。
+        let content = required_str(&args, "content")?;
         let path = resolve_tool_path(&self.workspace, path_str);
 
         // 相对路径的穿越防护（创建目录**之前**，不在区外留空目录）；
@@ -411,7 +798,12 @@ impl Tool for WriteFileTool {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ToolError::Execution(format!("mkdir: {e}")))?;
         }
-        std::fs::write(&path, content).map_err(|e| ToolError::Execution(format!("write: {e}")))?;
+        // 创建目录后再校验一次：缩小「guard 之后、写入之前父目录被换成
+        // 符号链接」的 TOCTOU 窗口（原子 rename 本身不会跟随目标链接）。
+        if !path_str.starts_with('/') {
+            guard_relative_path(&self.workspace, &path)?;
+        }
+        write_file_atomic(&path, content)?;
 
         let lines = content.lines().count();
         Ok(format!("wrote {} ({} lines)", path_str, lines))
@@ -460,14 +852,16 @@ impl Tool for EditFileTool {
         })
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        let path_str = args["path"].as_str().unwrap_or("");
+        let path_str = required_str(&args, "path")?;
         if path_str.is_empty() {
             return Err(ToolError::InvalidArguments("path required".into()));
         }
-        let path = resolve_tool_path(&self.workspace, path_str);
-        let start = args["start_line"].as_u64().unwrap_or(0) as usize;
-        let end = args["end_line"].as_u64().unwrap_or(0) as usize;
-        let new_content = args["new_content"].as_str().unwrap_or("");
+        let start = optional_u64(&args, "start_line")?.unwrap_or(0) as usize;
+        let end = optional_u64(&args, "end_line")?.unwrap_or(0) as usize;
+        // new_content 与 write_file 的 content 同一口径：缺失/非字符串立即
+        // 失败（旧实现会当成空串，等价于把目标行删掉）；合法空串仍表示
+        // 「替换为空」。
+        let new_content = required_str(&args, "new_content")?;
 
         if start == 0 || end == 0 || start > end {
             return Err(ToolError::InvalidArguments(
@@ -476,12 +870,20 @@ impl Tool for EditFileTool {
         }
 
         // 相对路径的穿越防护；绝对路径是显式意图（与 read_file 一致）。
+        let path = resolve_tool_path(&self.workspace, path_str);
         if !path_str.starts_with('/') {
             guard_relative_path(&self.workspace, &path)?;
         }
         let canonical = path
             .canonicalize()
             .map_err(|e| ToolError::Execution(format!("file not found: {e}")))?;
+        // 相对路径再确认 canonical 结果仍在工作区内：guard 与 canonicalize
+        // 之间若符号链接被替换，这里兜住（绝对路径仍是显式意图）。
+        if !path_str.starts_with('/') && !canonical.starts_with(workspace_root(&self.workspace)) {
+            return Err(ToolError::Execution(
+                "access denied: path outside workspace".into(),
+            ));
+        }
 
         let original = std::fs::read_to_string(&canonical)
             .map_err(|e| ToolError::Execution(format!("read: {e}")))?;
@@ -500,8 +902,7 @@ impl Tool for EditFileTool {
             .collect();
         new_lines.extend(new_content.lines().map(|l| l.to_string()));
         new_lines.extend(lines[end..total].iter().map(|l| l.to_string()));
-        std::fs::write(&canonical, new_lines.join("\n") + "\n")
-            .map_err(|e| ToolError::Execution(format!("write: {e}")))?;
+        write_file_atomic(&canonical, &(new_lines.join("\n") + "\n"))?;
         Ok(format!(
             "edited {}: replaced lines {}-{} ({} lines)",
             path_str, start, end, total
@@ -1746,5 +2147,407 @@ mod tests {
             "description: {}",
             tool.description()
         );
+    }
+    // ── 2026-11 文件工具审计回归 ────────────────────────────────────────
+    // 下面这组用例锁的是四类真实故障：
+    //   1. 悬空符号链接绕过 guard（canonicalize 失败后回退父目录）；
+    //   2. content/new_content 参数错误被 `unwrap_or("")` 静默降级成清空；
+    //   3. search_code 声称 regex 实际 contains，且漏掉前端源码类型；
+    //   4. read_file 只能整读（>100000 行只能退回 bash）。
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_rejects_dangling_symlink_escape() {
+        // 旧实现：link.txt 的 canonicalize 失败（悬空）→ 回退父目录（工作区
+        // 内）→ 放行 → fs::write 跟随链接在区外创建目标文件。
+        let ws = temp_workspace("dangling-link");
+        let outside =
+            std::env::temp_dir().join(format!("echo-coding-dangling-out-{}", std::process::id()));
+        let _ = std::fs::remove_file(&outside);
+        std::os::unix::fs::symlink(&outside, ws.join("link.txt")).unwrap();
+
+        let tool = WriteFileTool::new(ws.clone());
+        let err = tool
+            .execute(json!({"path": "link.txt", "content": "pwned"}))
+            .await
+            .expect_err("dangling symlink must be rejected");
+        assert!(
+            err.to_string().contains("dangling symlink"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !outside.exists(),
+            "target outside workspace must not be created"
+        );
+        assert_eq!(
+            std::fs::read_link(ws.join("link.txt")).unwrap(),
+            outside,
+            "the dangling link itself must stay untouched"
+        );
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_rejects_dangling_directory_symlink() {
+        let ws = temp_workspace("dangling-dir-link");
+        let outside_dir =
+            std::env::temp_dir().join(format!("echo-coding-dangling-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside_dir);
+        std::os::unix::fs::symlink(&outside_dir, ws.join("outdir")).unwrap();
+
+        let tool = WriteFileTool::new(ws.clone());
+        let err = tool
+            .execute(json!({"path": "outdir/file.txt", "content": "x"}))
+            .await
+            .expect_err("dangling directory symlink must be rejected");
+        assert!(
+            err.to_string().contains("dangling symlink"),
+            "unexpected error: {err}"
+        );
+        assert!(!outside_dir.exists(), "outside dir must not be created");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn write_file_bad_content_does_not_truncate_or_create() {
+        let ws = temp_workspace("write-content-args");
+        let target = ws.join("keep.txt");
+        std::fs::write(&target, "keep me\n").unwrap();
+        let tool = WriteFileTool::new(ws.clone());
+
+        for args in [
+            json!({"path": "keep.txt"}),
+            json!({"path": "keep.txt", "content": null}),
+            json!({"path": "keep.txt", "content": 42}),
+            json!({"path": "keep.txt", "content": {"text": "x"}}),
+            json!({"path": "keep.txt", "content": ["x"]}),
+        ] {
+            let err = tool.execute(args.clone()).await.unwrap_err();
+            assert!(
+                matches!(&err, ToolError::InvalidArguments(_)),
+                "args {args}: {err:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&target).unwrap(),
+                "keep me\n",
+                "existing file must stay intact for {args}"
+            );
+        }
+
+        // 缺失 content 也不能先创建空文件。
+        let err = tool
+            .execute(json!({"path": "brand-new.txt"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+        assert!(!ws.join("brand-new.txt").exists(), "no side-effect file");
+
+        // 合法空串是显式「写空文件」，不能被误拒。
+        tool.execute(json!({"path": "keep.txt", "content": ""}))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn edit_file_bad_new_content_does_not_delete_lines() {
+        let ws = temp_workspace("edit-content-args");
+        let target = ws.join("f.txt");
+        std::fs::write(&target, "one\ntwo\nthree\n").unwrap();
+        let tool = EditFileTool::new(ws.clone());
+
+        for args in [
+            json!({"path": "f.txt", "start_line": 2, "end_line": 2}),
+            json!({"path": "f.txt", "start_line": 2, "end_line": 2, "new_content": null}),
+            json!({"path": "f.txt", "start_line": 2, "end_line": 2, "new_content": 7}),
+        ] {
+            let err = tool.execute(args.clone()).await.unwrap_err();
+            assert!(
+                matches!(&err, ToolError::InvalidArguments(_)),
+                "args {args}: {err:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&target).unwrap(),
+                "one\ntwo\nthree\n",
+                "lines must not be deleted for {args}"
+            );
+        }
+
+        // 合法空串仍表示「把目标行替换为空」（删除该行）。
+        tool.execute(json!({
+            "path": "f.txt",
+            "start_line": 2,
+            "end_line": 2,
+            "new_content": ""
+        }))
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "one\nthree\n");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_preserves_permissions_and_symlink_semantics() {
+        use std::os::unix::fs::PermissionsExt;
+        let ws = temp_workspace("write-perms");
+        let real = ws.join("real.txt");
+        std::fs::write(&real, "old").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let link = ws.join("link.txt");
+        std::os::unix::fs::symlink("real.txt", &link).unwrap();
+
+        let tool = WriteFileTool::new(ws.clone());
+        tool.execute(json!({"path": "link.txt", "content": "new"}))
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "atomic rename must not replace the symlink itself"
+        );
+        assert_eq!(
+            std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+            0o640,
+            "existing mode bits must survive the atomic replace"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn read_file_supports_line_ranges() {
+        let ws = temp_workspace("read-range");
+        let content: String = (1..=10).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(ws.join("f.txt"), content).unwrap();
+        let tool = ReadFileTool::new(ws.clone());
+
+        let out = tool
+            .execute(json!({"path": "f.txt", "start_line": 3, "end_line": 4}))
+            .await
+            .unwrap();
+        assert!(out.contains("3 │ line3"), "{out}");
+        assert!(out.contains("4 │ line4"), "{out}");
+        assert!(!out.contains("2 │ line2"), "before range leaked: {out}");
+        assert!(!out.contains("5 │ line5"), "after range leaked: {out}");
+        assert!(out.contains("10 lines, showing 3-4"), "{out}");
+
+        // 只给 start_line：读到末尾。
+        let out = tool
+            .execute(json!({"path": "f.txt", "start_line": 8}))
+            .await
+            .unwrap();
+        assert!(out.contains("8 │ line8"), "{out}");
+        assert!(out.contains("10 │ line10"), "{out}");
+        assert!(!out.contains("7 │ line7"), "{out}");
+
+        // 只给 end_line：从第 1 行开始。
+        let out = tool
+            .execute(json!({"path": "f.txt", "end_line": 2}))
+            .await
+            .unwrap();
+        assert!(
+            out.contains("1 │ line1") && out.contains("2 │ line2"),
+            "{out}"
+        );
+        assert!(!out.contains("3 │ line3"), "{out}");
+
+        // 非法区间明确报参数错误。
+        let err = tool
+            .execute(json!({"path": "f.txt", "start_line": 5, "end_line": 4}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)), "{err:?}");
+        let err = tool
+            .execute(json!({"path": "f.txt", "start_line": 0}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)), "{err:?}");
+
+        // 不传分段参数：旧行为整读（输出包含全部 10 行）。
+        let out = tool.execute(json!({"path": "f.txt"})).await.unwrap();
+        assert!(out.contains("1 │ line1") && out.contains("10 │ line10"));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+    #[tokio::test]
+    async fn read_file_range_works_beyond_10mb() {
+        use std::io::Write;
+        let ws = temp_workspace("read-range-big");
+        let path = ws.join("big.log");
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        let filler = "x".repeat(64 * 1024);
+        for i in 1..=200 {
+            writeln!(file, "{i:04} {filler}").unwrap();
+        }
+        file.flush().unwrap();
+        assert!(
+            std::fs::metadata(&path).unwrap().len() > 10 * 1024 * 1024,
+            "fixture must exceed the whole-read cap"
+        );
+
+        let tool = ReadFileTool::new(ws.clone());
+        // 整读仍明确拒绝（不把 12MB+ 塞进上下文）。
+        let err = tool.execute(json!({"path": "big.log"})).await.unwrap_err();
+        assert!(err.to_string().contains("10MB"), "{err}");
+        // 分段读流式扫描，>10MB 也能用。
+        let out = tool
+            .execute(json!({"path": "big.log", "start_line": 100, "end_line": 100}))
+            .await
+            .unwrap();
+        assert!(out.contains("100 │ 0100 "), "line 100 missing");
+        assert!(out.contains("200 lines, showing 100-100"), "{out}");
+        assert!(!out.contains("99 │ 0099"), "before range leaked");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn search_code_literal_default_and_optional_regex() {
+        let ws = temp_workspace("search-regex");
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(ws.join("src/main.rs"), "fn main() {\n    let axb = 1;\n}\n").unwrap();
+        let tool = SearchCodeTool::new(ws.clone());
+
+        // 默认字面量：`\s` 没有特殊含义。
+        let out = tool
+            .execute(json!({"pattern": r"fn\s+main", "path": "."}))
+            .await
+            .unwrap();
+        assert!(out.starts_with("No matches"), "{out}");
+
+        // regex=true 才按正则解释。
+        let out = tool
+            .execute(json!({"pattern": r"fn\s+main", "path": ".", "regex": true}))
+            .await
+            .unwrap();
+        assert!(out.contains("src/main.rs:1"), "{out}");
+
+        // 默认仍大小写不敏感（旧行为兼容）。
+        let out = tool
+            .execute(json!({"pattern": "AXB", "path": "."}))
+            .await
+            .unwrap();
+        assert!(out.contains("main.rs:2"), "{out}");
+
+        // 默认 `.` 是字面量；regex=true 才是通配。
+        let out = tool
+            .execute(json!({"pattern": "a.b", "path": "."}))
+            .await
+            .unwrap();
+        assert!(out.starts_with("No matches"), "dot must be literal: {out}");
+        let out = tool
+            .execute(json!({"pattern": "a.b", "path": ".", "regex": true}))
+            .await
+            .unwrap();
+        assert!(out.contains("main.rs:2"), "{out}");
+
+        let err = tool
+            .execute(json!({"pattern": "(", "path": ".", "regex": true}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ToolError::InvalidArguments(m) if m.contains("invalid regex")),
+            "{err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn search_code_covers_frontend_source_types() {
+        let ws = temp_workspace("search-ext");
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        for name in ["a.ts", "b.tsx", "c.js", "d.jsx", "e.vue"] {
+            std::fs::write(ws.join("src").join(name), "const needle = 1;\n").unwrap();
+        }
+        let tool = SearchCodeTool::new(ws.clone());
+        let out = tool
+            .execute(json!({"pattern": "needle", "path": "."}))
+            .await
+            .unwrap();
+        for name in ["a.ts", "b.tsx", "c.js", "d.jsx", "e.vue"] {
+            assert!(out.contains(name), "{name} missing from: {out}");
+        }
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn search_code_skips_vendor_and_build_dirs() {
+        let ws = temp_workspace("search-ignore");
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(ws.join("src/app.ts"), "needle\n").unwrap();
+        for (dir, file) in [
+            ("node_modules/pkg", "index.js"),
+            ("target/debug", "generated.rs"),
+            (".git/hooks", "hook.sh"),
+            ("dist", "bundle.js"),
+        ] {
+            std::fs::create_dir_all(ws.join(dir)).unwrap();
+            std::fs::write(ws.join(dir).join(file), "needle\n").unwrap();
+        }
+
+        let tool = SearchCodeTool::new(ws.clone());
+        let out = tool
+            .execute(json!({"pattern": "needle", "path": "."}))
+            .await
+            .unwrap();
+        assert!(out.contains("src/app.ts"), "{out}");
+        for dir in ["node_modules", "target", ".git", "dist"] {
+            assert!(!out.contains(dir), "must skip {dir}: {out}");
+        }
+
+        // 显式把 target 作为搜索根时仍要搜（filter 只看 depth > 0）。
+        let out = tool
+            .execute(json!({"pattern": "needle", "path": "target"}))
+            .await
+            .unwrap();
+        assert!(out.contains("target/debug/generated.rs"), "{out}");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn search_code_skips_files_over_2mb() {
+        let ws = temp_workspace("search-large");
+        let mut big = String::from("needle\n");
+        big.push_str(&"x".repeat(3 * 1024 * 1024));
+        std::fs::write(ws.join("big.ts"), big).unwrap();
+        std::fs::write(ws.join("small.ts"), "needle\n").unwrap();
+
+        let tool = SearchCodeTool::new(ws.clone());
+        let out = tool
+            .execute(json!({"pattern": "needle", "path": "."}))
+            .await
+            .unwrap();
+        assert!(out.contains("small.ts"), "{out}");
+        assert!(
+            !out.contains("big.ts"),
+            "oversized file must be skipped: {out}"
+        );
+        assert!(out.contains("跳过 1 个"), "skip hint expected: {out}");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn search_code_truncation_is_explicit() {
+        let ws = temp_workspace("search-trunc");
+        let mut content = String::new();
+        for i in 0..80 {
+            content.push_str(&format!("needle {i}\n"));
+        }
+        std::fs::write(ws.join("many.rs"), content).unwrap();
+
+        let tool = SearchCodeTool::new(ws.clone());
+        let out = tool
+            .execute(json!({"pattern": "needle", "path": "."}))
+            .await
+            .unwrap();
+        assert!(out.starts_with("50 matches"), "{out}");
+        assert!(out.contains("结果已截断"), "truncation hint missing: {out}");
+        assert_eq!(out.lines().count().saturating_sub(1), 50);
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

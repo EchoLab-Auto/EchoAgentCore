@@ -1,0 +1,10 @@
+[Unit]
+Description=migration-live old fixture @INSTANCE@ (@ROLE@)
+[Service]
+Type=simple
+WorkingDirectory=@WORKDIR@
+ExecStart=/bin/sleep 600
+Restart=no
+TimeoutStopSec=10
+[Install]
+WantedBy=default.target

@@ -440,7 +440,17 @@ impl Agent {
             } => {
                 // 懒加载（2026-11）：**第一次真正要用这份历史**时才读盘。
                 // 启动期不读，闲置人格就不占那份 20 MB 事件日志的内存。
-                self.trunk.ensure_loaded().await;
+                //
+                // 跨组闭环（2026-11）：坏档 / 读失败必须**拒绝这条消息**，
+                // 错误对用户可见。失败态下 append 只 warn、落盘被拒——turn
+                // 会产出一条"重启后不存在"的假回复（历史/时间线双丢）。
+                if let Err(error) = self.trunk.ensure_loaded_or_err().await {
+                    self.emit(BackendEvent::Error {
+                        session_id: Some(session_id.clone()),
+                        message: format!("会话历史加载失败，已拒绝发送：{error}"),
+                    });
+                    return;
+                }
                 // Parse or fall back to local TUI session key.
                 let key = SessionKey::parse(&session_id).unwrap_or_else(SessionKey::local_tui);
                 // 工作区通道（激活 = 进入项目对话）：昵称解析为工作区名，重建
@@ -870,7 +880,6 @@ mod save_pending_file_tests {
     use crate::agent::commands::save_pending_file;
     use agent_module_management::protocol::PendingFile;
 
-
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "echo-attach-save-{tag}-{}-{}",
@@ -928,7 +937,11 @@ mod save_pending_file_tests {
         let saved = save_pending_file("s", &file);
         assert!(saved.path.is_none());
         assert!(
-            saved.error.as_deref().unwrap_or_default().contains("base64"),
+            saved
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("base64"),
             "unexpected error: {:?}",
             saved.error
         );

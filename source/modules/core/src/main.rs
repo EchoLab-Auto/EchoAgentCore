@@ -18,6 +18,7 @@ mod agent_supervisor;
 mod builtin_modules;
 mod module_tag;
 mod config;
+mod deployment;
 mod federation_admin_host;
 mod federation_import;
 mod federation_rt;
@@ -481,6 +482,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         )?;
         let caps = agent_module_federation::NodeCaps {
             tools: Vec::new(),
+            // 工具定义与 `tools` 同源上报（`set_tool_reporter` 注入；此处只是
+            // 注册表就绪前的空快照）——2026-11 起 schema 随握手过线。
+            tool_definitions: Vec::new(),
             subagent: true,
             workspaces: Vec::new(),
             // 启动时无活跃 turn；调度器应经 Query(NodeStatus) 拉实时值。
@@ -1628,28 +1632,24 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         //
         // 宣告必须与**执行端的宿主选择同口径**，否则对端会注册一批"看着有、
         // 一调就失败"的代理工具（2026-10 ai_station：宣告 6 个、执行全
-        // Forbidden）。执行端规则见 `FederationRuntime::executor_hosts`——
-        // 人格优先、零人格回退 `__core`——这里照抄同一规则。
-        let caps_supervisor = supervisor.clone();
-        let caps_core = core_agent.clone();
+        // Forbidden）。
+        //
+        // 2026-11 复审 F：执行端只取 `executor_hosts().first()`（人格优先、
+        // 零人格回退 `__core`），所以上报也必须**只报那一个注册表**——此前
+        // 汇总全部 persona 的并集，第二个人格独有的工具会被宣告、执行端却
+        // 返回 UnknownCall。最小一致性方案：同一份 `rt.personas`、同一条
+        // “第一个活着的”规则（`FederationRuntime::primary_executor_host`）。
+        //
+        // 2026-11：上报从"工具名"升级为"工具定义"（名 + 描述 + 参数
+        // schema）。`NodeCaps.tools` 由定义派生，两者不会漂移；大脑侧据此
+        // 注册代理工具，不再复制本机同名 schema 猜对端参数。
+        let rt_weak = std::sync::Arc::downgrade(&rt);
         rt.federation
             .set_tool_reporter(std::sync::Arc::new(move || {
-                let personas = caps_supervisor.personas();
-                let mut hosts: Vec<&Arc<agent_module_loop::Agent>> =
-                    personas.iter().map(|p| &p.agent).collect();
-                if hosts.is_empty() {
-                    hosts.push(&caps_core);
-                }
-                let mut names: Vec<String> = Vec::new();
-                for agent in hosts {
-                    for name in agent.tools.remote_capable_names() {
-                        if !names.contains(&name) {
-                            names.push(name);
-                        }
-                    }
-                }
-                names.sort();
-                names
+                rt_weak
+                    .upgrade()
+                    .map(|rt| rt.advertised_tool_definitions())
+                    .unwrap_or_default()
             }))
             .await;
         // 工具上报就绪后才起联邦监听/连出（顺序即协议契约：见上面延后说明）。
@@ -2178,10 +2178,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 已卸载的模块。
         persona.agent.apply_capabilities(&persona.profile).await;
         persona.agent.set_loop_runner(loop_runner.clone());
-        persona.agent.start_session_save_task();
-        persona.agent.start_module_reload_task().await;
+        // 后台任务（周期保存 + 模块热重载）在这里启动（2026-11 C 复审）：
+        // `build` / `RunningAgent::bound` **只构造不启动**，启动的唯一时机是
+        // "最终配置之后"——启动期就是这里（能力门控 + loop runner 刚应用完），
+        // 运行期重建由 `process_commands` 在同样的位置调用。幂等；已退场的一代
+        // 会被拒绝（停止状态不可重启）。
+        persona.agent.start_background_tasks();
         // orchestration 已删除（2026-09-16）
     }
+
+    // 进程级核心代理（`__core`）：不是人格、不在 supervisor 注册表里，但它
+    // 也有自己的会话档。此前它既没有周期保存、也不在退出时的收尾名单里
+    // （2026-11 C 统一生命周期时补上）——只有周期保存，模块热重载仍归人格
+    // （它的模块宿主与人格共享，重复起监视没有意义）。
+    core_agent.start_session_save_task();
 
     // 余额快照周期任务（全局管理代理，只此一份）：按
     // `[agent].balance_snapshot_secs`（默认 600s）采样每个可查询 profile，
@@ -2195,18 +2205,35 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 每实例一个串行 worker（入站队列 → AgentMessageHook）。队列由
     // `core_api` 的反压回执语义保序（模块侧退避重试）。
     for (instance_id, persona_id, handle) in qq_module_workers {
-        let target = match supervisor.get_exact(&persona_id) {
-            Some(p) => p.agent,
-            None => {
-                warn!(persona = %persona_id, "adapter module persona not found; skipping wire");
-                continue;
-            }
-        };
-        let hook = Arc::new(agent_module_loop::AgentMessageHook::new(target));
+        // 启动期只校验人格存在，**不**把它的 Arc 钉死在这里（2026-11 C）：
+        // 人格禁用后会重建出新一代实例，硬捕获的旧 Arc 会让入站消息永远
+        // 投给已下线的那一代（新实例收不到，两代还同时写同一份会话档）。
+        if supervisor.get_exact(&persona_id).is_none() {
+            warn!(persona = %persona_id, "adapter module persona not found; skipping wire");
+            continue;
+        }
+        // 每条消息按 team_id 解析**当前**实例；解析不到（人格被禁用/删除）
+        // 就丢弃——"禁用不接新输入"。
+        let manager_slot = Arc::clone(&agent_manager_slot);
+        let hook_persona = persona_id.clone();
         let worker_instance = instance_id.clone();
         let mut inbound_rx = handle.inbound_rx;
         tokio::spawn(async move {
             while let Some(message) = inbound_rx.recv().await {
+                let live = manager_slot
+                    .read()
+                    .ok()
+                    .and_then(|slot| slot.upgrade())
+                    .and_then(|manager| manager.resolve(Some(&hook_persona)));
+                let Some(agent) = live else {
+                    tracing::debug!(
+                        instance = %worker_instance,
+                        persona = %hook_persona,
+                        "inbound message dropped: persona not running"
+                    );
+                    continue;
+                };
+                let hook = agent_module_loop::AgentMessageHook::new(agent);
                 let incoming = agent_module_loop::adapter::message_to_incoming(message);
                 if let Err(error) = hook.on_incoming_message(incoming).await {
                     tracing::warn!(
@@ -2292,6 +2319,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // - 会话类（timeline/context/历史维护）：暂交默认人格处理，由处理侧按
     //   team_id 解析目标（P3 起 team_id 必填）；
     // - 其余（全局/管理类）：交给进程级核心服务代理（非人格）。
+    //
+    // 部署控制闸：未设置 `ECHO_DEPLOY_CONTROL_SOCKET` 时无人持有写锁，
+    // `try_read_owned` 恒成功，旧行为不变；prepare 持写锁期间新管理命令
+    // 一律回 Error，已在处理中的命令由写锁等待其完成。
+    let deployment_gate = Arc::new(tokio::sync::RwLock::new(()));
     let pump_core = core_agent.clone();
     let pump_handle = handle.clone();
     // 进程级命令（团队 CRUD / API 改名）：**不属于任何人格**，在路由到 agent
@@ -2301,11 +2333,25 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // spawn 了，而 manager 更晚才就绪（同一个 `agent_manager_slot` 弱引用）。
     // 惰性解析的代价是每条命令一次 `Weak::upgrade` —— 可忽略。
     let pump_slot = agent_manager_slot.clone();
+    let pump_gate = deployment_gate.clone();
     let pump = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         loop {
             interval.tick().await;
             while let Some(cmd) = pump_handle.try_recv_command() {
+                // 部署 prepare 持写锁时拒绝新管理写；guard 必须跨
+                // process_commands 与 spawn 出去的 apply_command 完整存活。
+                let command_guard = match pump_gate.clone().try_read_owned() {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        pump_core.emit(agent_module_loop::BackendEvent::Error {
+                            session_id: None,
+                            message: "deployment maintenance in progress; management command rejected"
+                                .into(),
+                        });
+                        continue;
+                    }
+                };
                 // 进程级命令先处理：命中即 `continue`，不落到任何 agent 上。
                 // `admin` / `registry` 是同一个 manager 的两个面向。
                 if let Some(manager) = pump_slot.read().ok().and_then(|w| w.upgrade()) {
@@ -2324,6 +2370,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 let target = Arc::clone(&pump_core);
                 let branch_target = Arc::clone(&target);
                 tokio::spawn(async move {
+                    let _command_guard = command_guard;
                     branch_target.apply_command(cmd).await;
                 });
             }
@@ -2396,6 +2443,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             }
         }
     }
+    // 部署控制 socket：未设置 `ECHO_DEPLOY_CONTROL_SOCKET` 时返回 None，旧行为
+    // 完全不变。设置后由独立 task 服务；Core 退出时 abort。
+    let deployment_control = deployment::start_from_env(Arc::new(
+        deployment::CoreDeploymentHandler::new(
+            deployment_gate.clone(),
+            core_agent.clone(),
+            supervisor.manager(),
+        ),
+    ))
+    .await?;
+
     // ---- Auto-start instance instances if enabled ----
     // 接线完成，标记 wired：此后 instance.qq 模块的运行期 enable 才会真正
     // start 模块实例（启动期 mount 不抢跑）。启动受配置与模块状态双重门控。
@@ -2431,6 +2489,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // Graceful shutdown: stop the command pump and instance handle, cancel
     // background tasks, and flush sessions to disk.
     pump.abort();
+    if let Some(control) = &deployment_control {
+        control.abort();
+    }
     if let Some(qq) = &qq_instance {
         let _ = qq.stop().await;
     }
@@ -2448,6 +2509,24 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     for task in shutdown_tasks {
         let _ = task.await;
     }
+    // **已下线**的人格不在 `personas()` 的在册名单里（运行期被禁用/删除的实例
+    // 已从注册表摘掉），但它们的收尾——停后台任务 + 等 turn 排空 + 最终保存
+    // ——可能还在跑。退出前必须一并等完：只遍历在册 persona 会漏掉这批人，
+    // 进程一走就丢掉它们最后一份快照（2026-11 C 复审）。
+    let retire_wait = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        supervisor.manager().await_all_retirements(),
+    )
+    .await;
+    match retire_wait {
+        Ok(failed) if failed.is_empty() => {}
+        Ok(failed) => warn!(?failed, "persona retirements finished with errors"),
+        Err(_) => warn!("waiting for off-register persona retirements timed out"),
+    }
+    // 进程级核心代理同样要收尾（停后台任务 + 最终保存）。用 `retire` 而不是
+    // `shutdown`：后者会广播"Core 正在重启…"并等满 drain 窗口——那条事件
+    // 已经由各人格发过了，核心代理没有在飞 turn 要等。
+    core_agent.retire().await;
     // 子进程模块优雅关停（在人格 shutdown 之后、最终返回之前）。
     if let Some(rt) = &module_runtime {
         rt.shutdown().await;

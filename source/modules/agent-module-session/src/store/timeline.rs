@@ -11,6 +11,8 @@ impl TrunkStore {
     /// 条目 seq 在锁内赋值并与计数器同步推进（仅在条目真正入列时递增），
     /// 保证 `timeline_snapshot_since` 的按 seq 过滤语义成立。
     pub fn push_timeline(&self, message: agent_module_management::protocol::TimelineMessage) {
+        // 与加载提交互斥（见 TrunkStore::commit_barrier）。
+        let _commit_guard = self.commit_barrier.read();
         self.warn_if_unloaded("push_timeline");
         let mut timeline = self.timeline.lock();
         self.push_timeline_locked(&mut timeline, message);
@@ -31,6 +33,7 @@ impl TrunkStore {
         &self,
         message: agent_module_management::protocol::TimelineMessage,
     ) {
+        let _commit_guard = self.commit_barrier.read();
         let mut timeline = self.timeline.lock();
         self.push_timeline_locked(&mut timeline, message);
         drop(timeline);
@@ -209,7 +212,7 @@ impl TrunkStore {
     pub(super) fn restore_timeline(
         &self,
         timeline: Vec<agent_module_management::protocol::TimelineMessage>,
-    ) {
+    ) -> Result<(), String> {
         let mut max_seq = timeline.iter().map(|entry| entry.seq).max().unwrap_or(0);
         let mut timeline = timeline;
         let mut interrupted = 0usize;
@@ -227,13 +230,6 @@ impl TrunkStore {
                 entry.seq = max_seq;
                 interrupted += 1;
             }
-        }
-        if interrupted > 0 {
-            tracing::info!(
-                interrupted,
-                "dangling running tool entries marked interrupted on restore"
-            );
-            self.mark_dirty();
         }
         let entries = timeline.len();
         let head_seq = timeline.first().map(|entry| entry.seq).unwrap_or(0);
@@ -253,7 +249,20 @@ impl TrunkStore {
             }
         }
         let max_ord = timeline.iter().map(|entry| entry.ord).max().unwrap_or(0);
-        *self.timeline.lock() = timeline;
+        // **整表替换只允许发生在空时间线上**（2026-11 第二轮）。
+        // 加载失败重试 / 并发 append 的条目不能因为一次 restore 被覆盖；
+        // 检查与赋值在同一把锁内完成，push 要么在检查前（拒绝 restore），
+        // 要么在赋值后（排在恢复的条目之后）。
+        {
+            let mut current = self.timeline.lock();
+            if !current.is_empty() {
+                return Err(format!(
+                    "display timeline already has {} entries; refusing whole-table replace",
+                    current.len()
+                ));
+            }
+            *current = timeline;
+        }
         self.timeline_ord
             .store(max_ord, std::sync::atomic::Ordering::Relaxed);
         self.timeline_seq
@@ -261,6 +270,13 @@ impl TrunkStore {
         // 整表替换：置位探针重基线标志（跨表差值对账对替换无意义）。
         self.timeline_rebaseline
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        if interrupted > 0 {
+            tracing::info!(
+                interrupted,
+                "dangling running tool entries marked interrupted on restore"
+            );
+            self.mark_dirty();
+        }
         tracing::info!(
             entries,
             head_seq,
@@ -269,6 +285,7 @@ impl TrunkStore {
             interrupted,
             "display timeline restored from persisted file"
         );
+        Ok(())
     }
 
     /// 时间线探针（2026-10："面板看不到历史"事故定位用）。

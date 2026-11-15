@@ -133,10 +133,16 @@ impl ShellCommandHandler {
                 // (`sh-1` is enumerable) could run commands inside another
                 // persona's shell. The tool path already went through
                 // `ensure_owned_by`; the panel path was missing the same gate.
-                if let Err(error) = manager.ensure_owned_by(
-                    &session_id,
-                    team_id.as_deref().or(self.host.team_id().as_deref()),
-                ) {
+                // 显式管理路径（面板用户按 agent 操作）：`manage = true`
+                // 允许清理/查看远端来源会话，但 persona 之间的隔离照旧由
+                // `Caller.team` 比对兜住（见 `ensure_access` 表）。
+                let host_team = self.host.team_id();
+                let caller = crate::session::Caller {
+                    team: team_id.as_deref().or(host_team.as_deref()),
+                    peer: None,
+                    manage: true,
+                };
+                if let Err(error) = manager.ensure_access(&session_id, &caller) {
                     self.notice(format!("shell exec rejected: {error}"));
                     return Ok(());
                 }
@@ -163,10 +169,13 @@ impl ShellCommandHandler {
                 };
                 // Same gate: killing another persona's process group is
                 // irreversible.
-                if let Err(error) = manager.ensure_owned_by(
-                    &session_id,
-                    team_id.as_deref().or(self.host.team_id().as_deref()),
-                ) {
+                let host_team = self.host.team_id();
+                let caller = crate::session::Caller {
+                    team: team_id.as_deref().or(host_team.as_deref()),
+                    peer: None,
+                    manage: true,
+                };
+                if let Err(error) = manager.ensure_access(&session_id, &caller) {
                     self.notice(format!("shell stop rejected: {error}"));
                     return Ok(());
                 }
@@ -339,6 +348,50 @@ mod tests {
         .expect("owned by this domain")
         .expect("own session is fine");
         assert!(manager.session_info(&owned.session_id).is_none());
+    }
+
+    /// 远端来源会话：面板**显式管理路径**可以清理（否则泄漏的远端会话
+    /// 只能等 Core 重启；`MAX_SHELL_SESSIONS = 8`，泄漏几次就起不来新的），
+    /// 但本地 persona 的普通工具路径仍然被 `ensure_access` 拒绝。
+    #[tokio::test]
+    async fn panel_management_can_clean_up_remote_owned_sessions() {
+        let manager = Arc::new(ShellManager::new());
+        let emit: ShellEmit = Arc::new(|_event| {});
+        let remote = manager
+            .start_owned(Some("/tmp".into()), None, Some("node-gpu".into()), &emit)
+            .await
+            .expect("start remote session");
+        let (h, host) = handler(FakeHost {
+            manager: Some(manager.clone()),
+            ..Default::default()
+        });
+        // 面板（manage=true，team=t1）停掉远端会话：放行。
+        h.handle(
+            "ShellStop",
+            serde_json::json!({ "session_id": remote.session_id }),
+        )
+        .await
+        .expect("owned by this domain")
+        .expect("management stop is not a parse error");
+        assert!(
+            manager.session_info(&remote.session_id).is_none(),
+            "explicit management path must be able to clean up"
+        );
+        // 没有错误事件（成功路径只记 notice 文本，不产生 Error）。
+        let errors: Vec<String> = host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Error { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !errors.iter().any(|m| m.contains("stop rejected")),
+            "management path must not be rejected: {errors:?}"
+        );
     }
 
     /// 不属于本域的命令返回 `None`（让下一个模块/宿主接手）。

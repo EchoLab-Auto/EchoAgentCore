@@ -141,6 +141,8 @@ impl Agent {
             session_id: session_id.to_string(),
             branch_id: branch_id.to_string(),
             team_id: self.team_id(),
+            // 本地 turn：没有跨节点来源（联邦来源只在 `handle_invoke` 注入）。
+            peer: None,
             cancel,
         };
         let invocation =

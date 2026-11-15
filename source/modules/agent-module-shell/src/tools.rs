@@ -26,20 +26,32 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::session::{CommandGuard, ShellHandle};
+use crate::session::{Caller, CommandGuard, ShellHandle};
 
-/// 这次调用的归属人格。
+/// 这次调用的**主体**：只来自执行上下文（`Tool::execute_in` 递进来的
+/// [`echo_defs::tool::ToolContext`]）。
 ///
-/// **优先取调用上下文**（`Tool::execute_in` 递进来的 `cx.team_id`）；直接经
-/// 注册表执行时没有上下文，才回退历史上的 `__team_id` 参数（模型看不到它）。
-/// 归属校验本身不变：`ensure_owned_by` 决定放行与否。
-fn requester<'a>(
-    cx: Option<&'a echo_defs::tool::ToolContext>,
-    arguments: &'a serde_json::Value,
-) -> Option<&'a str> {
-    cx.and_then(|cx| cx.team_id.as_deref())
-        .filter(|id| !id.is_empty())
-        .or_else(|| arguments.get("__team_id").and_then(|v| v.as_str()))
+/// - `cx.team_id`：本地 persona（宿主执行链注入）；
+/// - `cx.peer`：跨节点来源（联邦 `handle_invoke` 从链路注入）——**绝不**
+///   从参数读取；
+/// - 没有上下文 = 直接经 `registry.execute` 的宿主/管理路径
+///   （`manage = true`，只能由宿主代码走到）。
+///
+/// 历史魔术参数 `__team_id` 已删除：参数是模型可见面，拿它当身份等于让
+/// 被授权者自带授权（远端调用只要塞一个 `__team_id` 就能操作别人的会话）。
+fn caller(cx: Option<&echo_defs::tool::ToolContext>) -> Caller<'_> {
+    match cx {
+        Some(cx) => Caller {
+            team: cx.team_id.as_deref().filter(|id| !id.is_empty()),
+            peer: cx.peer.as_deref().filter(|id| !id.is_empty()),
+            manage: false,
+        },
+        None => Caller {
+            team: None,
+            peer: None,
+            manage: true,
+        },
+    }
 }
 
 /// 注册 shell 工具（`bash-start` / `bash-exec` / `bash-stop`）。
@@ -87,14 +99,19 @@ impl agent_module_tools::Tool for BashStartTool {
     /// `sleep` 的取值一路从 60 试到 290（说明是在猜日志何时出现）。
     /// 有了远程会话，起任务立刻返回、期间干别的、回头 poll 才是可能的。
     ///
-    /// ## 归属语义（与本地调用的唯一差别）
+    /// ## 归属语义（2026-11 收紧）
     ///
-    /// 远程 invoke 走 `registry.execute`，不带 `ToolContext`，因此
-    /// `requester` 为 `None`。`ShellManager::ensure_owned_by` 的校验需要
-    /// **owner 与 requester 同时存在**才比较，所以远程调用一律放行。
-    /// 这不构成新增风险面：peer 策略为 `allow_tools` 白名单，能调本工具的
-    /// peer 本来就能调 `bash`（任意命令）；而 `session_id` 由执行端生成、
-    /// 不外泄，跨 peer 猜不到。真正需要隔离时应收敛 `allow_tools`。
+    /// 远端 invoke 现在**带上下文**：联邦 `handle_invoke` 用
+    /// [`echo_defs::tool::ToolContext::for_remote_peer`] 注入来源 `node_id`，
+    /// 会话创建时记入 `owner_peer`。此后：
+    ///
+    /// - 同一 peer 可以继续 `bash-exec` / `bash-stop`；
+    /// - **其他 peer** 与**本地 persona** 默认一律拒绝（此前远端调用
+    ///   `requester = None` 直接放行，等于任何能调 `bash` 的 peer 都能操作
+    ///   任意会话）；面板的显式管理路径（`manage`）仍可清理泄漏会话。
+    ///
+    /// `session_id` 只是句柄：旧 id（`sh-1`）可枚举、新 id 带随机后缀，
+    /// 但**授权从不看 id**——只看创建时绑定的归属主体。
     fn remote_capable(&self) -> bool {
         true
     }
@@ -135,9 +152,15 @@ impl BashStartTool {
             agent_module_tools::ToolError::Execution("shell manager unavailable".into())
         })?;
         let workdir = arguments["workdir"].as_str().map(|s| s.to_string());
-        let team_id = requester(cx, &arguments).map(str::to_string);
+        // 归属在创建时绑定：本地 persona 或远端 peer（二者互斥）。
+        let caller = caller(cx);
         let info = manager
-            .start(workdir, team_id, &self.shell.emit())
+            .start_owned(
+                workdir,
+                caller.team.map(str::to_string),
+                caller.peer.map(str::to_string),
+                &self.shell.emit(),
+            )
             .await
             .map_err(agent_module_tools::ToolError::Execution)?;
         Ok(format!(
@@ -221,10 +244,10 @@ impl BashExecTool {
         let manager = self.shell.manager().ok_or_else(|| {
             agent_module_tools::ToolError::Execution("shell manager unavailable".into())
         })?;
-        // 归属校验（2026-10）：不得操作其他智能体的 shell 会话。
-        let requester = requester(cx, &arguments);
+        // 归属校验：只认执行上下文里的主体（persona / 远端 peer），
+        // 不认参数、不认会话 id。
         manager
-            .ensure_owned_by(session_id, requester)
+            .ensure_access(session_id, &caller(cx))
             .map_err(agent_module_tools::ToolError::Execution)?;
         let (output, success, timed_out) = manager
             .exec(session_id, command, timeout, &self.shell.emit())
@@ -303,10 +326,9 @@ impl BashStopTool {
         let manager = self.shell.manager().ok_or_else(|| {
             agent_module_tools::ToolError::Execution("shell manager unavailable".into())
         })?;
-        // 归属校验（2026-10）：不得停止其他智能体的 shell 会话。
-        let requester = requester(cx, &arguments);
+        // 归属校验：同 exec——主体来自上下文，不来自参数。
         manager
-            .ensure_owned_by(session_id, requester)
+            .ensure_access(session_id, &caller(cx))
             .map_err(agent_module_tools::ToolError::Execution)?;
         manager
             .stop(session_id, &self.shell.emit())
@@ -350,6 +372,122 @@ mod tests {
                 tool.name()
             );
         }
+    }
+
+    /// 远端会话归属（2026-11 安全修复）：来源 peer 绑定在创建时写入，
+    /// 之后只有同一 peer 能操作；其他 peer / 本地 persona 一律拒绝，
+    /// **参数里的 `__team_id` 不再是身份**。
+    #[tokio::test]
+    async fn remote_sessions_are_bound_to_their_origin_peer() {
+        let manager = std::sync::Arc::new(crate::session::ShellManager::new());
+        let shell = ShellHandle::new();
+        shell.bind(manager.clone(), std::sync::Arc::new(|_| {}));
+        let start = BashStartTool {
+            shell: shell.clone(),
+        };
+        let exec = BashExecTool {
+            shell: shell.clone(),
+            guard: None,
+        };
+        let stop = BashStopTool { shell };
+
+        // 来源 peer 起会话。
+        let origin = echo_defs::tool::ToolContext::for_remote_peer("node-gpu");
+        let started = start
+            .execute_in(&origin, json!({}))
+            .await
+            .expect("remote bash-start");
+        let session_id = started
+            .text
+            .split_whitespace()
+            .nth(3)
+            .expect("session id in output")
+            .to_string();
+        assert!(
+            manager
+                .session_info(&session_id)
+                .expect("session exists")
+                .team_id
+                .as_deref()
+                .is_some_and(|team| team == "peer:node-gpu"),
+            "远端会话应显示为 peer:node-gpu"
+        );
+
+        // 另一 peer：即使显式塞 `__team_id`，也拒绝。
+        let other = echo_defs::tool::ToolContext::for_remote_peer("node-evil");
+        let error = exec
+            .execute_in(
+                &other,
+                json!({
+                    "session_id": session_id,
+                    "command": "echo hacked",
+                    "__team_id": "node-gpu",
+                }),
+            )
+            .await
+            .expect_err("cross-peer exec must be rejected");
+        assert!(error.to_string().contains("无权操作"), "{error}");
+
+        // 本地 persona：拒绝。
+        let local = echo_defs::tool::ToolContext {
+            team_id: Some("EchoCode".into()),
+            ..Default::default()
+        };
+        let error = exec
+            .execute_in(
+                &local,
+                json!({"session_id": session_id, "command": "echo local"}),
+            )
+            .await
+            .expect_err("local persona must not touch a remote session");
+        assert!(error.to_string().contains("无权操作"), "{error}");
+
+        // 来源 peer：放行（exec + stop）。
+        let output = exec
+            .execute_in(
+                &origin,
+                json!({"session_id": session_id, "command": "echo ok"}),
+            )
+            .await
+            .expect("owner peer exec");
+        assert!(output.text.contains("ok"), "{}", output.text);
+        stop.execute_in(&origin, json!({"session_id": session_id}))
+            .await
+            .expect("owner peer stop");
+        assert!(manager.session_info(&session_id).is_none());
+    }
+
+    /// 本地 persona 会话：远端 peer 带 `__team_id` 也进不去（参数不是身份）。
+    #[tokio::test]
+    async fn arguments_cannot_forge_a_persona_identity() {
+        let manager = std::sync::Arc::new(crate::session::ShellManager::new());
+        let shell = ShellHandle::new();
+        shell.bind(manager.clone(), std::sync::Arc::new(|_| {}));
+        let info = manager
+            .start(Some("/tmp".into()), Some("EchoCode".into()), &shell.emit())
+            .await
+            .expect("local session");
+        let exec = BashExecTool {
+            shell: shell.clone(),
+            guard: None,
+        };
+        let remote = echo_defs::tool::ToolContext::for_remote_peer("node-gpu");
+        let error = exec
+            .execute_in(
+                &remote,
+                json!({
+                    "session_id": info.session_id,
+                    "command": "echo hacked",
+                    "__team_id": "EchoCode",
+                }),
+            )
+            .await
+            .expect_err("static team_id arg must not authorize");
+        assert!(error.to_string().contains("无权操作"), "{error}");
+        manager
+            .stop(&info.session_id, &shell.emit())
+            .await
+            .expect("stop");
     }
 
     /// `bash-start` / `bash-exec` / `bash-stop` 都**不**声明路径参数。

@@ -21,7 +21,7 @@ pub enum ToolError {
 }
 
 /// Tool schema sent to the LLM (OpenAI function-calling format).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
@@ -107,7 +107,20 @@ pub struct ToolContext {
     /// turn 分支 id（并发分支的归属渲染；空 = 无分支语义）。
     pub branch_id: String,
     /// persona id（`None` = 无归属，如进程级调用）。
+    ///
+    /// **不是授权凭据**：它来自宿主执行链的上下文，绝不从工具参数读取。
+    /// 历史参数 `__team_id` 已废弃——参数是模型可见面，不可作为身份。
     pub team_id: Option<String>,
+    /// 可信来源主体：跨节点调用时由**传输层**（联邦 `handle_invoke`）注入的
+    /// 对端 `node_id`；`None` = 本机来源（本地 turn / 面板 / 单测）。
+    ///
+    /// 这是身份，不是数据：
+    /// - 只能由传输/宿主注入，**永远不从 `arguments` 里读**（参数可由模型或
+    ///   对端任意构造，拿它当授权等于把钥匙交给被授权者）；
+    /// - 工具（如 shell 会话族）用它把会话归属绑定到**来源节点**，从而拒绝
+    ///   跨 peer 与本地 persona 的默认访问；
+    /// - 随机/不透明 id（如 `sh-1`）只是句柄，**不得**单独作为授权依据。
+    pub peer: Option<String>,
     /// 主 turn 的取消信号（`None` = 不可取消 / 无 turn 上下文）。
     pub cancel: Option<std::sync::Arc<dyn Cancellation>>,
 }
@@ -119,6 +132,17 @@ impl ToolContext {
             .as_ref()
             .is_some_and(|cancel| cancel.is_cancelled())
     }
+
+    /// 构造**远端来源**上下文：唯一合法的 `peer` 注入点（供传输层使用）。
+    ///
+    /// 远端调用没有本地 persona / 会话坐标：`team_id` / `session_id` 恒为空，
+    /// 身份只有 `peer`。工具据此把资源归属绑定到来源节点。
+    pub fn for_remote_peer(peer: impl Into<String>) -> Self {
+        Self {
+            peer: Some(peer.into()),
+            ..Default::default()
+        }
+    }
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -127,12 +151,11 @@ impl std::fmt::Debug for ToolContext {
             .field("session_id", &self.session_id)
             .field("branch_id", &self.branch_id)
             .field("team_id", &self.team_id)
+            .field("peer", &self.peer)
             .field("cancellable", &self.cancel.is_some())
             .finish()
     }
 }
-
-/// A capability the LLM can invoke during the agent loop.
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;

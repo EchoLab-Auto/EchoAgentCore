@@ -16,6 +16,19 @@ fn caps(tools: &[&str]) -> NodeCaps {
         workspaces: vec![],
         active_turns: 0,
         panel_ready: false,
+        tool_definitions: Vec::new(),
+    }
+}
+
+/// 最小工具定义（reporter 返回的形状）。
+fn definition(name: &str) -> agent_module_federation::ToolDefinition {
+    agent_module_federation::ToolDefinition {
+        name: name.to_string(),
+        description: format!("{name} 的描述"),
+        parameters: Some(serde_json::json!({
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+        })),
     }
 }
 
@@ -137,10 +150,11 @@ async fn hello_tools_come_from_injected_reporter() {
         b_events,
         sd_b.clone(),
     );
-    let live: Arc<std::sync::RwLock<Vec<String>>> = Arc::new(std::sync::RwLock::new(vec![
-        "read_file".into(),
-        "write_file".into(),
-    ]));
+    let live: Arc<std::sync::RwLock<Vec<agent_module_federation::ToolDefinition>>> =
+        Arc::new(std::sync::RwLock::new(vec![
+            definition("read_file"),
+            definition("write_file"),
+        ]));
     let live_writer = live.clone();
     fed_b
         .set_tool_reporter(Arc::new(move || live_writer.read().unwrap().clone()))
@@ -174,11 +188,17 @@ async fn hello_tools_come_from_injected_reporter() {
         vec!["read_file".to_string(), "write_file".to_string()],
         "握手必须用 reporter 的实时值，而不是构造快照"
     );
+    // 2026-11：定义随 names 一起过线（schema 由远端通告，不再猜）。
+    assert_eq!(
+        up_a.caps.tool_definitions,
+        vec![definition("read_file"), definition("write_file")],
+        "工具定义必须随握手一起通告"
+    );
     drop(fed_a); // 断开第一个客户端，让 B 的连接表空出来
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // 工具声明变化（模块停用）→ 新连接立刻看到新集合。
-    *live.write().unwrap() = vec!["bash".into()];
+    *live.write().unwrap() = vec![definition("bash")];
     let (c_events, mut c_rx) = mpsc::channel::<LinkEvent>(16);
     let fed_c = Federation::new(
         "node-c".into(),
@@ -197,6 +217,7 @@ async fn hello_tools_come_from_injected_reporter() {
         vec!["bash".to_string()],
         "reporter 变了，新连接必须看到新集合（无需重启节点）"
     );
+    assert_eq!(up_c.caps.tool_definitions, vec![definition("bash")]);
 
     let _ = sd_a.send(true);
     let _ = sd_b.send(true);

@@ -515,25 +515,60 @@ impl ToolRegistry {
     /// 会一路活着，直到调用时才报错）。排序保证同配置多节点宣告一致
     /// （便于对账与测试）。
     ///
-    /// 同步尽力：锁竞争时返回已读到的部分（调用方是握手，缺了就当没宣告）。
+    /// 同步尽力：任一锁竞争（读不到禁用集合或工具表）时**什么都不宣告**
+    /// （fail-closed）。此前把 `disabled.try_read()` 失败当成"没有禁用工具"，
+    /// 锁竞争窗口里停用的模块会被重新宣告出去——对端据此注册的代理工具
+    /// 一直活到调用时才报错，宣告与执行能力静默分叉。
     pub fn remote_capable_names(&self) -> Vec<String> {
-        let disabled = self.disabled.try_read().ok();
+        let Ok(disabled) = self.disabled.try_read() else {
+            tracing::warn!(
+                "tool registry disabled-set lock busy — advertising no remote tools (fail-closed)"
+            );
+            return Vec::new();
+        };
         let Ok(tools) = self.tools.try_read() else {
             return Vec::new();
         };
         let mut names: Vec<String> = tools
             .iter()
-            .filter(|(name, tool)| {
-                tool.remote_capable()
-                    && !disabled
-                        .as_ref()
-                        .map(|d| d.contains(name.as_str()))
-                        .unwrap_or(false)
-            })
+            .filter(|(name, tool)| tool.remote_capable() && !disabled.contains(name.as_str()))
             .map(|(name, _)| name.clone())
             .collect();
         names.sort();
         names
+    }
+
+    /// 可被远程调用的工具**定义**（名 + 描述 + 参数 schema），2026-11。
+    ///
+    /// 与 [`Self::remote_capable_names`] 同源同过滤，只是多带描述与 schema：
+    /// 握手 `NodeCaps.tool_definitions` 用它，大脑侧据此注册代理工具——
+    /// **不再用本机同名工具猜对端参数**（两边版本/模块不同就会猜错）。
+    ///
+    /// 旧节点不发这个字段（`serde(default)` 得空表）；大脑侧对空表**不再
+    /// 猜 schema**（不自动注册代理工具，node:// 显式调用仍可用），所以不
+    /// 提升协议版本。锁竞争与 [`Self::remote_capable_names`] 同口径：
+    /// fail-closed，本轮不宣告任何定义。
+    pub fn remote_capable_definitions(&self) -> Vec<crate::tool::ToolDefinition> {
+        let Ok(disabled) = self.disabled.try_read() else {
+            tracing::warn!(
+                "tool registry disabled-set lock busy — advertising no remote tool definitions (fail-closed)"
+            );
+            return Vec::new();
+        };
+        let Ok(tools) = self.tools.try_read() else {
+            return Vec::new();
+        };
+        let mut definitions: Vec<crate::tool::ToolDefinition> = tools
+            .iter()
+            .filter(|(name, tool)| tool.remote_capable() && !disabled.contains(name.as_str()))
+            .map(|(name, tool)| crate::tool::ToolDefinition {
+                name: name.clone(),
+                description: tool.description().to_string(),
+                parameters: Some(tool.parameters()),
+            })
+            .collect();
+        definitions.sort_by(|a, b| a.name.cmp(&b.name));
+        definitions
     }
 
     /// 某工具声明的**路径参数名**（[`Tool::path_arguments`]；未声明/未知工具 = 空）。
@@ -986,6 +1021,38 @@ mod tests {
         assert_eq!(registry.path_arguments_of("read_file"), ["path"]);
         assert!(registry.path_arguments_of("alpha").is_empty());
         assert!(registry.path_arguments_of("nope").is_empty());
+    }
+
+    /// 锁竞争时**不得**把停用集合当成空集（fail-open）：读不到就什么都不宣告。
+    ///
+    /// 这条守的是握手窗口：`disabled.try_read()` 失败曾被 `unwrap_or(false)`
+    /// 吞成"未禁用"，于是模块停用后、只要恰好有写锁在飞，对端就会重新看到
+    /// 并注册早已停用的远程工具。
+    #[tokio::test]
+    async fn remote_surface_fails_closed_when_disabled_lock_is_contended() {
+        let registry: Arc<ToolRegistry> = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(DeclaringTool {
+            name: "read_file",
+            remote: true,
+            path_args: &["path"],
+        }));
+        assert_eq!(registry.remote_capable_names(), vec!["read_file"]);
+
+        let guard = registry.disabled.write().await;
+        assert!(
+            registry.remote_capable_names().is_empty(),
+            "禁用集合不可读时必须 fail-closed（不能假设未禁用）"
+        );
+        assert!(
+            registry.remote_capable_definitions().is_empty(),
+            "定义上报同样 fail-closed"
+        );
+        drop(guard);
+        assert_eq!(
+            registry.remote_capable_names(),
+            vec!["read_file"],
+            "锁释放后恢复宣告"
+        );
     }
 
     /// 输出可区分的桩工具：用来断言"同名时到底哪个实现生效"。

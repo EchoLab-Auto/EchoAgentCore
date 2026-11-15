@@ -146,6 +146,18 @@ pub enum LoadStage {
     Metadata = 1,
     /// 全量：事件日志 + 显示时间线 + 各会话投影都在内存里。
     Full = 2,
+    /// **读盘 / 解析失败**（2026-11 A）：内存里不是磁盘那份文档。
+    ///
+    /// 这是一个**负缓存**：`ensure_loaded` / `load_from_file` 见 Failed
+    /// 直接返回，不再每轮自动重试。重试只能走显式出口
+    /// [`TrunkStore::retry_failed_load`] / [`TrunkStore::recover_failed_load`]。
+    /// 失败态**禁止落盘**（否则空文档会把磁盘上的历史抹掉），原因见
+    /// [`TrunkStore::load_error`]。没有自动改名/备份：原文件原样留着。
+    Failed = 3,
+    /// **正在解析 / 提交**（2026-11 第二轮）：并发的加载在 `load_gate` 上
+    /// 等待；`append_event` / `push_timeline` 持 `commit_barrier` 读锁，
+    /// 提交持写锁——保证"确认空 store → 安装历史"之间没有新写入插进来。
+    Loading = 4,
 }
 
 impl LoadStage {
@@ -153,9 +165,316 @@ impl LoadStage {
         match value {
             0 => Self::Untouched,
             1 => Self::Metadata,
-            _ => Self::Full,
+            2 => Self::Full,
+            3 => Self::Failed,
+            4 => Self::Loading,
+            // 未知值（未来版本/内存损坏）按失败处理：宁可拒绝运行，也不
+            // 假装已加载后覆盖文件。
+            _ => Self::Failed,
         }
     }
+}
+
+/// 会话文件加载失败的原因（可观察，见 [`TrunkStore::load_error`]）。
+///
+/// 共同点是**都不许覆盖原文件**；分开是为了诊断与恢复策略：
+/// 读失败常常是环境问题，格式/版本问题要人工看一眼。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistLoadError {
+    /// 读文件失败（权限 / IO / 非 UTF-8）。文件（或目录）仍在原地。
+    Read {
+        path: std::path::PathBuf,
+        error: String,
+    },
+    /// 内容不是合法会话文档（非法 JSON / 认不出的形状 / 当前版坏事件）。
+    Invalid {
+        path: std::path::PathBuf,
+        error: String,
+    },
+    /// 文件属于本进程不认识的**未来版本**（`version > PERSIST_VERSION`）。
+    UnsupportedVersion {
+        path: std::path::PathBuf,
+        version: u64,
+        supported: u32,
+    },
+    /// 当前版本文档里的坏条目（未知事件 kind / 字段类型错误）。
+    Corrupt {
+        path: std::path::PathBuf,
+        section: &'static str,
+        index: usize,
+        error: String,
+    },
+    /// 目标 store 已有事件/时间线：拒绝在非空 store 上重载/合并。
+    NotEmpty {
+        path: std::path::PathBuf,
+        events: usize,
+        timeline: usize,
+    },
+    /// 加载期间发生了 append / push（隔离解析无法安全合并）。
+    ConcurrentWrite {
+        path: std::path::PathBuf,
+        events: usize,
+        timeline: usize,
+    },
+    /// 读到的文件在解析/提交前被其他写者替换。
+    ChangedDuringLoad { path: std::path::PathBuf },
+}
+
+impl PersistLoadError {
+    pub fn path(&self) -> &std::path::Path {
+        match self {
+            Self::Read { path, .. }
+            | Self::Invalid { path, .. }
+            | Self::UnsupportedVersion { path, .. }
+            | Self::Corrupt { path, .. }
+            | Self::NotEmpty { path, .. }
+            | Self::ConcurrentWrite { path, .. }
+            | Self::ChangedDuringLoad { path } => path,
+        }
+    }
+
+    /// 分类名（日志/诊断用的稳定字符串）。
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Read { .. } => "read",
+            Self::Invalid { .. } => "invalid",
+            Self::UnsupportedVersion { .. } => "unsupported_version",
+            Self::Corrupt { .. } => "corrupt",
+            Self::NotEmpty { .. } => "not_empty",
+            Self::ConcurrentWrite { .. } => "concurrent_write",
+            Self::ChangedDuringLoad { .. } => "changed_during_load",
+        }
+    }
+
+    fn key(&self) -> (std::path::PathBuf, String) {
+        (self.path().to_path_buf(), self.to_string())
+    }
+}
+
+impl std::fmt::Display for PersistLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read { path, error } => {
+                write!(f, "读取 {} 失败：{error}", path.display())
+            }
+            Self::Invalid { path, error } => {
+                write!(f, "{} 不是合法会话文档：{error}", path.display())
+            }
+            Self::UnsupportedVersion {
+                path,
+                version,
+                supported,
+            } => write!(
+                f,
+                "{} 是未来版本 v{version}（本进程最高支持 v{supported}），拒绝加载",
+                path.display()
+            ),
+            Self::Corrupt {
+                path,
+                section,
+                index,
+                error,
+            } => write!(
+                f,
+                "{} 的 {section}[{index}] 不是合法条目：{error}",
+                path.display()
+            ),
+            Self::NotEmpty {
+                path,
+                events,
+                timeline,
+            } => write!(
+                f,
+                "{} 加载被拒：store 已有 events={events}, timeline={timeline}；拒绝重载/合并",
+                path.display()
+            ),
+            Self::ConcurrentWrite {
+                path,
+                events,
+                timeline,
+            } => write!(
+                f,
+                "{} 加载被拒：解析期间 store 新增 events={events}, timeline={timeline}；拒绝错序合并",
+                path.display()
+            ),
+            Self::ChangedDuringLoad { path } => {
+                write!(f, "{} 在加载期间被其他写者替换，拒绝提交陈旧快照", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for PersistLoadError {}
+
+/// 落盘被拒绝的原因（可观察，见 [`TrunkStore::last_save_error`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistSaveError {
+    /// 磁盘文件已经不是本 store 加载/上次写出的那一份：陈旧快照明确拒绝。
+    StaleSnapshot {
+        path: std::path::PathBuf,
+        expected: String,
+        actual: String,
+    },
+    /// 写 tmp / rename / 取指纹失败。原文件保持不动。
+    Io {
+        path: std::path::PathBuf,
+        error: String,
+    },
+    /// 有持久化路径，但会话历史加载失败：落盘被拒（原文件原样保留）。
+    /// [`TrunkStore::save_now_checked`] 用它把"加载失败"显式交还退休收尾。
+    LoadFailed {
+        path: std::path::PathBuf,
+        error: String,
+    },
+    /// 磁盘上已有会话档，但本 store **还没全量加载**，且仍有未落盘改动：
+    /// 用空/不全的快照覆盖等于抹掉历史，明确拒绝。
+    NotLoaded { path: std::path::PathBuf },
+}
+
+impl PersistSaveError {
+    pub fn path(&self) -> &std::path::Path {
+        match self {
+            Self::StaleSnapshot { path, .. }
+            | Self::Io { path, .. }
+            | Self::LoadFailed { path, .. }
+            | Self::NotLoaded { path } => path,
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::StaleSnapshot { .. } => "stale_snapshot",
+            Self::Io { .. } => "io",
+            Self::LoadFailed { .. } => "load_failed",
+            Self::NotLoaded { .. } => "not_loaded",
+        }
+    }
+}
+
+impl std::fmt::Display for PersistSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StaleSnapshot {
+                path,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "{} 落盘被拒：磁盘文件已变化（expected={expected}, actual={actual}）",
+                path.display()
+            ),
+            Self::Io { path, error } => write!(f, "{} 落盘失败：{error}", path.display()),
+            Self::LoadFailed { path, error } => write!(
+                f,
+                "{} 落盘失败：会话历史加载失败（{error}），原文件保持不动",
+                path.display()
+            ),
+            Self::NotLoaded { path } => write!(
+                f,
+                "{} 落盘被拒：磁盘已有会话档但尚未加载，拒绝用不全的快照覆盖",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PersistSaveError {}
+
+/// 文件指纹（乐观并发基线）：长度 + mtime + Unix inode。
+///
+/// 选 inode 是刻意的：本模块的提交是 tmp+rename，每次成功落盘都会换一个
+/// inode；跨独立 `TrunkStore` 的陈旧快照因此能稳定识别，而不必每次保存
+/// 都把整份 20 MB 文件读回来做内容哈希。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    len: u64,
+    mtime: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl FileStamp {
+    pub(crate) fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            mtime: metadata.modified().ok(),
+            #[cfg(unix)]
+            ino: {
+                use std::os::unix::fs::MetadataExt;
+                metadata.ino()
+            },
+        }
+    }
+
+    /// 读取路径指纹；`Ok(None)` = 文件不存在。
+    pub(crate) fn capture(path: &std::path::Path) -> std::io::Result<Option<Self>> {
+        match std::fs::metadata(path) {
+            Ok(metadata) => Ok(Some(Self::from_metadata(&metadata))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn describe(&self) -> String {
+        let mut text = format!("len={}", self.len);
+        #[cfg(unix)]
+        {
+            text.push_str(&format!(" ino={}", self.ino));
+        }
+        if let Some(mtime) = self.mtime {
+            if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                text.push_str(&format!(
+                    " mtime={}.{:09}",
+                    duration.as_secs(),
+                    duration.subsec_nanos()
+                ));
+            }
+        }
+        text
+    }
+}
+
+/// 本 store 认为磁盘文件"应该是什么样"的基线。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PersistOrigin {
+    /// 还没加载/没写过，且文件不存在：允许第一次落盘（新人格）。
+    #[default]
+    Unbaselined,
+    /// 确认文件不存在（加载时 NotFound / 显式恢复移走后）。
+    Missing,
+    /// 加载或上次成功落盘时看到的文件身份。
+    At(FileStamp),
+}
+
+impl PersistOrigin {
+    pub(crate) fn matches(&self, current: Option<FileStamp>) -> bool {
+        match (self, current) {
+            // 未知基线只允许"文件仍不存在"的第一次写入；文件一旦存在就
+            // 不能覆盖（否则等于绕过"没读过就别盖掉"的门禁）。
+            (Self::Unbaselined | Self::Missing, None) => true,
+            (Self::At(expected), Some(actual)) => *expected == actual,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Self::Unbaselined => "unbaselined".into(),
+            Self::Missing => "absent".into(),
+            Self::At(stamp) => stamp.describe(),
+        }
+    }
+}
+
+/// **仅测试**的落盘插桩（`#[cfg(test)]` 字段，生产构建不存在）。
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct PersistTestHooks {
+    /// 在"快照序列化完成 → 写 tmp/rename"之间执行一次（取走后即清空）。
+    pub(crate) before_commit: std::sync::Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
+    /// 在"文件已解析成 ParsedDocument → 提交进 store"之间执行一次
+    /// （取走后即清空）。用于确定性地模拟"加载期间 append/push/mark_dirty"。
+    pub(crate) before_load_commit: std::sync::Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
 }
 
 pub struct TrunkStore {
@@ -178,6 +497,27 @@ pub struct TrunkStore {
     /// 覆盖较新状态（重启后"压缩丢失 / 清空复活"）。所有写盘路径经此
     /// 串行：序列化在锁内完成，后到的写者一定写出 ≥ 前者的状态。
     save_lock: Arc<tokio::sync::Mutex<()>>,
+    /// 文件指纹基线（2026-11 第二轮，取代 `path_save_lock` 全局注册表）：
+    /// 加载成功 / 上次成功落盘时磁盘文件的身份。写盘前后各比对一次，
+    /// 跨独立 store 的陈旧快照 **明确拒绝**（`PersistSaveError::StaleSnapshot`），
+    /// 而不是靠"同一路径排队"让旧快照后写覆盖新快照。
+    persist_origin: Arc<std::sync::Mutex<PersistOrigin>>,
+    /// 最近一次落盘被拒的原因（陈旧快照 / IO），可观察面。
+    save_error: Arc<std::sync::Mutex<Option<PersistSaveError>>>,
+    /// 加载提交屏障：`append_event` / `push_timeline` 持读锁，加载提交持
+    /// 写锁。写锁只在同步的"确认空 store → 安装历史"临界区内持有，
+    /// **不跨 await**；它保证隔离解析出来的历史不会与加载期间的新写入
+    /// 交错成"新事件在前、旧事件在后"。
+    commit_barrier: Arc<parking_lot::RwLock<()>>,
+    /// 历史内容代次（2026-11 第二轮补充）：`clear_history` / `clear_session`
+    /// / `apply_compaction` 在 `commit_barrier` 写锁内推进它。加载在**解析
+    /// 之前**捕获代次，提交时在写锁内比对——期间发生的清空/压缩不会被
+    /// "安装文件历史"覆盖。
+    ///
+    /// 为什么单靠 `commit_barrier` 不够：清空之后 store 恰好是**空的**，
+    /// 加载提交的空 store 检查会通过，于是文件的旧历史会把刚清掉的内容
+    /// 装回来。代次是这条边界的第二把锁（检查与提交同在写锁内）。
+    history_epoch: Arc<std::sync::atomic::AtomicU64>,
     /// Display timeline (persisted, survives TUI restarts). Independent of the
     /// token-bounded LLM trunk: bounded by entry count, keeps richer metadata
     /// (source provenance, tool calls, reasoning) for the TUI history view.
@@ -216,9 +556,26 @@ pub struct TrunkStore {
     event_log: echo_session::EventLog,
     /// Fork/resume metadata (lineage, origin, delegation depth). The global
     /// trunk model keeps one header for the store.
-    header: std::sync::Mutex<Option<echo_session::SessionHeader>>,
-    persist_path: std::sync::Mutex<Option<std::path::PathBuf>>,
-    dirty: std::sync::atomic::AtomicBool,
+    ///
+    /// `Arc`（2026-11）：克隆必须**共享**——`session_commands_host` 把
+    /// `agent.trunk.clone()` 包成 `Arc<TrunkStore>` 再写盘，各持一份
+    /// `Mutex` 会让"克隆写 header、本体读不到"。
+    header: Arc<std::sync::Mutex<Option<echo_session::SessionHeader>>>,
+    /// 会话文件路径（`Arc` 共享，理由同 `header`）。
+    persist_path: Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
+    /// 脏代次（2026-11 B1 修复）：每次 `mark_dirty` +1。
+    ///
+    /// 此前是 `AtomicBool`：写盘路径"快照 → await 写盘 → dirty=false"，
+    /// await 期间 append 进来的数据被那一句 `store(false)` 一并清掉
+    /// （lost update）——本轮写出去的是旧快照，而新数据再也不会有下一次
+    /// 保存。改用代次后：写盘前记下代次，成功后只把 `persisted_gen`
+    /// 推进到**那一个**代次；期间的新 dirty 会留下更高的代次，
+    /// `is_dirty()` 仍然为真。
+    dirty_gen: Arc<std::sync::atomic::AtomicU64>,
+    /// 最近一次成功落盘覆盖到的脏代次。
+    persisted_gen: Arc<std::sync::atomic::AtomicU64>,
+    /// 最近一次加载失败的原因（`None` = 正常）。可观察性：诊断/面板读它。
+    load_error: Arc<std::sync::Mutex<Option<PersistLoadError>>>,
     /// 加载阶段（2026-11 懒加载，见 [`LoadStage`]）。
     ///
     /// 启动期不再对每个人格全量读盘：一份 `echo-sessions-<team>.json` 实测
@@ -227,6 +584,10 @@ pub struct TrunkStore {
     load_stage: Arc<std::sync::atomic::AtomicU8>,
     /// 加载串行闸：并发的首批请求只触发**一次**读盘。
     load_gate: Arc<tokio::sync::Mutex<()>>,
+    /// **仅测试**：写盘两段之间的钩子（见 `append_between_snapshot_and_commit_keeps_dirty`）。
+    /// 生产构建里不存在（`#[cfg(test)]`），零成本。
+    #[cfg(test)]
+    pub(crate) hooks: PersistTestHooks,
 }
 
 impl Clone for TrunkStore {
@@ -234,11 +595,15 @@ impl Clone for TrunkStore {
         Self {
             team_id: Arc::clone(&self.team_id),
             identities: Arc::clone(&self.identities),
+            history_epoch: Arc::clone(&self.history_epoch),
             memory_limit_tokens: AtomicUsize::new(self.memory_limit_tokens.load(Ordering::Relaxed)),
             session_histories: Arc::clone(&self.session_histories),
             trunk_turn_lock: Arc::clone(&self.trunk_turn_lock),
             compact_lock: Arc::clone(&self.compact_lock),
             save_lock: Arc::clone(&self.save_lock),
+            persist_origin: Arc::clone(&self.persist_origin),
+            save_error: Arc::clone(&self.save_error),
+            commit_barrier: Arc::clone(&self.commit_barrier),
             timeline: Arc::clone(&self.timeline),
             timeline_seq: Arc::clone(&self.timeline_seq),
             timeline_ord: Arc::clone(&self.timeline_ord),
@@ -249,27 +614,23 @@ impl Clone for TrunkStore {
             timeline_probe_state: Arc::clone(&self.timeline_probe_state),
             session_providers: Arc::clone(&self.session_providers),
             event_log: self.event_log.clone(),
-            header: std::sync::Mutex::new(
-                self.header
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-            ),
-            persist_path: std::sync::Mutex::new(
-                self.persist_path
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-            ),
-            dirty: std::sync::atomic::AtomicBool::new(
-                self.dirty.load(std::sync::atomic::Ordering::Relaxed),
-            ),
+            // 克隆 = 同一份会话状态的**另一个句柄**，不是快照（2026-11 B2）：
+            // header / persist_path / dirty 代次全部共享。此前这三样按值拷贝，
+            // 于是"经克隆落盘"清不掉本体的 dirty、克隆设的路径本体看不见
+            // （会话命令层每天都在这么用）。
+            header: Arc::clone(&self.header),
+            persist_path: Arc::clone(&self.persist_path),
+            dirty_gen: Arc::clone(&self.dirty_gen),
+            persisted_gen: Arc::clone(&self.persisted_gen),
+            load_error: Arc::clone(&self.load_error),
             load_stage: Arc::clone(&self.load_stage),
             load_gate: Arc::clone(&self.load_gate),
+            // 钩子是"这一次写盘"的测试插桩，不进克隆。
+            #[cfg(test)]
+            hooks: PersistTestHooks::default(),
         }
     }
 }
-
 impl std::fmt::Debug for TrunkStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TrunkStore")
@@ -381,9 +742,13 @@ impl TrunkStore {
             identities: Arc::new(DashMap::new()),
             memory_limit_tokens: AtomicUsize::new(memory_limit_tokens),
             session_histories: Arc::new(DashMap::new()),
+            history_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             trunk_turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             compact_lock: Arc::new(tokio::sync::Mutex::new(())),
             save_lock: Arc::new(tokio::sync::Mutex::new(())),
+            persist_origin: Arc::new(std::sync::Mutex::new(PersistOrigin::Unbaselined)),
+            save_error: Arc::new(std::sync::Mutex::new(None)),
+            commit_barrier: Arc::new(parking_lot::RwLock::new(())),
             timeline: Arc::new(parking_lot::Mutex::new(Vec::new())),
             timeline_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             timeline_ord: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -394,13 +759,18 @@ impl TrunkStore {
             timeline_probe_state: Arc::new(std::sync::Mutex::new(None)),
             session_providers: Arc::new(DashMap::new()),
             event_log: echo_session::EventLog::new(),
-            header: std::sync::Mutex::new(None),
-            persist_path: std::sync::Mutex::new(None),
-            dirty: std::sync::atomic::AtomicBool::new(false),
+            header: Arc::new(std::sync::Mutex::new(None)),
+            persist_path: Arc::new(std::sync::Mutex::new(None)),
+            // 代次从 (0, 0) 起步 = 干净。`mark_dirty` 只推进 `dirty_gen`。
+            dirty_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            persisted_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            load_error: Arc::new(std::sync::Mutex::new(None)),
             // 纯内存 store（未设 persist_path）同样是"未加载"——`ensure_*`
             // 发现没有路径会直接落到 `Full`（没有东西可读）。
             load_stage: Arc::new(std::sync::atomic::AtomicU8::new(LoadStage::Untouched as u8)),
             load_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            hooks: PersistTestHooks::default(),
         }
     }
 
@@ -422,16 +792,173 @@ impl TrunkStore {
             .persist_path
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path.into());
+        // 换了路径 = 换了并发基线；旧文件的指纹不能拿来判断新路径。
+        self.set_persist_origin(PersistOrigin::Unbaselined);
+        self.clear_save_error();
+    }
+
+    /// 当前文件指纹基线（加载 / 上次成功落盘时的磁盘身份）。
+    pub(crate) fn persist_origin(&self) -> PersistOrigin {
+        *self
+            .persist_origin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn set_persist_origin(&self, origin: PersistOrigin) {
+        *self
+            .persist_origin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = origin;
+    }
+
+    /// 最近一次落盘被拒的原因（`None` = 正常 / 还没写过）。
+    ///
+    /// 陈旧快照与 IO 失败都会留在这里；dirty 不会因此被清掉。
+    pub fn last_save_error(&self) -> Option<PersistSaveError> {
+        self.save_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_save_error(&self, error: PersistSaveError) {
+        let mut slot = self
+            .save_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // 周期保存会反复撞同一个陈旧快照：同一原因只 warn 一次，避免刷屏。
+        if slot.as_ref() != Some(&error) {
+            tracing::warn!(
+                path = %error.path().display(),
+                kind = error.kind(),
+                error = %error,
+                "session save rejected; keeping dirty state and the original file"
+            );
+        }
+        *slot = Some(error);
+    }
+
+    pub(crate) fn clear_save_error(&self) {
+        *self
+            .save_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Mark sessions as needing save.
+    ///
+    /// 只推进代次（2026-11 B1）：写盘路径记下"快照时的代次"，成功后只把
+    /// `persisted_gen` 推进到那一代——写盘期间的新标记不会被吞掉。
+    pub fn mark_dirty(&self) {
+        self.dirty_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// 压缩编排互斥锁（见字段注释）。`compact_history` 全程持有。
     pub async fn compact_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.compact_lock.lock().await
     }
 
-    pub fn mark_dirty(&self) {
-        self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+    /// 当前脏代次（写盘前快照用）。
+    pub(crate) fn dirty_generation(&self) -> u64 {
+        self.dirty_gen.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 当前历史内容代次（加载提交比对用，见字段注释）。
+    pub(crate) fn history_epoch(&self) -> u64 {
+        self.history_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 推进历史内容代次。**调用方必须持有 `commit_barrier` 写锁**：代次
+    /// 推进与"清空/压缩"必须在同一个对加载提交可见的临界区里，否则
+    /// "先推进代次、后改内容"的窗口里加载提交会看到新代次却读到旧内容。
+    pub(crate) fn bump_history_epoch(&self) -> u64 {
+        self.history_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1
+    }
+
+    /// 记录"内容覆盖到 `generation` 的那份快照已经落盘"。
+    ///
+    /// 只进不退（`fetch_max`）：并发写者不会把进度改小；`generation` 之后
+    /// 的新 `mark_dirty` 仍然让 [`is_dirty`] 为真。
+    pub(crate) fn note_persisted(&self, generation: u64) {
+        self.persisted_gen
+            .fetch_max(generation, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// 是否有未落盘的改动。
+    pub fn is_dirty(&self) -> bool {
+        self.dirty_generation() != self.persisted_gen.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// 最近一次加载失败的原因（`None` = 正常 / 还没加载过）。
+    ///
+    /// 失败时 [`Self::is_loaded`] 为假、落盘被拒绝（原文件原样保留）——
+    /// 这个访问器是那条约束的**可观察面**（诊断 / 面板 / 测试）。
+    pub fn load_error(&self) -> Option<PersistLoadError> {
+        self.load_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_load_error(&self, error: PersistLoadError) {
+        let mut slot = self
+            .load_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // 同一份档反复失败（周期重试 / 并发首批请求）只记一次，避免刷屏。
+        if slot.as_ref().map(PersistLoadError::key) != Some(error.key()) {
+            tracing::error!(
+                path = %error.path().display(),
+                kind = error.kind(),
+                error = %error,
+                "session file load failed; refusing to overwrite it"
+            );
+        }
+        *slot = Some(error);
+    }
+
+    pub(crate) fn clear_load_error(&self) {
+        *self
+            .load_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    /// **仅测试**：跑一次"快照 → 提交"之间的钩子（生产构建为空操作）。
+    /// **仅测试**：跑一次"解析完成 → 提交"之间的钩子（生产构建为空操作）。
+    fn run_before_load_commit_hook(&self) {
+        #[cfg(test)]
+        {
+            let hook = self
+                .hooks
+                .before_load_commit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+    }
+
+    fn run_before_commit_hook(&self) {
+        #[cfg(test)]
+        {
+            let hook = self
+                .hooks
+                .before_commit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
     }
 
     /// Evict identity labels idle longer than TTL. Called periodically from a
@@ -622,6 +1149,9 @@ impl TrunkStore {
     }
 
     pub fn append_event(&self, event: echo_session::SessionEvent) {
+        // 与加载提交互斥（读锁；写锁只在加载的同步提交窗口内持有）。
+        // 加载期间 append 会阻塞到提交完成，然后排在文件事件之后。
+        let _commit_guard = self.commit_barrier.read();
         self.warn_if_unloaded("append_event");
         let session = event.session().map(str::to_string);
         // 模型不可见事件（推理 / 模型往返观测）不改变投影：跳过重建。
@@ -773,6 +1303,7 @@ impl TrunkStore {
     /// 该会话（物化其历史句柄）。调用方保证事件已归因到 `session_id` 且不重复
     /// （重复导入会重复追加——幂等性由迁移层的 transfer_id 去重负责）。
     pub fn import_session_events(&self, session_id: &str, events: Vec<echo_session::SessionEvent>) {
+        let _commit_guard = self.commit_barrier.read();
         if !events.is_empty() {
             self.event_log.extend(events);
         }
@@ -784,6 +1315,7 @@ impl TrunkStore {
     /// Insert an event after the last user event carrying `sequence`
     /// (concurrent-branch merge), then re-project the trunk cache.
     pub fn insert_event_after_sequence(&self, sequence: u64, event: echo_session::SessionEvent) {
+        let _commit_guard = self.commit_barrier.read();
         let session = event.session().map(str::to_string);
         self.event_log.insert_after_sequence(sequence, event);
         self.reproject(&session);

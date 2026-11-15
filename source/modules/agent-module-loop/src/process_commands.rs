@@ -124,6 +124,19 @@ async fn save_team(cmd: &BackendCommand, host: &ProcessCommandHost) {
         context_window_tokens: *context_window_tokens,
         api_profile: api_profile.clone(),
     };
+    // 保存可能**重建**这个实例（新建 / 从禁用转启用）。先等上一代的下线
+    // 收尾跑完（停后台任务 + 等 turn 排空 + 最终保存）：否则新一代的加载与
+    // 上一代的最终落盘会交错，旧代后落地就把新代的数据盖回旧快照（2026-11 C）。
+    //
+    // 等不干净（收尾失败）→ **放弃**这次重建：`save_profile` 里也有同一把
+    // 入口闸，但这里先给出可读的失败原因（命令泵只回一条 Error 事件）。
+    if profile.enabled {
+        if let Err(error) = host.admin.await_retirement(id).await {
+            tracing::error!(team = %id, %error, "rebuild refused: previous retirement incomplete");
+            host.error(format!("agent {id} 的上一代收尾未完成，暂不能保存/启用：{error}"));
+            return;
+        }
+    }
     if let Err(e) = Arc::clone(&host.admin).save_profile(id, profile.clone()) {
         host.error(format!("save agent failed: {e}"));
         return;
@@ -155,6 +168,10 @@ async fn save_team(cmd: &BackendCommand, host: &ProcessCommandHost) {
         target
             .trunk
             .set_memory_limit_tokens(budget_cfg.effective_memory_limit_tokens());
+        // 后台任务（周期保存 + 模块热重载）在**最终配置之后**启动：此刻才刚
+        // 应用完能力门控 / persona API / 预算（2026-11 C 复审）。幂等，已起的
+        // 一代不会因此多出第二个写者；已退场的一代会被拒绝。
+        target.start_background_tasks();
         host.emitter.emit_teams_list().await;
     }
     host.error(format!("agent {id} saved"));
@@ -183,6 +200,15 @@ async fn toggle_team(host: &ProcessCommandHost, id: &str, enabled: bool) {
     };
     // `set_enabled` 的接收者是 `Arc<Self>`（它要把 manager 交给重建出来的
     // agent 做绑定），所以 clone 一份。
+    if enabled {
+        // 重新启用前先等上一代的收尾（见 save_team 的同款理由）。等不干净
+        // 就放弃重建——`set_enabled` 的入口闸会再挡一次，这里先给出原因。
+        if let Err(error) = host.admin.await_retirement(id).await {
+            tracing::error!(team = %id, %error, "enable refused: previous retirement incomplete");
+            host.error(format!("agent {id} 的上一代收尾未完成，暂不能启用：{error}"));
+            return;
+        }
+    }
     match Arc::clone(&host.admin).set_enabled(id, enabled, factory) {
         Ok(()) => {
             // 重新启用的人格：补应用启动期门控（名单 + 全局禁用），否则新实例
@@ -190,6 +216,8 @@ async fn toggle_team(host: &ProcessCommandHost, id: &str, enabled: bool) {
             if enabled {
                 if let Some(running) = host.admin.get_running(id) {
                     running.agent.apply_capabilities(&running.profile).await;
+                    // 最终配置（能力门控）应用完之后才起后台任务（2026-11 C 复审）。
+                    running.agent.start_background_tasks();
                 }
             }
             host.emitter.emit_teams_list().await;

@@ -276,6 +276,34 @@ impl FederationRuntime {
             .unwrap_or_default()
     }
 
+    /// 同步版"第一执行宿主"（能力上报用）：与 [`Self::executor_hosts`] 的
+    /// 第一个元素**同一份列表、同一条规则**——按 id 排序后第一个活着的人格，
+    /// 零人格回退 `__core`。
+    ///
+    /// 为什么需要同步版：握手能力是同步回调（`ToolReporter`），不能 `await`。
+    /// 锁竞争 / 没有可升级条目 → `None`（本轮不宣告，fail-closed）——宁可
+    /// 少宣告，也不能宣告执行端不认的工具（复审 F：曾汇总全部 persona，
+    /// 执行端却只取 `hosts.first()`）。
+    pub(crate) fn primary_executor_host(&self) -> Option<std::sync::Arc<agent_module_loop::Agent>> {
+        let Ok(list) = self.personas.try_read() else {
+            return None;
+        };
+        if let Some(agent) = list.iter().find_map(|(_, weak)| weak.upgrade()) {
+            return Some(agent);
+        }
+        drop(list);
+        self.core_agent()
+    }
+
+    /// 能力上报（握手 / 状态查询）的工具定义：**只取实际执行宿主**的
+    /// 注册表，保证「宣告的」与「调得动的」同一份（见
+    /// [`Self::primary_executor_host`]）。
+    pub(crate) fn advertised_tool_definitions(&self) -> Vec<echo_defs::tool::ToolDefinition> {
+        self.primary_executor_host()
+            .map(|agent| agent.tools.remote_capable_definitions())
+            .unwrap_or_default()
+    }
+
     /// 发一条联邦事件：**任一人格**都通到 Panel（进程级汇聚点），所以取第一个
     /// 活着的；无人格（全部被禁用）时回退到 `core_agent`——否则链路变化静默丢失。
     ///
@@ -1366,7 +1394,15 @@ fn peer_tool_package(peer_name: &str) -> String {
     format!("echo-agent.federation.{peer_name}")
 }
 
-/// 给**一个** agent 注册某对端的全部代理工具（本机 schema 复制）。
+/// 对端**完整通告**（有定义 + 有参数 schema）的工具名——日志与容量口径。
+fn advertised_tool_names(caps: &agent_module_federation::NodeCaps) -> Vec<String> {
+    agent_module_loop::federation::remote_tool_candidates(caps)
+        .into_iter()
+        .filter(|name| agent_module_loop::federation::advertised_schema(caps, name).is_some())
+        .collect()
+}
+
+/// 给**一个** agent 注册某对端的全部代理工具（schema 来自对端通告）。
 ///
 /// 返回该 agent 的保活句柄（drop 即按名注销）。
 ///
@@ -1391,6 +1427,24 @@ pub(crate) async fn register_remote_tools_for_agent(
     if candidates.is_empty() {
         return Vec::new();
     }
+    // **绝不猜 schema**（2026-11 复审 A）：`tool_definitions` 是代理工具
+    // 唯一的合法来源。旧节点整张表为空时**不自动注册代理**——本机同名
+    // schema 只代表「我们这边长什么样」，拿它冒充对端参数形状会把模型
+    // 引向必然失败的调用；伪造空 schema 同样只是把失败推迟到调用时。
+    //
+    // 链路兼容不受影响：旧节点仍可经 `node://<peer>/…` 显式调用（那条
+    // 路径不依赖代理工具，见 `RemoteAwareTool`）。
+    if info.caps.tool_definitions.is_empty() {
+        tracing::warn!(
+            target: "federation",
+            peer = %info.node_id,
+            peer_name = %peer_name,
+            advertised_tools = ?info.caps.tools,
+            "peer does not advertise tool_definitions (old node) — auto proxy tools disabled; \
+             use node://<peer>/… for explicit invocation"
+        );
+        return Vec::new();
+    }
     let configured: Vec<String> = rt
         .federation
         .peer_configs()
@@ -1400,17 +1454,28 @@ pub(crate) async fn register_remote_tools_for_agent(
         .collect();
     let aliases = peer_tool_aliases(peer_name, info.node_name.as_deref(), &configured);
     let package = peer_tool_package(peer_name);
-    let definitions = agent.tools.definitions().await;
     let mut keepers = Vec::with_capacity(candidates.len() * aliases.len());
     for alias in &aliases {
         for remote_name in &candidates {
-            let (description, parameters) =
-                agent_module_loop::federation::proxy_schema(&definitions, remote_name, alias);
+            // 非空定义表里缺某个工具（或定义缺参数 schema）→ 跳过该工具，
+            // 不注册一个"看起来能调"的代理。
+            let Some((description, parameters)) =
+                agent_module_loop::federation::advertised_schema(&info.caps, remote_name)
+            else {
+                tracing::warn!(
+                    target: "federation",
+                    peer = %info.node_id,
+                    peer_name = %peer_name,
+                    tool = %remote_name,
+                    "peer did not advertise a complete definition for this tool — skipping proxy registration"
+                );
+                continue;
+            };
             let tool = std::sync::Arc::new(agent_module_loop::federation::RemoteTool::new(
                 alias,
                 &info.node_id,
                 remote_name,
-                description,
+                format!("【远程·{alias}】{description}"),
                 parameters,
                 rt.federation.clone(),
                 rt.router.clone(),
@@ -1423,7 +1488,9 @@ pub(crate) async fn register_remote_tools_for_agent(
         }
     }
     // 旧工具名和友好名共享 canonical peer 包，断链时不会留下可用别名。
-    agent.tools.set_package_enabled(&package, true);
+    if !keepers.is_empty() {
+        agent.tools.set_package_enabled(&package, true);
+    }
     keepers
 }
 
@@ -1482,7 +1549,7 @@ pub(crate) async fn register_remote_tools(
             per_persona.insert(id, keepers);
         }
     }
-    let registered = candidates.len();
+    let registered = advertised_tool_names(&info.caps).len();
     // 保活句柄入库（本 peer 分桶；旧桶已在上方清空）。
     {
         let mut slot = rt
@@ -1586,7 +1653,7 @@ pub(crate) async fn adopt_active_links(
             .into_iter()
             .map(|p| p.name)
             .collect();
-        let remote_candidates = agent_module_loop::federation::remote_tool_candidates(&info.caps);
+        let remote_candidates = advertised_tool_names(&info.caps);
         let installed: Vec<String> =
             peer_tool_aliases(&peer_name, info.node_name.as_deref(), &configured)
                 .iter()
@@ -1641,14 +1708,16 @@ mod remote_tool_install_tests {
         async fn chat(
             &self,
             _request: &agent_module_loop::llm::ChatRequest,
-        ) -> Result<agent_module_loop::llm::ChatResponse, agent_module_loop::llm::LlmError> {
+        ) -> Result<agent_module_loop::llm::ChatResponse, agent_module_loop::llm::LlmError>
+        {
             Err(agent_module_loop::llm::LlmError::Config("not used".into()))
         }
         async fn chat_stream(
             &self,
             request: &agent_module_loop::llm::ChatRequest,
             _tx: tokio::sync::mpsc::UnboundedSender<agent_module_loop::llm::ChatChunk>,
-        ) -> Result<agent_module_loop::llm::ChatResponse, agent_module_loop::llm::LlmError> {
+        ) -> Result<agent_module_loop::llm::ChatResponse, agent_module_loop::llm::LlmError>
+        {
             self.chat(request).await
         }
     }
@@ -1697,6 +1766,17 @@ mod remote_tool_install_tests {
         })
     }
 
+    fn definition(name: &str) -> agent_module_federation::ToolDefinition {
+        agent_module_federation::ToolDefinition {
+            name: name.into(),
+            description: format!("remote {name}"),
+            parameters: Some(serde_json::json!({
+                "type": "object",
+                "properties": {}
+            })),
+        }
+    }
+
     fn peer_info(caps: agent_module_federation::NodeCaps) -> agent_module_federation::PeerInfo {
         agent_module_federation::PeerInfo {
             node_id: "node-remote".into(),
@@ -1738,10 +1818,10 @@ mod remote_tool_install_tests {
 
         let caps = agent_module_federation::NodeCaps {
             tools: vec!["read_file".into(), "bash".into()],
+            tool_definitions: vec![definition("read_file"), definition("bash")],
             ..Default::default()
         };
-        // 本机 schema 复制要用到同名工具定义；没有定义时 proxy_schema 仍会
-        // 产出可调用工具（描述退化为简版），这正是它设计上的降级路径。
+        // 代理工具只从对端通告的定义来（绝不猜本机 schema）。
         let keepers =
             super::register_remote_tools_for_agent(&rt, &alice, &peer_info(caps), "gpu-box").await;
         assert_eq!(keepers.len(), 2, "两个候选工具都该注册");
@@ -1785,6 +1865,166 @@ mod remote_tool_install_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 本机同名工具（schema 故意与对端不同）——用来证明代理工具**不**复制它。
+    struct LocalSchemaTool;
+
+    #[async_trait::async_trait]
+    impl agent_module_loop::tool::Tool for LocalSchemaTool {
+        fn name(&self) -> &str {
+            "read_file"
+        }
+        fn description(&self) -> &str {
+            "local read_file"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"local_only": {"type": "string"}},
+                "required": ["local_only"],
+            })
+        }
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+        ) -> Result<String, agent_module_loop::tool::ToolError> {
+            Ok("local".into())
+        }
+        fn remote_capable(&self) -> bool {
+            true
+        }
+    }
+
+    /// 第二个远程工具（人格 B 独有），用于验证能力上报不跨人格汇总。
+    struct AnotherRemoteTool;
+
+    #[async_trait::async_trait]
+    impl agent_module_loop::tool::Tool for AnotherRemoteTool {
+        fn name(&self) -> &str {
+            "bash"
+        }
+        fn description(&self) -> &str {
+            "another remote tool"
+        }
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+        ) -> Result<String, agent_module_loop::tool::ToolError> {
+            Ok("bash".into())
+        }
+        fn remote_capable(&self) -> bool {
+            true
+        }
+    }
+
+    /// 2026-11：代理工具的 schema 来自**对端通告**（`tool_definitions`），
+    /// 不是本机同名工具的 schema；旧节点没通告时才回退本机副本。
+    #[tokio::test]
+    async fn remote_tool_schema_comes_from_peer_advertisement() {
+        let dir = std::env::temp_dir().join(format!("echo-advertised-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+        let agent = new_agent("alice");
+        // 本机注册一个同名工具：schema 与对端完全不同。
+        agent
+            .tools
+            .register_shared(std::sync::Arc::new(LocalSchemaTool));
+
+        let advertised = serde_json::json!({
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "remote path"}},
+            "required": ["path"],
+        });
+        let caps = agent_module_federation::NodeCaps {
+            tools: vec!["read_file".into()],
+            tool_definitions: vec![agent_module_federation::ToolDefinition {
+                name: "read_file".into(),
+                description: "remote read_file".into(),
+                parameters: Some(advertised.clone()),
+            }],
+            ..Default::default()
+        };
+        let keepers =
+            super::register_remote_tools_for_agent(&rt, &agent, &peer_info(caps), "gpu-box").await;
+        assert_eq!(keepers.len(), 1);
+        let parameters = agent.tools.parameters("gpu-box__read_file").await;
+        assert_eq!(
+            parameters,
+            Some(advertised.clone()),
+            "必须是远端通告的 schema（本机副本会要求 local_only）"
+        );
+        let description = agent
+            .tools
+            .get("gpu-box__read_file")
+            .map(|tool| tool.description().to_string())
+            .expect("proxy tool");
+        assert!(description.contains("remote read_file"), "{description}");
+        drop(keepers);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A（2026-11 复审）：旧节点（不发 `tool_definitions`）→ **不**自动注册
+    /// 代理工具（绝不拿本机同名 schema 猜对端参数）；node:// 显式调用不受影响。
+    #[tokio::test]
+    async fn old_peer_without_definitions_registers_no_proxy_tools() {
+        let dir = std::env::temp_dir().join(format!("echo-old-peer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+        let agent = new_agent("alice");
+        // 本机恰好有同名工具：旧实现会复制它的 schema 造一个代理。
+        agent
+            .tools
+            .register_shared(std::sync::Arc::new(LocalSchemaTool));
+        let caps = agent_module_federation::NodeCaps {
+            tools: vec!["read_file".into()],
+            ..Default::default()
+        };
+        let keepers =
+            super::register_remote_tools_for_agent(&rt, &agent, &peer_info(caps), "gpu-box").await;
+        assert!(
+            keepers.is_empty(),
+            "旧节点不宣告定义 → 不得自动注册可调用代理"
+        );
+        assert!(
+            !agent
+                .tools
+                .names()
+                .iter()
+                .any(|name| name == "gpu-box__read_file"),
+            "不得伪造本机 schema 的代理工具：{:?}",
+            agent.tools.names()
+        );
+        drop(keepers);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A：非空定义表里缺某个工具 → 该工具跳过，其余照常注册（不猜）。
+    #[tokio::test]
+    async fn partial_definitions_skip_only_the_missing_tool() {
+        let dir = std::env::temp_dir().join(format!("echo-partial-defs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+        let agent = new_agent("alice");
+        let caps = agent_module_federation::NodeCaps {
+            tools: vec!["bash".into(), "read_file".into()],
+            tool_definitions: vec![definition("bash")],
+            ..Default::default()
+        };
+        let keepers =
+            super::register_remote_tools_for_agent(&rt, &agent, &peer_info(caps), "gpu-box").await;
+        assert_eq!(keepers.len(), 1, "只有 bash 有完整定义");
+        let names = agent.tools.names();
+        assert!(
+            names.iter().any(|name| name == "gpu-box__bash"),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name == "gpu-box__read_file"),
+            "缺定义的 read_file 不得注册：{names:?}"
+        );
+        drop(keepers);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 对端没宣告任何可远程工具 → 不装、返回空句柄（不是错误）。
     #[tokio::test]
     async fn generated_peer_registers_friendly_and_legacy_tools_in_one_package() {
@@ -1794,6 +2034,7 @@ mod remote_tool_install_tests {
         let agent = new_agent("alice");
         let mut info = peer_info(agent_module_federation::NodeCaps {
             tools: vec!["bash".into()],
+            tool_definitions: vec![definition("bash")],
             ..Default::default()
         });
         info.node_name = Some("ai_station".into());
@@ -1949,6 +2190,63 @@ mod remote_tool_install_tests {
         let hosts = rt.executor_hosts().await;
         assert_eq!(hosts.len(), 1, "人格消失后必须退回 __core");
         assert_eq!(hosts[0].0, super::CORE_AGENT_ID);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F（2026-11 复审）：能力上报与执行宿主必须是**同一注册表**。
+    ///
+    /// 此前上报汇总全部 persona、执行端只取 `executor_hosts().first()`：
+    /// 第二个人格独有的工具会被宣告，对端注册出代理后一调就 UnknownCall。
+    #[tokio::test]
+    async fn capability_report_matches_the_actual_executor_host() {
+        let dir = std::env::temp_dir().join(format!("echo-caps-host-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+
+        // 零人格：报核心服务代理的那一份。
+        let core = new_agent(super::CORE_AGENT_ID);
+        core.tools
+            .register_shared(std::sync::Arc::new(LocalSchemaTool));
+        rt.set_core_agent(&core);
+        let names: Vec<String> = rt
+            .advertised_tool_definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+        assert_eq!(names, vec!["read_file".to_string()]);
+        assert!(Arc::ptr_eq(
+            &rt.primary_executor_host().expect("core host"),
+            &core
+        ));
+        assert!(Arc::ptr_eq(&rt.executor_hosts().await.remove(0).1, &core));
+
+        // 两个人格：只报排序第一的 alice；bob 独有的 bash 不得出现在宣告里。
+        let alice = new_agent("alice");
+        alice
+            .tools
+            .register_shared(std::sync::Arc::new(LocalSchemaTool));
+        let bob = new_agent("bob");
+        bob.tools
+            .register_shared(std::sync::Arc::new(AnotherRemoteTool));
+        rt.register_persona("bob", &bob).await;
+        rt.register_persona("alice", &alice).await;
+
+        let names: Vec<String> = rt
+            .advertised_tool_definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["read_file".to_string()],
+            "只报实际执行宿主（alice）的注册表，不能汇总 bob"
+        );
+        let host = rt.executor_hosts().await.remove(0).1;
+        assert!(Arc::ptr_eq(&host, &alice), "执行端同样选 alice");
+        assert!(Arc::ptr_eq(
+            &rt.primary_executor_host().expect("persona host"),
+            &alice
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -52,7 +52,24 @@ impl AgentMessageHook {
     pub async fn on_incoming_message(&self, msg: IncomingMessage) -> Result<(), String> {
         // 懒加载（2026-11）：平台入站消息是"真正要用这份历史"的第一个信号
         // ——先读盘，再建会话/turn。
-        self.agent.trunk.ensure_loaded().await;
+        //
+        // 跨组闭环（2026-11）：坏档 / 读失败必须**拒绝这条消息**并把原因
+        // 交还实例（错误可见）。失败态下 `append_event` 只 warn、落盘又被
+        // 拒，turn 照跑 = 产出一条"重启后不存在"的假回复。
+        let load_failure = self.agent.trunk.ensure_loaded_or_err().await.err();
+        if let Some(error) = &load_failure {
+            // 停止/取消是**管理操作**：会话档坏了也必须能把在飞任务停掉，
+            // 不能被入口门禁一并停摆（"只读展示可错误事件，不强制全停
+            // 管理修复操作"）。其余消息一律拒绝。
+            if echo_defs::control_command::cancel_scope(&msg.content).is_none() {
+                let message = format!("会话历史加载失败，已拒绝处理本条消息：{error}");
+                self.agent.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: message.clone(),
+                });
+                return Err(message);
+            }
+        }
         let agent = &self.agent;
         // 多实例维度：模块实例名即 QQ 实例名（非 "qq" 时进会话键）。
         // 实例名 == 平台名 = 默认实例，不写 account 维度（多实例才需要区分）。
@@ -130,9 +147,17 @@ impl AgentMessageHook {
         // Cancellation is a transport-level control command. Handle it before
         // reserving a conversation turn so it can interrupt work immediately.
         if let Some(cancel_all) = echo_defs::control_command::cancel_scope(&msg.content) {
-            agent
+            // 取消请求本身是会话写操作：加载失败时**跳过记录**（写了也只会
+            // 丢），但取消照做——管理操作不被坏档停摆。
+            if let Err(error) = agent
                 .record_incoming_and_snapshot(&session, &hook_input)
-                .await;
+                .await
+            {
+                agent.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: format!("会话历史加载失败，取消请求未记录：{error}"),
+                });
+            }
             // 取消必须按 **turn 实际注册的会话** 过滤，而不是平台会话：
             // turn 跑在默认本地会话（display_session），平台会话只承载来源。
             // 此前这里传平台 session_id，单会话模式下永远取消不到——并行模式
@@ -157,9 +182,12 @@ impl AgentMessageHook {
                 "当前没有可停止的任务。".into()
             };
             // 取消回执只记入后端会话（平台侧回执已随模块实例概念移除）。
-            agent
-                .record_control_reply(&session, reply, message_sequence)
-                .await;
+            // 加载失败时不写回执：失败态下写了也落不了盘，重启即丢。
+            if load_failure.is_none() {
+                agent
+                    .record_control_reply(&session, reply, message_sequence)
+                    .await;
+            }
             return Ok(());
         }
 
@@ -597,7 +625,8 @@ mod tests {
         );
         let snapshot = agent
             .record_incoming_and_snapshot(&session, &hook_input)
-            .await;
+            .await
+            .expect("memory-only store loads without error");
         let (reply_tx, reply_rx) = tokio::sync::watch::channel(false);
 
         agent
@@ -655,7 +684,7 @@ mod tests {
             .await
             .unwrap();
         // 串行闸门：第二条在排队，尚未进入模型——但已注册为"进行中"。
-        // 注册（`register_inbound_turn`）发生在闸门外、append 之前，所以等注册表
+        // 注册（`try_register_inbound_turn`）发生在闸门外、append 之前，所以等注册表
         // 计数即可；落盘要等拿到闸，排队中的 turn 反而**不会**落盘用户事件。
         wait_until(|| agent.active_inbound_turn_count() == 2).await;
         assert_eq!(entered.load(Ordering::SeqCst), 1);
@@ -708,5 +737,64 @@ mod tests {
         assert!(platform_history
             .iter()
             .any(|message| message.content == "已停止 2 个进行中的任务。"));
+    }
+    /// 坏档：入站消息必须**拒绝**并可见报错——不建会话、不记录假事件、
+    /// 不跑 turn。而停止/取消是**管理操作**：坏档也必须放行（不被入口门禁
+    /// 一并停摆）。
+    #[tokio::test]
+    async fn corrupt_session_file_rejects_inbound_message_but_keeps_cancel_working() {
+        let hook = AgentMessageHook::new(mock_agent("不应回复"));
+        let path = std::env::temp_dir().join(format!(
+            "echo-bridge-corrupt-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&path, "{ 坏档").unwrap();
+        hook.agent.set_session_persist_path(&path);
+
+        let (bridge, handle) = crate::create_bridge();
+        let bridge = Arc::new(bridge);
+        hook.agent.attach(Arc::new(handle));
+
+        let error = hook
+            .on_incoming_message(dm_message("hello"))
+            .await
+            .expect_err("坏档必须拒绝入站消息");
+        assert!(error.contains("加载失败"), "{error}");
+        assert!(
+            hook.agent.trunk.all().is_empty(),
+            "拒绝必须发生在建会话 / 记录入站事件之前"
+        );
+
+        let errors = {
+            let mut rx = bridge.event_rx.lock().await;
+            let mut errors = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                if let BackendEvent::Error { message, .. } = event {
+                    errors.push(message);
+                }
+            }
+            errors
+        };
+        assert!(
+            errors
+                .iter()
+                .any(|message| message.contains("已拒绝处理本条消息")),
+            "错误必须对实例可见: {errors:?}"
+        );
+
+        // 停止/取消：管理操作必须照样可用（坏档不阻断）。
+        hook.on_incoming_message(dm_message("/stop"))
+            .await
+            .expect("取消是管理操作，坏档也必须放行");
+        assert!(
+            hook.agent.active_inbound_turn_count() == 0,
+            "取消请求本身不能登记成 turn"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

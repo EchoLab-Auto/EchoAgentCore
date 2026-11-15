@@ -103,7 +103,13 @@ fn from_fabric_event(event: fabric::LinkEvent<FedFrame>) -> LinkEvent {
 }
 
 type LoadReporter = Arc<dyn Fn() -> u32 + Send + Sync>;
-type ToolReporter = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+/// 可远程调用工具的**定义**上报（名 + 描述 + 参数 schema）。
+///
+/// 2026-11 起从"只报名"升级为"报定义"：大脑侧注册 `<peer>__<tool>` 时
+/// 直接用对端通告的 schema；**没有定义就不注册代理**（绝不复制本机同名
+/// 工具的 schema 猜参数）。`tools` 名单由定义派生（同一个真源，不会出现
+/// "名单有、定义没有"）。
+type ToolReporter = Arc<dyn Fn() -> Vec<echo_defs::tool::ToolDefinition> + Send + Sync>;
 
 pub struct Federation {
     inner: Arc<fabric::Federation<FedFrame>>,
@@ -183,7 +189,13 @@ impl Federation {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .as_ref()
                 {
-                    caps.tools = reporter();
+                    let definitions = reporter();
+                    caps.tools = definitions
+                        .iter()
+                        .map(|definition| definition.name.clone())
+                        .collect();
+                    caps.tools.sort();
+                    caps.tool_definitions = definitions;
                 }
                 caps.panel_ready = panel.is_open();
                 serde_json::to_value(caps).unwrap_or_default()

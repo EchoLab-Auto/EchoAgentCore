@@ -19,13 +19,33 @@ impl Agent {
             .fetch_add(1, Ordering::Relaxed)
     }
 
-    pub(crate) fn register_inbound_turn(
+    /// 登记一个可取消的 turn；**已退场/正在排空**时返回 `None`（拒绝新工作）。
+    ///
+    /// 两段检查是刻意的（2026-11 C 复审，登记竞态）：
+    ///
+    /// 1. 入口先看 `retired` / `draining`——绝大多数"退场后迟到"的入站消息死在
+    ///    这里，不会进表；
+    /// 2. 入表之后**再查一次**：退场可能恰好发生在 1 与 3 之间，此时
+    ///    `begin_retire` 的 `cancel_all_inbound_turns` 已经走完那一遍，不会再
+    ///    照顾这个刚进表的 turn（它的令牌没人取消）。自己摘掉并返回 `None`，
+    ///    否则收尾会一直等一个永远不会被取消的 turn。
+    ///
+    /// 计数先 +1 再入表（与 [`Self::finish_inbound_turn`] 的出表再 -1 对称）：
+    /// 排空方读到的 `0` 一定晚于"表里最后一个 turn 的 commit/cleanup 结束"。
+    pub(crate) fn try_register_inbound_turn(
         &self,
         session_id: &str,
         message_sequence: u64,
-    ) -> InboundTurnRegistration {
+    ) -> Option<InboundTurnRegistration> {
+        if self.is_retired() || self.turns.draining.load(Ordering::Acquire) {
+            return None;
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let cancel = tokio_util::sync::CancellationToken::new();
+        // 先 +1：让排空方在看到这条 turn 之前就**不可能**读到 0。
+        self.turns
+            .inbound_turn_count
+            .send_modify(|count| *count += 1);
         self.turns.active_inbound_turns.insert(
             id.clone(),
             ActiveInboundTurn {
@@ -34,11 +54,45 @@ impl Agent {
                 cancel: cancel.clone(),
             },
         );
-        InboundTurnRegistration { id, cancel }
+        // 入表后复查：退场在这一瞬间插进来的话，上面那次 cancel_all 漏掉了我们。
+        if self.is_retired() || self.turns.draining.load(Ordering::Acquire) {
+            self.finish_inbound_turn(&id);
+            return None;
+        }
+        Some(InboundTurnRegistration { id, cancel })
     }
 
+    /// turn 结束（commit / cleanup 都跑完之后才调用）：出表，再让计数 -1。
+    ///
+    /// 以"出表成功"为准减计数：重复调用（或调用方兜底路径）不会把计数减穿，
+    /// 排空方读到的 0 始终对应"表里确实没有未完成的 turn"。
     pub(crate) fn finish_inbound_turn(&self, turn_id: &str) {
-        self.turns.active_inbound_turns.remove(turn_id);
+        if self.turns.active_inbound_turns.remove(turn_id).is_some() {
+            self.turns
+                .inbound_turn_count
+                .send_modify(|count| *count = count.saturating_sub(1));
+        }
+    }
+
+    /// 真等"所有登记/排队 turn 退出"（commit / cleanup 结束）。
+    ///
+    /// 返回 `Err(还剩几个)` = 窗口内没排空——调用方据此**不得**认为收尾完成
+    /// （尤其不能在还有写者时做最终保存 / 放开新代重建）。判据是 watch 计数，
+    /// 不是 sleep 轮询：`watch::Receiver::wait_for` 在计数变化时立刻唤醒。
+    pub(crate) async fn wait_inbound_turns_idle(
+        &self,
+        window: std::time::Duration,
+    ) -> Result<(), usize> {
+        let mut count = self.turns.inbound_turn_count.subscribe();
+        let drained = async {
+            // Sender 随 Agent 存活；`Err` 只可能是 self 正在被 drop，等价于
+            // "不会再有 turn"。
+            let _ = count.wait_for(|n| *n == 0).await;
+        };
+        match tokio::time::timeout(window, drained).await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(*count.borrow()),
+        }
     }
 
     /// Cancel the newest active turn belonging to the command sender.
@@ -82,11 +136,16 @@ impl Agent {
     /// Commit an inbound event and capture the branch's point-in-time context
     /// as one operation. The conversation lock is never held while the model
     /// or tools are running.
+    ///
+    /// 返回 `Err` = 会话历史加载失败（`Failed` 负缓存）。**不记录**入站事件：
+    /// 失败态下 `append_event` 只 warn、落盘又被拒绝，写进去的是一条"重启后
+    /// 不存在"的假历史。调用方必须拒绝本轮并把原因交还用户（错误可见）。
     pub(crate) async fn record_incoming_and_snapshot(
         &self,
         session: &Session,
         content: &str,
-    ) -> Vec<ChatMessage> {
+    ) -> Result<Vec<ChatMessage>, String> {
+        self.trunk.ensure_loaded_or_err().await?;
         let _turn = session.turn_lock.lock().await;
         // 入站内容脱敏（2026-10 安全）：会话事件（及其投影出的历史）
         // 永不落明文——用户粘贴的密钥不得进会话日志 / 归档 / 模型上下文。
@@ -106,7 +165,7 @@ impl Agent {
                 },
             ));
         let snapshot = session.history.lock().clone();
-        snapshot
+        Ok(snapshot)
     }
 
     /// Acquire this session's serial turn slot.
@@ -138,7 +197,8 @@ impl Agent {
     /// 看到的是第一轮结束后的上下文。闸门随返回值交给调用方，turn 结束
     /// （guard drop）才让位。
     ///
-    /// 返回 `None` = 排队期间被取消，调用方应直接收尾（不执行 turn）。
+    /// 返回 `None` = 排队期间被取消，或人格已进入退场/排空（拒绝新工作），
+    /// 调用方应直接收尾（不执行 turn）。
     #[allow(clippy::type_complexity)]
     pub(crate) async fn register_incoming_branch(
         &self,
@@ -150,7 +210,7 @@ impl Agent {
         Vec<ChatMessage>,
         tokio::sync::OwnedMutexGuard<()>,
     )> {
-        let registration = self.register_inbound_turn(&session.id, message_sequence);
+        let registration = self.try_register_inbound_turn(&session.id, message_sequence)?;
         let slot = match self.acquire_turn_slot(session, &registration.cancel).await {
             Some(slot) => slot,
             None => {
@@ -249,6 +309,13 @@ impl Agent {
         visible_reply: Option<tokio::sync::watch::Sender<bool>>,
         branch_id: &str,
     ) -> Result<String> {
+        // **旁路入口的 fail-closed**（2026-11 跨组闭环）：`process_recorded_message*`
+        // 既被 `process_message` 调用，也被入站分支直接调用。失败态下继续跑
+        // 只会让模型/工具照常执行、回复却落不了盘（"重启后不存在"），所以
+        // 在拿分支闸门**之前**就拒绝——LLM/工具计数保持 0。
+        if let Err(error) = self.trunk.ensure_loaded_or_err().await {
+            return Err(anyhow!("会话历史加载失败，已拒绝开始本轮对话：{error}"));
+        }
         let message_sequence = structured_message_sequence(content);
         let merge_cancel = cancel.clone();
         let branch_slot = tokio::select! {
@@ -320,6 +387,18 @@ impl Agent {
         if self.turns.draining.load(Ordering::Acquire) {
             return Err(anyhow!("Core 正在重启，消息暂未处理，请稍后重试"));
         }
+        // **直接入口的 fail-closed**（2026-11 跨组闭环）：坏档 / 读失败时
+        // 不能只 warn 继续——那会跑完一整轮、产出一条不落盘的假回复。
+        // 先看加载结果：Err 必须错误可见（事件 + 返回值），且本轮不发生
+        // 任何模型/工具调用。
+        if let Err(error) = self.trunk.ensure_loaded_or_err().await {
+            let message = format!("会话历史加载失败，已拒绝开始本轮对话：{error}");
+            self.emit(BackendEvent::Error {
+                session_id: Some(session.id.clone()),
+                message: message.clone(),
+            });
+            return Err(anyhow!(message));
+        }
         // 入站内容脱敏（2026-10 安全）：本 turn 及后续记录 / 模型上下文
         // 只使用脱敏后的文本（原 content 的调用方不受影响）。
         let content = self.redact_text(content);
@@ -378,12 +457,34 @@ impl Agent {
             tracing::info!(session = %session.id, "inbound message dropped: core draining for restart");
             return;
         }
+        // **分支入口的 fail-closed**（2026-11 跨组闭环）：平台入站 / 子任务
+        // hook 都在这里起步。加载失败时拒绝本轮（不发 AgentOutput、不跑模型），
+        // 错误进 `BackendEvent::Error` 供面板/日志看见。
+        if let Err(error) = self.trunk.ensure_loaded_or_err().await {
+            let message = format!("会话历史加载失败，已拒绝开始本轮对话：{error}");
+            self.emit(BackendEvent::Error {
+                session_id: Some(session.id.clone()),
+                message,
+            });
+            return;
+        }
         // 入站内容脱敏（2026-10 安全）：QQ hook 等外部输入先脱敏再进入
         // 记录 / 模型上下文。
         let content = self.redact_text(content);
         let session = session.clone();
         let agent = Arc::clone(self);
         tokio::spawn(async move {
+            // 退场竞态（2026-11 C）：draining 检查在上面（spawn 之前），
+            // 从那一刻到这里之间人格可能刚好被禁用/删除——旧实例会跑完
+            // 一整轮（接新输入 = 违背"禁用不接新输入"）。这里再查一次。
+            if agent.turns.draining.load(Ordering::Acquire) {
+                tracing::info!(
+                    session = %session.id,
+                    message_sequence,
+                    "inbound branch dropped: persona retired"
+                );
+                return;
+            }
             // 排队期间可被取消——`register_incoming_branch` 此时返回 None，
             // 不能 expect（2026-10：TOCTOU panic 修复）。
             let Some((registration, history_snapshot, slot)) = agent

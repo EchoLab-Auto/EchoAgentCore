@@ -18,6 +18,28 @@ impl TrunkStore {
         // 与 compact_history 同锁互斥；无嵌套调用（compact 流程不调
         // clear_history），取锁无死锁风险。
         let _compact_guard = self.compact_lock().await;
+        let (events_cleared, timeline_cleared) = self.clear_history_in_memory();
+        self.save_now().await;
+        tracing::info!(
+            events_cleared,
+            timeline_cleared,
+            "clear_history: all sessions wiped (events + projections + timeline)"
+        );
+    }
+
+    /// [`Self::clear_history`] 的内存部分（同步，不跨 await）：
+    /// `commit_barrier` **写锁**覆盖"清日志 + 清投影 + 清时间线 + 推进
+    /// 历史代次"。
+    ///
+    /// 与加载提交的互斥（2026-11 第二轮补充）：加载提交持同一把写锁，
+    /// 且在写锁内比对 `history_epoch`。清空要么整个发生在加载提交之前
+    /// （提交看到代次变化 → 拒绝安装旧历史），要么整个发生在之后
+    /// （提交装完，清空再抹掉）——不会出现"清空后旧历史又被装回来"。
+    ///
+    /// 锁序：`compact_lock` → `commit_barrier`（只此顺序；加载路径只取
+    /// `commit_barrier`、不取 `compact_lock`，故无环）。
+    pub(super) fn clear_history_in_memory(&self) -> (usize, usize) {
+        let _commit_guard = self.commit_barrier.write();
         let events_cleared = self.event_log.len();
         self.event_log.clear();
         for entry in self.session_histories.iter() {
@@ -33,13 +55,9 @@ impl TrunkStore {
             timeline_cleared as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+        self.bump_history_epoch();
         self.mark_dirty();
-        self.save_now().await;
-        tracing::info!(
-            events_cleared,
-            timeline_cleared,
-            "clear_history: all sessions wiped (events + projections + timeline)"
-        );
+        (events_cleared, timeline_cleared)
     }
 
     /// 清理**单个会话**的记忆：事件日志中该会话的事件、该会话的上下文
@@ -55,6 +73,23 @@ impl TrunkStore {
     ///   让旧事件被 replace_all 复活）。
     pub async fn clear_session(&self, session_id: &str) {
         let _compact_guard = self.compact_lock().await;
+        let (removed, timeline_removed, timeline_remaining) =
+            self.clear_session_in_memory(session_id);
+        self.save_now().await;
+        tracing::info!(
+            session = %session_id,
+            removed_events = removed,
+            timeline_removed,
+            timeline_remaining,
+            "session memory cleared (scoped)"
+        );
+    }
+
+    /// [`Self::clear_session`] 的内存部分；`commit_barrier` 写锁 + 历史
+    /// 代次推进与 [`Self::clear_history_in_memory`] 同语义——加载提交在
+    /// 写锁内看到代次变化就拒绝安装文件历史，不会把刚清掉的会话装回来。
+    pub(super) fn clear_session_in_memory(&self, session_id: &str) -> (usize, usize, usize) {
+        let _commit_guard = self.commit_barrier.write();
         let removed = self.event_log.retain_excluding_session(session_id);
         // 2026-10-15 用户报障修复（uuapi 端点 400 "field messages is
         // required"）：必须**保留映射条目并原地清空**，不能 `remove`。
@@ -78,15 +113,9 @@ impl TrunkStore {
             timeline_removed as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+        self.bump_history_epoch();
         self.mark_dirty();
-        self.save_now().await;
-        tracing::info!(
-            session = %session_id,
-            removed_events = removed,
-            timeline_removed,
-            timeline_remaining,
-            "session memory cleared (scoped)"
-        );
+        (removed, timeline_removed, timeline_remaining)
     }
 
     /// 归档保留上限（archives/ 下本 stem 的归档文件数，最旧先删；
@@ -356,46 +385,59 @@ impl TrunkStore {
         summaries: &[CompactionSummary],
         archive: Option<&str>,
     ) -> Result<CompactionApplied, String> {
-        let outcome = self.event_log.transform(|events| {
-            let mut new_log: Vec<echo_session::SessionEvent> = Vec::new();
-            let mut total_replaced = 0usize;
-            let mut groups_done = 0usize;
-            for (key, group) in group_events_by_session(events) {
-                let prepared = summaries.iter().find(|s| s.session == key);
-                let Some(prepared) = prepared else {
-                    new_log.extend(group);
-                    continue;
-                };
-                let replace = prepared.replaced_count;
-                if replace == 0 || replace >= group.len() {
-                    // 组在预览后被外部改动（append-only 下理论不会收缩）：
-                    // 保守跳过——宁可不压缩，也不把无摘要内容换出。
-                    tracing::warn!(
-                        session = ?key,
-                        preview_replaced = replace,
-                        group_len = group.len(),
-                        "compaction: group changed since preview; skipping group"
-                    );
-                    new_log.extend(group);
-                    continue;
+        // 与加载提交互斥（2026-11 第二轮补充）：变换 + 代次推进在同一把
+        // `commit_barrier` 写锁内完成。加载提交拿到同一把写锁后会比对
+        // `history_epoch`——加载期间发生的压缩会推进代次，提交随之中止，
+        // 不会把压缩前的旧文件历史装回来（否则刚压缩掉的旧事件会"复活"）。
+        // 写锁只包同步内存操作，`save_now().await` 在锁外。
+        let outcome = {
+            let _commit_guard = self.commit_barrier.write();
+            let outcome = self.event_log.transform(|events| {
+                let mut new_log: Vec<echo_session::SessionEvent> = Vec::new();
+                let mut total_replaced = 0usize;
+                let mut groups_done = 0usize;
+                for (key, group) in group_events_by_session(events) {
+                    let prepared = summaries.iter().find(|s| s.session == key);
+                    let Some(prepared) = prepared else {
+                        new_log.extend(group);
+                        continue;
+                    };
+                    let replace = prepared.replaced_count;
+                    if replace == 0 || replace >= group.len() {
+                        // 组在预览后被外部改动（append-only 下理论不会收缩）：
+                        // 保守跳过——宁可不压缩，也不把无摘要内容换出。
+                        tracing::warn!(
+                            session = ?key,
+                            preview_replaced = replace,
+                            group_len = group.len(),
+                            "compaction: group changed since preview; skipping group"
+                        );
+                        new_log.extend(group);
+                        continue;
+                    }
+                    new_log.push(echo_session::SessionEvent::Compaction(
+                        echo_session::CompactionEvent {
+                            replaced_count: replace,
+                            summary: prepared.summary.clone(),
+                            archive: archive.map(str::to_string),
+                            session: key.clone(),
+                        },
+                    ));
+                    new_log.extend(group[replace..].to_vec());
+                    total_replaced += replace;
+                    groups_done += 1;
                 }
-                new_log.push(echo_session::SessionEvent::Compaction(
-                    echo_session::CompactionEvent {
-                        replaced_count: replace,
-                        summary: prepared.summary.clone(),
-                        archive: archive.map(str::to_string),
-                        session: key.clone(),
-                    },
-                ));
-                new_log.extend(group[replace..].to_vec());
-                total_replaced += replace;
-                groups_done += 1;
+                if total_replaced == 0 {
+                    return None;
+                }
+                Some((new_log, (total_replaced, groups_done)))
+            });
+            if outcome.is_some() {
+                self.bump_history_epoch();
+                self.mark_dirty();
             }
-            if total_replaced == 0 {
-                return None;
-            }
-            Some((new_log, (total_replaced, groups_done)))
-        });
+            outcome
+        };
         let Some((total_replaced, groups_done)) = outcome else {
             return Err(format!(
                 "历史不足（{} 条事件，无需压缩）",

@@ -1616,6 +1616,7 @@ mod tests {
             None,
             agent_module_federation::NodeCaps {
                 tools: vec![],
+                tool_definitions: vec![],
                 subagent: false,
                 workspaces: vec![],
                 active_turns: 0,
@@ -1712,6 +1713,7 @@ mod tests {
             version: "test".into(),
             caps: agent_module_federation::NodeCaps {
                 tools: vec![],
+                tool_definitions: vec![],
                 subagent: false,
                 workspaces: vec![],
                 active_turns: 0,
@@ -1773,6 +1775,7 @@ mod tests {
             None,
             agent_module_federation::NodeCaps {
                 tools: vec![],
+                tool_definitions: vec![],
                 subagent: false,
                 workspaces: vec![],
                 active_turns: 0,

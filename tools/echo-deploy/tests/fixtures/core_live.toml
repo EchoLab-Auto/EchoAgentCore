@@ -1,0 +1,42 @@
+# Minimal isolated Core configuration for tests/core_live.rs.
+#
+# The test renders @TMP_ROOT@ and @MANAGEMENT_PORT@ into a fresh 0700 private
+# temporary directory and starts the real Core binary against that copy. This
+# file is a template only: it is never read as, copied from, or merged with a
+# real Core config, and it contains no credentials.
+#
+# - no agent personas: [agent.teams.*] is deliberately absent
+# - QQ disabled: [adapters.qq] enabled = false
+# - federation disabled: explicit listen = "" means outbound-only/no listener
+# - provider points at 127.0.0.1:9 with an empty key: the smoke test never
+#   starts a turn, and localhost:9 is a discard port (no request is sent)
+# - all discovered/writable paths are inside the test temp root
+
+[logging]
+level = "info"
+format = "text"
+log_file = ""
+
+[agent]
+provider = "deepseek"
+model = "deepseek-v4-flash"
+base_url = "http://127.0.0.1:9"
+api_key = ""
+skills_dir = "@TMP_ROOT@/skills"
+skills_dirs = []
+modules_dir = "@TMP_ROOT@/modules"
+
+[modules.system_prompt]
+text = ""
+
+[core]
+management_address = "127.0.0.1:@MANAGEMENT_PORT@"
+management_access_token = ""
+
+[federation]
+enabled = false
+listen = ""
+advertise = ""
+
+[adapters.qq]
+enabled = false

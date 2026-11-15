@@ -178,27 +178,71 @@ pub fn notify_remote_subagent(
     }
 }
 
-/// 联邦沙箱：绝对路径是否落在给定工作区根并集内（canonicalize 后按
-/// 路径分量前缀判定；不存在的路径退回其父链最近已存在祖先）。
-/// 用于执行端拒绝"工作区外绝对路径"的远程文件调用（防 ~/.ssh 等读取）。
+/// 联邦沙箱：绝对路径是否落在给定工作区根并集内。
+///
+/// ## 判定顺序（2026-11 收紧：祖先回退曾是绕过口）
+///
+/// 1. 非绝对路径 / 含 `..` 组件 → **拒绝**（受限策略：`..` 让"存在的祖先"
+///    与"最终落点"可以差出任意目录，任何基于前缀的判定都会失效）；
+/// 2. 从根往下**逐段**解析：遇到符号链接就当场 `canonicalize`（解析其真实
+///    指向并继续），解析失败（悬空链接 / 链接环）→ **拒绝**；
+/// 3. 遇到第一个不存在的组件即停（其后的路径尚不存在，不可能再出现需要
+///    解析的链接），用已解析到的真实前缀做判定；
+/// 4. 最终真实路径必须落在某个 **canonical 化后的** 工作区根内。
+///
+/// 旧实现只做「目标或最近已存在祖先的 canonicalize」：当目标是**悬空符号
+/// 链接**（`/ws/link -> /etc/newfile`，目标尚不存在）时 canonicalize(目标)
+/// 失败、回退到父链 `/ws`（在根内）→ 放行；随后 `write_file` 跟随链接把
+/// 内容写到根外（`/etc/newfile`）。第 2 步把这条路封死：链接本身必须先被
+/// 解析成功，否则一律不认。
+///
+/// 语义边界：这是**受限策略**——不跟随无法确认的链接，宁可拒绝；完全互信
+/// 的对端（`allow_queries = ["*"]`）在上层根本不调用本函数。
 pub fn path_within_roots(raw: &str, roots: &[std::path::PathBuf]) -> bool {
     let target = std::path::Path::new(raw);
-    // canonicalize 目标或其最近已存在祖先（防符号链接逃逸 + 新建文件场景）。
-    let mut probe = target;
-    let canonical_target = loop {
-        match probe.canonicalize() {
-            Ok(c) => break c,
-            Err(_) => match probe.parent() {
-                Some(p) => probe = p,
-                None => return false,
-            },
-        }
+    if !target.is_absolute() {
+        return false;
+    }
+    // 1. 拒绝显式上跳：前缀判定对 `..` 无意义（受限策略）。
+    if target
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    // 2. 逐段解析（链接就地解析；悬空即拒绝）。
+    let Some(resolved) = resolve_without_dangling_links(target) else {
+        return false;
     };
+    // 4. 真实路径必须落在某个真实根内。
     roots.iter().any(|root| {
         root.canonicalize()
-            .map(|r| canonical_target.starts_with(r))
+            .map(|real_root| resolved.starts_with(&real_root))
             .unwrap_or(false)
     })
+}
+
+/// 逐段解析绝对路径：已存在的符号链接就地展开，悬空链接返回 `None`。
+///
+/// 返回的是"已确认存在的前缀（真实路径）+ 未存在的尾部"——尾部不含 `..`
+/// （上层已拒绝），且不会跨越任何链接（不存在的东西不可能是链接）。
+fn resolve_without_dangling_links(target: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut resolved = std::path::PathBuf::new();
+    for component in target.components() {
+        resolved.push(component);
+        match std::fs::symlink_metadata(&resolved) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    // 悬空 / 成环：无法确认落点 → 拒绝（受限策略）。
+                    resolved = resolved.canonicalize().ok()?;
+                }
+            }
+            // 第一个不存在的组件：其后都是"尚未创建"的路径，
+            // 不可能是链接，直接用当前真实前缀判定。
+            Err(_) => return Some(resolved),
+        }
+    }
+    Some(resolved)
 }
 
 #[cfg(test)]
@@ -314,5 +358,100 @@ mod tests {
         );
         // notifier 收到全部三次回调（受理 + 两个终态）——聚合不影响对端上报。
         assert_eq!(notified.load(Ordering::SeqCst), 3);
+    }
+
+    // ── 联邦沙箱（2026-11 收紧）──
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("echo-fed-sandbox-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temp root");
+        root
+    }
+
+    /// 根内路径（含尚不存在的子路径）放行。
+    #[test]
+    fn path_within_roots_allows_existing_and_new_paths_inside() {
+        let root = temp_root("inside");
+        let existing = root.join("a.txt");
+        std::fs::write(&existing, "x").unwrap();
+        assert!(path_within_roots(
+            existing.to_str().unwrap(),
+            &[root.clone()]
+        ));
+        let fresh = root.join("nested").join("new.txt");
+        assert!(path_within_roots(fresh.to_str().unwrap(), &[root.clone()]));
+        // 根外绝对路径拒绝。
+        assert!(!path_within_roots("/etc/hostname", &[root]));
+    }
+
+    /// `..` 显式上跳：前缀判定对它无意义，受限策略直接拒绝。
+    #[test]
+    fn path_within_roots_rejects_parent_traversal() {
+        let root = temp_root("dotdot");
+        let escape = root.join("..").join("etc").join("passwd");
+        assert!(
+            !path_within_roots(escape.to_str().unwrap(), &[root]),
+            "`..` 必须被拒绝（否则 write_file 可借道父目录写到根外）"
+        );
+    }
+
+    /// 非绝对路径不属于联邦沙箱的判定范围（调用方只对绝对路径提问）。
+    #[test]
+    fn path_within_roots_rejects_relative_paths() {
+        assert!(!path_within_roots("relative/file.txt", &[]));
+    }
+
+    /// **回归（本次修复的核心）**：悬空符号链接曾绕过祖先回退。
+    ///
+    /// 旧实现：canonicalize(目标) 失败（悬空）→ 回退到父链 `/root`（在根内）
+    /// → 放行；随后 `write_file` 跟随链接写到根外。新实现：逐段遇到链接必须
+    /// 能解析，悬空即拒绝。
+    #[cfg(unix)]
+    #[test]
+    fn path_within_roots_rejects_dangling_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root("dangling");
+        let dangling = root.join("escape");
+        let outside = format!("/etc/echo-fed-nonexistent-{}", std::process::id());
+        symlink(&outside, &dangling).expect("create dangling symlink");
+        assert!(
+            !path_within_roots(dangling.to_str().unwrap(), &[root.clone()]),
+            "悬空链接指向根外时必须拒绝"
+        );
+        // 链接 + 子路径同样拒绝（父链回退不得放行）。
+        let nested = dangling.join("child.txt");
+        assert!(!path_within_roots(nested.to_str().unwrap(), &[root]));
+    }
+
+    /// 指向根外的**存在**链接：解析后落在根外 → 拒绝。
+    #[cfg(unix)]
+    #[test]
+    fn path_within_roots_rejects_symlink_to_outside() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root("symlink-outside");
+        let link = root.join("etc-link");
+        symlink("/etc", &link).expect("create symlink");
+        assert!(!path_within_roots(
+            link.join("hostname").to_str().unwrap(),
+            &[root.clone()]
+        ));
+        assert!(!path_within_roots(link.to_str().unwrap(), &[root]));
+    }
+
+    /// 根内的链接（指向根内真实目录）：正常放行。
+    #[cfg(unix)]
+    #[test]
+    fn path_within_roots_follows_links_that_stay_inside() {
+        use std::os::unix::fs::symlink;
+        let root = temp_root("symlink-inside");
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = root.join("link");
+        symlink(&real, &link).expect("create symlink");
+        assert!(path_within_roots(
+            link.join("new.txt").to_str().unwrap(),
+            &[root]
+        ));
     }
 }

@@ -14,7 +14,7 @@ pub use agent_module_federation::remote_tool;
 pub use agent_module_federation::router;
 
 pub use agent_module_federation::{
-    notify_remote_subagent, path_within_roots, proxy_schema, remote_tool_candidates,
+    advertised_schema, notify_remote_subagent, path_within_roots, remote_tool_candidates,
     remote_tool_name, remote_tool_prefix, sanitize_peer_component, AggregateDeliver,
     ExecutorPolicy, FederationPorts, InvokeRouter, PendingInvoke, RemoteQuerier,
     RemoteSubagentNotifier, RemoteTool,

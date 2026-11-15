@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "description": "Opt-in live acceptance: a real Core runs as a transient user systemd service and an independent transient systemd updater unit runs the real echo-deploy runtime-adapter Observe/Ready against a real release manifest whose core artifact is the exact running binary (digest and size), while the updater unit itself hashes /proc/<pid>/exe. The test records, rather than assumes, the host's ptrace/LSM permission outcome.",
+  "opt_in_env": "ECHO_DEPLOY_RUN_CORE_SYSTEMD_LIVE",
+  "core_binary_env": "ECHO_DEPLOY_CORE_BINARY",
+  "core_root": "/home/evence/.local/share/echo-agent-core/source",
+  "core_binary": "/home/evence/.local/share/echo-agent-core/source/target/debug/echo-agent-core",
+  "config_template": "core_live.toml",
+  "release_id": "core-systemd-live",
+  "instance_id": "core-systemd-live",
+  "unit_prefix": "echo-agent-echo-deploy-test",
+  "management_host": "127.0.0.1",
+  "provider_url": "http://127.0.0.1:9",
+  "required_modules": [
+    "echo-agent.kernel.protocol",
+    "echo-agent.loop.single"
+  ],
+  "forbidden_ports": [3132, 3133],
+  "max_help_seconds": 30,
+  "max_startup_seconds": 90,
+  "max_control_seconds": 30,
+  "max_updater_seconds": 60,
+  "max_shutdown_seconds": 30,
+  "max_total_seconds": 300,
+  "require_systemd_user": true
+}
