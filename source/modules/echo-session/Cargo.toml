@@ -12,6 +12,7 @@ echo-module = { workspace = true }
 echo-defs = { path = "../echo-defs" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

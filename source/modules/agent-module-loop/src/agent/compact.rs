@@ -5,12 +5,16 @@
 //! | 策略（`crate::compaction`） | 宿主（本文件） |
 //! |---|---|
 //! | 转录渲染（角色标签 / 分层裁剪 / 二分找截断点） | `compact_preview`（日志自己算） |
-//! | 摘要提示词 + 单组调用（超时 / 空输出 / 错误） | provider 从哪来 |
-//! | 失败回退的规则文案 | 归档快照（写 `archives/`） |
-//! | 结果文案（几条 / 几组 / 回退原因） | 落地（追加 `CompactionEvent`）+ 进度事件 |
+//! | 摘要提示词 + 单组调用（超时 / 空输出 / 截断 / 工具调用异常 / 错误） | provider 从哪来 |
+//! | 失败组的隔离与报告（不装残片、不用统计文案顶替） | 归档快照（写 `archives/`） |
+//! | 结果文案（几条 / 几组 / 未压缩原因） | 落地（追加 `CompactionEvent`）+ 进度事件 |
 //!
 //! 于是 732 行的 `compact.rs` 只剩这里的**端口实现**与一行委托。搬走的
 //! ~290 行是纯策略——它此前住在宿主只因为收尾那几步要 `TrunkStore`。
+//!
+//! 2026-11 PR1 起，失败安全（归档失败中止 / 异常摘要拒绝 / 组级隔离）
+//! 全在 `crate::compaction`：宿主只负责提供真实快照与 provider，并把失败
+//! 如实上报——**不再有"统计文案兜底"**。
 //!
 //! ## 为什么互斥锁留在宿主
 //!
@@ -70,8 +74,8 @@ impl CompactionHost for AgentCompactionHost<'_> {
     ///
     /// 压缩此前只认人格级 provider（`[agent.teams.*] api_profile`）。人格
     /// profile 欠费（HTTP 402）时，聊天还能靠会话级覆盖正常工作，压缩却整份
-    /// 降级成统计文案——历史信息全丢。这里按全局默认 profile 现建一个出口，
-    /// 供 `summarize_preview` 在主出口失败时重试一次。
+    /// 丢失——这里按全局默认 profile 现建一个出口，供主出口失败的组重试一次
+    /// （PR1：仍失败则该组不安装，不再用统计文案顶替）。
     ///
     /// 与当前出口等价（key / model / base_url 三项全同）时返回 `None`：
     /// 重试同一个出口没有意义，也避免白花一次调用。
@@ -97,7 +101,7 @@ impl CompactionHost for AgentCompactionHost<'_> {
                 Err(error) => {
                     tracing::warn!(
                         %error,
-                        "compaction: fallback provider build failed; 主出口失败时将降级为统计文案"
+                        "compaction: fallback provider build failed; groups failing on the primary will not be installed"
                     );
                     return None;
                 }
@@ -175,6 +179,9 @@ impl Agent {
     /// 只负责拿**压缩互斥锁**（2026-10 巡检 🔴：double compact / compact 与
     /// clear_history 竞争会按过时摘要重写日志、统计错乱）然后委托。
     /// 内部全量维护入口；用户命令必须走 compact_session_history。
+    ///
+    /// 失败安全（PR1）：归档快照失败（含 memory-only 无持久化路径）会返回
+    /// `Err` 且不改动历史——不提供跳过归档的隐式开关。
     pub async fn compact_history(&self, keep_recent: usize) -> Result<String, String> {
         self.compact_history_scoped(None, keep_recent).await
     }
@@ -218,6 +225,20 @@ impl Agent {
 mod tests {
     use super::*;
     use crate::agent::tests::MockProvider;
+
+    /// 每个用例独占一个临时目录（归档快照写 `<dir>/archives/`）。
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-compact-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
 
     /// 历史不足时压缩**明确报错**（不是静默成功），且错误文案说清原因。
     #[tokio::test]
@@ -277,6 +298,9 @@ mod tests {
             crate::tool::ToolRegistry::new(),
             Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
         );
+        // PR1：归档失败即中止，所以能压缩的宿主必须先有持久化路径。
+        let dir = temp_dir("scope");
+        agent.set_session_persist_path(dir.join("sessions.json"));
         let a = "local:workspace:proj/win-a:local_user";
         let b = "local:workspace:proj/win-b:local_user";
         for session in [a, b] {
@@ -317,5 +341,59 @@ mod tests {
         assert!(!b_events
             .iter()
             .any(|event| matches!(event, echo_session::SessionEvent::Compaction(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// memory-only（无持久化路径）没有归档快照可写：压缩必须 **fail-closed**，
+    /// 不能"没备份也照压"（PR1）。默认不提供任何隐式有损开关。
+    #[tokio::test]
+    async fn compacting_memory_only_agent_fails_closed_without_archive() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let agent = Agent::new(
+            Arc::new(MockProvider {
+                calls: Arc::clone(&calls),
+                reply: "【当前目标】不应出现".into(),
+            }),
+            crate::config::AgentConfig::default(),
+            crate::SkillRegistry::new(),
+            crate::tool::ToolRegistry::new(),
+            Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
+        );
+        let session = "local:tui::local_user";
+        agent.trunk.import_session_events(
+            session,
+            (0..20)
+                .map(|i| {
+                    echo_session::SessionEvent::UserMessage(echo_session::event::UserMessage {
+                        session: Some(session.into()),
+                        content: format!("message-{i}"),
+                        timestamp: i,
+                        message_sequence: None,
+                        source: None,
+                        images: vec![],
+                        files: vec![],
+                    })
+                })
+                .collect(),
+        );
+
+        let error = agent
+            .compact_history(10)
+            .await
+            .expect_err("没有归档快照时必须中止压缩");
+        assert!(error.contains("归档"), "错误必须说清归档失败：{error}");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "归档失败不得调用 LLM"
+        );
+        assert!(
+            !agent
+                .trunk
+                .event_log()
+                .iter()
+                .any(|event| matches!(event, echo_session::SessionEvent::Compaction(_))),
+            "归档失败必须保持历史原样"
+        );
     }
 }

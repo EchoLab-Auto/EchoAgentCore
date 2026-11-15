@@ -36,8 +36,8 @@ pub mod log;
 pub mod session_key;
 
 pub use compaction::{
-    CompactGroup, CompactPreview, CompactionApplied, CompactionPhase, CompactionProgress,
-    CompactionSummary,
+    CompactGroup, CompactPreview, CompactionApplied, CompactionPhase, CompactionPrefix,
+    CompactionProgress, CompactionSummary,
 };
 pub use derive::{derive_messages, project_messages};
 pub use event::{

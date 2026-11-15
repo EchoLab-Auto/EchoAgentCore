@@ -2,12 +2,14 @@
 //!
 //! ## 为什么在 `echo-session`
 //!
-//! 这四种类型是"事件日志将要被压缩"这件事的**契约**：
+//! 这些类型是"事件日志将要被压缩"这件事的**契约**：
 //!
 //! - [`CompactGroup`] / [`CompactPreview`]：`TrunkStore::compact_preview` 的
-//!   产出（谁会被替换、替换多少）——日志自己算出来的；
-//! - [`CompactionSummary`]：调用方（压缩策略）填回来的摘要，交给
+//!   产出（谁会被替换、替换多少、前缀凭据）——日志自己算出来的；
+//! - [`CompactionSummary`]：调用方（压缩策略）填回来的摘要 + 凭据，交给
 //!   `apply_compaction` 落地；
+//! - [`CompactionPrefix`]：被替换前缀的 SHA-256 指纹（提交时证明"换掉的
+//!   仍是摘要描述的那段历史"）；
 //! - [`CompactionApplied`]：落地的结果。
 //!
 //! 它们此前住在 `echo-agent::session`，于是**压缩策略**（怎么渲染 transcript、
@@ -20,7 +22,78 @@
 //! [`crate::event::CompactionEvent`]；投影按"压缩范围 + 摘要"重放出可见历史。
 //! 所以摘要正文**不带** `[历史摘要]` 标记——那是投影时加的。
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+/// 一次压缩计划里**被替换前缀**的 SHA-256 指纹。
+///
+/// ## 为什么需要它
+///
+/// 预览与落地之间隔着归档 + 逐组 LLM 摘要，可能持续数分钟。这期间日志
+/// 仍是可写的：普通消息只会 **append**（前缀不变，保留尾变长），但并发
+/// 分支的回答会经 `EventLog::insert_after_sequence` **插到某条用户事件
+/// 之后**——完全可能插进被替换前缀中间。此时若仍按预览长度切片，摘要
+/// 描述的内容与实际被换掉的事件就错配了（静默丢档，只有归档可救）。
+///
+/// 落地必须在日志锁内证明"现在的前 N 条仍是预览时那 N 条"，否则拒绝
+/// 该组。本类型就是这个证明：预览时对前缀做指纹，摘要携带同一个指纹。
+///
+/// ## 为什么是哈希，不是前缀副本
+///
+/// 前缀可能有上千条、数 MB；每个会话的待安装摘要再持一份完整副本会成倍
+/// 放大内存（摘要生成阶段本来就同时持有转录与摘要）。SHA-256 固定 32
+/// 字节、可 `Copy`，比较是常数时间。代价是纳秒级的哈希计算、可忽略的
+/// 理论碰撞（2⁻²⁵⁶），以及对 serde 表示确定性的依赖——`SessionEvent`
+/// 不含 `HashMap`、字段序固定，序列化逐字节稳定。
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CompactionPrefix([u8; 32]);
+
+impl CompactionPrefix {
+    /// 对一段事件前缀做指纹：事件按 serde JSON 逐个序列化，长度前缀
+    /// （u64 LE）分隔，避免"拼接歧义"。
+    pub fn of(events: &[crate::SessionEvent]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update((events.len() as u64).to_le_bytes());
+        for event in events {
+            let bytes =
+                serde_json::to_vec(event).expect("SessionEvent 的 serde 表示不会序列化失败");
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(&bytes);
+        }
+        let mut digest = [0u8; 32];
+        digest.copy_from_slice(hasher.finalize().as_slice());
+        Self(digest)
+    }
+
+    /// 原始 32 字节（诊断 / 持久化扩展用；比较请直接用 `==`）。
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// 小写十六进制全文（错误信息用）。
+    pub fn to_hex(self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::with_capacity(64);
+        for byte in self.0 {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+}
+
+impl fmt::Debug for CompactionPrefix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CompactionPrefix({})", self.to_hex())
+    }
+}
+
+impl fmt::Display for CompactionPrefix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
 
 /// 一个会话在一次压缩里的份额：按日志顺序将被替换的事件，以及规则回退
 /// 摘要要用的计数。
@@ -36,6 +109,18 @@ pub struct CompactGroup {
     pub users: usize,
     /// `replaced` 里的工具调用条数（规则摘要用）。
     pub tools: usize,
+    /// **被替换前缀**（`replaced[..replaced_count]`）的指纹。
+    ///
+    /// 预览时算好；[`CompactionSummary::from_group`] 原样带进摘要，落地
+    /// 在日志锁内校验。不可缺省——没有凭据的摘要无法证明"替换的仍是
+    /// 摘要描述的那段历史"。
+    pub prefix_digest: CompactionPrefix,
+    /// 预览时的历史代次（`TrunkStore::history_epoch`）。
+    ///
+    /// 清空 / 上一次压缩会推进代次（加载提交也持同一把写锁并在锁内比对）。
+    /// 落地先比代次，能一眼拒绝"跨越了一次清空或另一次压缩"的过期计划；
+    /// 不支持代次的嵌入式调用方填 `0`，但前缀指纹仍必须通过校验。
+    pub history_epoch: u64,
 }
 
 /// [`crate::EventLog`] 之上的一次压缩**预览**：不改任何状态，所以调用方可以
@@ -62,6 +147,32 @@ pub struct CompactionSummary {
     /// 落地切片用它，而**不**按应用时点的 `len - keep_recent` 重算：窗口期
     /// 新到的事件会把保留尾最老的条目挤成"无摘要丢弃"（2026-10 审计）。
     pub replaced_count: usize,
+    /// 预览时被替换前缀的指纹（**必填**，无 `Option` / 默认值可绕过）。
+    ///
+    /// 落地在日志锁内用当前前缀重算指纹；不一致即拒绝该组（保留原事件），
+    /// 其他组照常。推荐用 [`Self::from_group`] 构造，避免漏填或与
+    /// `replaced_count` 脱节。
+    pub expected_prefix: CompactionPrefix,
+    /// 预览时的历史代次（见 [`CompactGroup::history_epoch`]）。
+    pub history_epoch: u64,
+}
+
+impl CompactionSummary {
+    /// 从预览组构造待安装摘要：会话、切片长度、前缀指纹、历史代次一次
+    /// 复制齐全，调用方不必逐字段抄（也抄不丢）。
+    ///
+    /// 这是策略层（`agent-module-loop`）把 `SummaryOrFallback` 变成落地
+    /// 摘要的推荐入口：先按 `session` 找到预览组，再
+    /// `CompactionSummary::from_group(group, summary_text)`。
+    pub fn from_group(group: &CompactGroup, summary: impl Into<String>) -> Self {
+        Self {
+            session: group.session.clone(),
+            summary: summary.into(),
+            replaced_count: group.replaced_count,
+            expected_prefix: group.prefix_digest,
+            history_epoch: group.history_epoch,
+        }
+    }
 }
 
 /// 压缩/归档的**阶段**（面板据此决定进度条的形态）。
@@ -179,14 +290,30 @@ pub struct CompactionApplied {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::UserMessage;
+
+    fn user(content: &str) -> crate::SessionEvent {
+        crate::SessionEvent::UserMessage(UserMessage {
+            content: content.into(),
+            timestamp: 0,
+            message_sequence: None,
+            source: None,
+            images: vec![],
+            files: vec![],
+            session: Some("s".into()),
+        })
+    }
 
     /// 摘要正文不含标记：标记由投影加（否则重放会得到两层标记）。
     #[test]
     fn summary_carries_no_marker() {
+        let replaced = vec![user("a"), user("b"), user("c")];
         let summary = CompactionSummary {
             session: Some("s".into()),
             summary: "【当前目标】做完了".into(),
-            replaced_count: 3,
+            replaced_count: replaced.len(),
+            expected_prefix: CompactionPrefix::of(&replaced),
+            history_epoch: 3,
         };
         assert!(!summary.summary.contains("[历史摘要]"));
     }
@@ -238,11 +365,63 @@ mod tests {
     /// 2026-10 审计修复的核心，值本身不该被落地逻辑改写。
     #[test]
     fn replaced_count_is_a_preview_snapshot() {
+        let replaced = vec![user("a")];
         let summary = CompactionSummary {
             session: None,
             summary: "x".into(),
             replaced_count: 7,
+            expected_prefix: CompactionPrefix::of(&replaced),
+            history_epoch: 0,
         };
         assert_eq!(summary.replaced_count, 7);
+    }
+
+    /// 指纹的可区分性：append（前缀不变）必须相同；插入到前缀中间必须
+    /// 不同——落地据此拒绝"摘要与内容错配"的计划。
+    #[test]
+    fn prefix_digest_distinguishes_append_from_insertion() {
+        let base = vec![user("a"), user("b"), user("c")];
+        let expected = CompactionPrefix::of(&base);
+
+        let mut appended = base.clone();
+        appended.push(user("d"));
+        assert_eq!(
+            CompactionPrefix::of(&appended[..3]),
+            expected,
+            "append 不改前缀，凭据必须仍有效"
+        );
+
+        let mut inserted = base.clone();
+        inserted.insert(1, user("迟到回答"));
+        assert_ne!(
+            CompactionPrefix::of(&inserted[..3]),
+            expected,
+            "插入改前缀，凭据必须失效"
+        );
+
+        // 长度也是凭据的一部分：短前缀不能冒充长前缀。
+        assert_ne!(CompactionPrefix::of(&base[..2]), expected);
+    }
+
+    /// `from_group` 一次复制齐全：会话、切片长度、前缀指纹、代次都来自
+    /// 预览组——调用方无法"漏传"校验凭据。
+    #[test]
+    fn from_group_copies_the_preview_credential() {
+        let replaced = vec![user("a"), user("b")];
+        let group = CompactGroup {
+            session: Some("s".into()),
+            replaced_count: replaced.len(),
+            replaced: replaced.clone(),
+            users: 2,
+            tools: 0,
+            prefix_digest: CompactionPrefix::of(&replaced),
+            history_epoch: 42,
+        };
+        let summary = CompactionSummary::from_group(&group, "两条的摘要");
+        assert_eq!(summary.session.as_deref(), Some("s"));
+        assert_eq!(summary.replaced_count, 2);
+        assert_eq!(summary.expected_prefix, group.prefix_digest);
+        assert_eq!(summary.history_epoch, 42);
+        assert_eq!(summary.summary, "两条的摘要");
     }
 }

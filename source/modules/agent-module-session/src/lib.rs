@@ -214,6 +214,15 @@ mod tests {
             Arc::new(TrunkStore::new(1000))
         }
         fn forget_session_provider(&self, _session_id: &str) {}
+        fn quiesce_session<'a>(
+            &'a self,
+            _team_id: Option<&'a str>,
+            _session_id: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Box<dyn Send>, String>> + Send + 'a>,
+        > {
+            Box::pin(async { Ok(Box::new(()) as Box<dyn Send>) })
+        }
         fn emit(&self, _event: agent_module_management::protocol::BackendEvent) {}
         fn emit_context_snapshot<'a>(
             &'a self,

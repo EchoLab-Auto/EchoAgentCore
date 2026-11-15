@@ -91,6 +91,12 @@ impl Agent {
     ///
     /// 删除对话 = 该对话的上下文不再可达，历史没有任何入口能读——留着只占
     /// 事件日志。与面板 `ClearHistory` 同一路径（`TrunkStore::clear_session`）。
+    ///
+    /// **在途 turn（PR3，保守接入）**：删除同样先取消该通道已登记的 turn，
+    /// 再限时拿 `turn_queue`；超时则**放弃清理**（历史留着，不让旧 turn 与
+    /// clear 交错写同一会话）。没有 Session 身份时保持原行为（直接清）。
+    /// 这里只保护走 `turn_queue` 的入站 turn——与 `quiesce_session` 的旁路
+    /// 清单一致，不声称排空所有写者。
     pub fn clear_workspace_conversation_channel(
         &self,
         workspace_id: &str,
@@ -99,10 +105,39 @@ impl Agent {
         let scope = agent_module_workspace::store::channel_scope_id(workspace_id, conversation);
         let session_id = crate::session::SessionKey::local_workspace(&scope).to_session_id();
         let trunk = self.trunk.clone();
+        let session = self.trunk.get(&session_id);
+        // 已登记的排队 turn 会走 `acquire_turn_slot` 的取消分支，不会在
+        // clear 之后再 append（与 clear/archive 的 quiesce 同一条纪律）。
+        self.cancel_inbound_turns(&session_id, true);
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                trunk.clear_session(&session_id).await;
-                tracing::info!(%session_id, "workspace conversation channel cleared on delete");
+                let _turn_guard = match session {
+                    Some(session) => Some(
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            std::sync::Arc::clone(&session.turn_queue).lock_owned(),
+                        )
+                        .await
+                        {
+                            Ok(guard) => guard,
+                            Err(_) => {
+                                tracing::warn!(
+                                    %session_id,
+                                    "workspace conversation channel has an in-flight turn; skip clearing on delete"
+                                );
+                                return;
+                            }
+                        },
+                    ),
+                    None => None,
+                };
+                match trunk.clear_session(&session_id).await {
+                    Ok(()) => {
+                        tracing::info!(%session_id, "workspace conversation channel cleared on delete")
+                    }
+                    Err(error) => tracing::warn!(%session_id, %error,
+                        "workspace conversation cleared in memory but not saved; dirty state retained"),
+                }
             });
         }
     }

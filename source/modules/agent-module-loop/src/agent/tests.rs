@@ -2,6 +2,7 @@ use super::*;
 use crate::llm::{ChatChunk, ChatResponse, LlmError, Usage};
 use crate::session::SessionKey;
 use crate::tool::{Tool, ToolError};
+use agent_module_session::commands::SessionCommandHost as _;
 use agent_module_tools::execute::invalid_tool_arguments;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -110,6 +111,96 @@ impl LlmProvider for SnapshotProvider {
         // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
         self.chat(request).await
     }
+}
+
+/// 真·阻塞 provider（PR3）：`chat` 在**同步 condvar** 上等待，取消令牌
+/// 无法中止它——只有 `release()` 才返回。用来验证 clear / archive 会在
+/// 旧 turn 仍卡在模型调用里时等待，而不是抢先清空历史。
+///
+/// 必须在 multi_thread runtime 下用：同步阻塞会占住一个 worker，其它
+/// 任务（取消、命令处理、测试断言）要靠另外的 worker 继续跑。
+struct BlockingProvider {
+    calls: Arc<AtomicUsize>,
+    gate: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl BlockingProvider {
+    fn new() -> Self {
+        Self {
+            calls: Arc::new(AtomicUsize::new(0)),
+            gate: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
+        }
+    }
+
+    async fn wait_entered(&self) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while self.calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("turn should reach the blocking provider");
+    }
+
+    fn release(&self) {
+        let (lock, condvar) = &*self.gate;
+        *lock.lock().expect("blocking gate poisoned") = true;
+        condvar.notify_all();
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for BlockingProvider {
+    fn name(&self) -> &str {
+        "blocking"
+    }
+
+    fn default_model(&self) -> &str {
+        "blocking"
+    }
+
+    async fn chat(&self, _request: &ChatRequest) -> Result<ChatResponse, LlmError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let (lock, condvar) = &*self.gate;
+        let mut released = lock.lock().expect("blocking gate poisoned");
+        while !*released {
+            released = condvar.wait(released).expect("blocking gate poisoned");
+        }
+        Ok(ChatResponse {
+            stop_reason: None,
+            content: Some("late-reply".into()),
+            reasoning_content: None,
+            tool_calls: Vec::new(),
+            usage: Usage::default(),
+        })
+    }
+
+    async fn chat_stream(
+        &self,
+        request: &ChatRequest,
+        _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
+    ) -> Result<ChatResponse, LlmError> {
+        self.chat(request).await
+    }
+}
+
+/// 等待 quiesce 真的把取消令牌置位（不是"命令还没被调度"）。
+async fn wait_until_turn_cancelled(agent: &Agent, session_id: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let cancelled = agent
+                .turns
+                .active_inbound_turns
+                .iter()
+                .any(|turn| turn.session_id == session_id && turn.cancel.is_cancelled());
+            if cancelled {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("quiesce should cancel the registered in-flight turn");
 }
 
 fn test_agent(provider: Arc<dyn LlmProvider>) -> Agent {
@@ -499,6 +590,97 @@ async fn single_mode_serialises_turns_and_second_turn_sees_the_first_reply() {
     assert_eq!(history[3].content, "reply-2");
 }
 
+/// PR3 回归：取消与串行闸门**同时就绪**时必须偏置取消。
+///
+/// `tokio::select!` 默认随机选分支。旧实现里取消令牌已置位、旧 turn 恰好
+/// 释放 `turn_queue` 时，约一半概率 select 选到锁 → 已取消的 turn 继续
+/// 执行并 append 输入。这里循环 64 次（旧实现几乎必挂）锁定"取消优先"。
+#[tokio::test]
+async fn acquire_turn_slot_prefers_a_ready_cancel_over_a_ready_lock() {
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    }));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    for round in 0..64 {
+        let held = Arc::clone(&session.turn_queue).lock_owned().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        // 释放锁与取消同时 ready：下一轮 select 两个分支都立刻可完成。
+        drop(held);
+        assert!(
+            agent.acquire_turn_slot(&session, &cancel).await.is_none(),
+            "round {round}: cancelled turn must not take the queue"
+        );
+    }
+
+    // 未取消时照常拿锁（不能把闸门改成永远失败）。
+    let cancel = tokio_util::sync::CancellationToken::new();
+    assert!(agent.acquire_turn_slot(&session, &cancel).await.is_some());
+}
+
+/// PR3 回归：排队 turn 在等 `turn_lock` 期间被取消，拿到 `turn_lock` 后
+/// **不得**把用户输入 append 进事件日志。
+///
+/// 旧实现只在 `acquire_turn_slot` 里和取消竞速；拿到闸门后无条件 append。
+/// clear/archive quiesce 取消排队 turn 时会留下一条"已取消但没人回复"的
+/// 用户消息，且 `register_incoming_branch` 返回 Some → 仍会跑一轮。
+#[tokio::test]
+async fn cancelled_turn_does_not_append_after_acquiring_turn_lock() {
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    // 先占住 turn_lock：让 register 拿到 turn_queue 后卡在这里。
+    let turn_lock = Arc::clone(&session.turn_lock).lock_owned().await;
+    let register = {
+        let agent = Arc::clone(&agent);
+        let session = session.clone();
+        tokio::spawn(async move {
+            agent
+                .register_incoming_branch(&session, "must-not-land", 7)
+                .await
+                .is_some()
+        })
+    };
+    // 等它真的拿到 turn_queue（此时正阻塞在 turn_lock）。
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while session.turn_queue.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("queued turn should acquire the turn queue before blocking on turn_lock");
+
+    assert_eq!(
+        agent.cancel_inbound_turns(&session.id, true),
+        1,
+        "the queued turn should be registered and cancellable"
+    );
+    drop(turn_lock);
+
+    assert!(
+        !register.await.expect("register task panicked"),
+        "cancelled turn must report None instead of starting"
+    );
+    assert!(
+        agent.trunk.events_for_session(&session.id).is_empty(),
+        "cancelled turn must not append its user message after turn_lock"
+    );
+    assert_eq!(
+        agent.active_inbound_turn_count(),
+        0,
+        "cancelled queued turn must unregister"
+    );
+}
+
 /// annotate_team 覆盖（2026-10 巡检）：带 team_id 字段的变体被标注；
 /// 无 team_id 字段的变体原样透传（不 panic、不变形）。
 #[test]
@@ -847,6 +1029,348 @@ async fn clear_history_resends_remaining_timeline_not_empty() {
         "only the sibling session's entry remains: {messages:?}"
     );
     assert_eq!(messages[0].session_id, "sB");
+}
+
+/// 把桥里已到达的事件全部取出（测试断言用）。
+async fn drain_bridge_events(bridge: &crate::BackendBridge) -> Vec<BackendEvent> {
+    let mut events = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        events.push(event);
+    }
+    events
+}
+
+/// PR3：clear 必须在**旧 turn 真正退出后**才清空历史。
+///
+/// provider 同步阻塞、不可被取消（只有 `release()` 才返回），所以旧 turn
+/// 会一直持着 `turn_queue`。命令侧 quiesce 必须：
+/// ① 先取消旧 turn；② 在闸门上等待；③ 释放后才 `clear_session`。
+/// 若没有 quiesce，clear 会在 provider 还卡着时先清历史——旧 turn 随后
+/// commit/收尾时就看到/写出与时间线不一致的状态。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_history_waits_for_blocked_provider_turn() {
+    let provider = Arc::new(BlockingProvider::new());
+    let agent = Arc::new(test_agent(provider.clone()));
+    agent.set_team_id(Some("t".into()));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let session_id = session.id.clone();
+
+    let turn = {
+        let agent = Arc::clone(&agent);
+        let session = session.clone();
+        tokio::spawn(async move { agent.process_message(&session, "正在跑的长任务").await })
+    };
+    provider.wait_entered().await;
+
+    let clear = {
+        let agent = Arc::clone(&agent);
+        let session_id = session_id.clone();
+        tokio::spawn(async move {
+            apply_session_command(
+                &agent,
+                BackendCommand::ClearHistory {
+                    team_id: Some("t".into()),
+                    session_id: Some(session_id),
+                },
+            )
+            .await
+        })
+    };
+
+    // 命令已取消旧 turn、正卡在 turn_queue 上；历史还没被清。
+    wait_until_turn_cancelled(&agent, &session_id).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !clear.is_finished(),
+        "clear must wait for the blocked turn to release turn_queue"
+    );
+    assert!(
+        !agent.trunk.events_for_session(&session_id).is_empty(),
+        "history must not be cleared while the old turn still holds the queue"
+    );
+    let events = drain_bridge_events(&bridge).await;
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            BackendEvent::Notice { ok: true, message, .. } if message.contains("已清理")
+        )),
+        "no success receipt may be emitted before the old turn exits: {events:?}"
+    );
+
+    provider.release();
+    assert!(
+        turn.await.expect("turn task panicked").is_err(),
+        "the blocked turn must end cancelled"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), clear)
+        .await
+        .expect("clear should finish once the provider exits")
+        .expect("clear task panicked");
+
+    assert!(
+        agent.trunk.events_for_session(&session_id).is_empty(),
+        "history must be cleared after the old turn exits"
+    );
+    let events = drain_bridge_events(&bridge).await;
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            BackendEvent::Notice { ok: true, session_id: Some(id), message, .. }
+                if id == &session_id && message.contains("已清理")
+        )),
+        "clear must report success after quiesce: {events:?}"
+    );
+}
+
+/// PR3：archive 同样必须先 quiesce——否则"快照 → 清空"会与在途 turn 交错：
+/// 旧 turn 可能在归档之后、清空之前 append，或在清空之后才 commit 回复。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_history_waits_for_blocked_provider_turn() {
+    let provider = Arc::new(BlockingProvider::new());
+    let agent = Arc::new(test_agent(provider.clone()));
+    agent.set_team_id(Some("t".into()));
+    let dir = std::env::temp_dir().join(format!(
+        "echo-archive-quiesce-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    agent.set_session_persist_path(dir.join("sessions.json"));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let session_id = session.id.clone();
+    // 预置一条历史：归档有内容可写（也验证快照不是空档）。
+    agent.trunk.import_session_events(
+        &session_id,
+        vec![echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(session_id.clone()),
+                content: "归档前历史".into(),
+                timestamp: 1,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+                files: vec![],
+            },
+        )],
+    );
+
+    let turn = {
+        let agent = Arc::clone(&agent);
+        let session = session.clone();
+        tokio::spawn(async move { agent.process_message(&session, "正在跑的长任务").await })
+    };
+    provider.wait_entered().await;
+
+    let archive = {
+        let agent = Arc::clone(&agent);
+        let session_id = session_id.clone();
+        tokio::spawn(async move {
+            apply_session_command(
+                &agent,
+                BackendCommand::ArchiveHistory {
+                    team_id: Some("t".into()),
+                    session_id: Some(session_id),
+                },
+            )
+            .await
+        })
+    };
+
+    wait_until_turn_cancelled(&agent, &session_id).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !archive.is_finished(),
+        "archive must wait for the blocked turn to release turn_queue"
+    );
+    assert!(
+        !agent.trunk.events_for_session(&session_id).is_empty(),
+        "history must not be archived/cleared while the old turn still runs"
+    );
+
+    provider.release();
+    assert!(
+        turn.await.expect("turn task panicked").is_err(),
+        "the blocked turn must end cancelled"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), archive)
+        .await
+        .expect("archive should finish once the provider exits")
+        .expect("archive task panicked");
+
+    assert!(
+        agent.trunk.events_for_session(&session_id).is_empty(),
+        "archive clears the session only after quiesce"
+    );
+    let archived: Vec<_> = std::fs::read_dir(dir.join("archives"))
+        .expect("archives dir should exist")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    assert!(!archived.is_empty(), "archive file should be written");
+    let events = drain_bridge_events(&bridge).await;
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            BackendEvent::Notice { ok: true, message, .. } if message.contains("归档")
+        )),
+        "archive must report success after quiesce: {events:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// quiesce 的边界：未知 team 明确报错（不跨人格误清）；没有 Session
+/// 身份时返回空 guard（没有闸门可借）。
+#[tokio::test]
+async fn quiesce_rejects_unknown_team_and_returns_empty_guard_without_session() {
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    agent.set_team_id(Some("t".into()));
+    let host =
+        crate::agent::session_commands_host::AgentSessionCommandHost::new(Arc::clone(&agent));
+
+    let error = match host.quiesce_session(Some("ghost"), "missing").await {
+        Ok(_) => panic!("unknown team must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.contains("team ghost 不存在"), "got {error}");
+
+    // 本 team + 不存在的 session：没有旧 turn 可等 → 空 guard。
+    let guard = host
+        .quiesce_session(Some("t"), "missing")
+        .await
+        .expect("quiescing a session with no identity and no turn should succeed");
+    drop(guard);
+}
+
+/// quiesce 返回的 guard 必须真的挡住**新** turn：窗口内新 turn 只能在
+/// `turn_queue` 上排队，不能进入模型（否则 clear/archive 仍会与新 turn
+/// 并发写同一会话）。旧实现/空 guard 下 provider 会被立即调用。
+#[tokio::test]
+async fn held_quiesce_guard_blocks_a_new_turn_until_dropped() {
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    });
+
+    let agent = Arc::new(test_agent(provider.clone()));
+    agent.set_team_id(Some("t".into()));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let host =
+        crate::agent::session_commands_host::AgentSessionCommandHost::new(Arc::clone(&agent));
+
+    let guard = host
+        .quiesce_session(Some("t"), &session.id)
+        .await
+        .expect("quiesce idle session");
+    let turn = {
+        let agent = Arc::clone(&agent);
+        let session = session.clone();
+        tokio::spawn(async move { agent.process_message(&session, "after quiesce").await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        0,
+        "new turn must wait on turn_queue while quiesce guard is held"
+    );
+
+    drop(guard);
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(2), turn)
+        .await
+        .expect("new turn should proceed after guard drop")
+        .expect("turn task panicked")
+        .expect("turn should succeed");
+    assert_eq!(reply, "ok");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+/// quiesce 的目标 team 必须精确：只取消/等待被请求人格的会话 turn，
+/// 其他人格的同名 session 不受影响（否则清理 A 会停掉 B 的在途回复）。
+#[tokio::test]
+async fn quiesce_session_targets_only_the_requested_team() {
+    struct TargetRegistry {
+        agents: Vec<Arc<Agent>>,
+    }
+
+    impl crate::agent::registry::AgentRegistry for TargetRegistry {
+        fn resolve(&self, team_id: &str) -> Option<Arc<Agent>> {
+            self.agents
+                .iter()
+                .find(|agent| agent.team_id().as_deref() == Some(team_id))
+                .cloned()
+        }
+
+        // fake 不构造 `RunningAgent`（构造被 `_sealed` 封住，只有
+        // `AgentManager::bound` 能造）——这里只需要 resolve。
+        fn all(&self) -> Vec<crate::agent_manager::RunningAgent> {
+            Vec::new()
+        }
+
+        fn infos(&self) -> Vec<agent_module_management::protocol::TeamInfo> {
+            Vec::new()
+        }
+    }
+
+    let a = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "a".into(),
+    })));
+    a.set_team_id(Some("a".into()));
+    let b = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "b".into(),
+    })));
+    b.set_team_id(Some("b".into()));
+    let registry: Arc<dyn crate::agent::registry::AgentRegistry> = Arc::new(TargetRegistry {
+        agents: vec![Arc::clone(&a), Arc::clone(&b)],
+    });
+    a.set_registry(&registry);
+
+    // 两个 persona 各有同名会话（local:tui id 相同）。
+    let session_a = a
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "a".into(), None);
+    let session_b = b
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "b".into(), None);
+    let turn_a = a
+        .try_register_inbound_turn(&session_a.id, 1)
+        .expect("register a");
+    let turn_b = b
+        .try_register_inbound_turn(&session_b.id, 1)
+        .expect("register b");
+
+    let host = crate::agent::session_commands_host::AgentSessionCommandHost::new(Arc::clone(&a));
+    let guard = host
+        .quiesce_session(Some("b"), &session_b.id)
+        .await
+        .expect("quiesce target team");
+    assert!(
+        turn_b.cancel.is_cancelled(),
+        "target team's registered turn must be cancelled"
+    );
+    assert!(
+        !turn_a.cancel.is_cancelled(),
+        "other team's same-named session must be untouched"
+    );
+    drop(guard);
+    a.finish_inbound_turn(&turn_a.id);
+    b.finish_inbound_turn(&turn_b.id);
 }
 
 /// 会话写命令走**模块路径**（2026-11 S6）。
@@ -5106,6 +5630,17 @@ async fn compact_result_is_a_session_scoped_notice() {
     });
     let agent = Arc::new(test_agent(provider));
     agent.set_team_id(Some("t".into()));
+    // PR1：归档失败即中止压缩——能成功压缩的宿主必须先有持久化路径。
+    let dir = std::env::temp_dir().join(format!(
+        "echo-compact-notice-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    agent.set_session_persist_path(dir.join("sessions.json"));
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
 
@@ -5167,6 +5702,7 @@ async fn compact_result_is_a_session_scoped_notice() {
         "receipt must carry the session"
     );
     assert!(ok, "successful receipt has ok=true");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 2026-10 scope audit: a compaction without `session_id` is refused instead of

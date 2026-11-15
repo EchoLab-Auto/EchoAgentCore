@@ -752,6 +752,13 @@ impl TrunkStore {
     /// the caller can skip the write instead of silently replacing the file
     /// with garbage.
     pub(super) fn serialize(&self) -> Option<String> {
+        // 与清理/归档/压缩提交互斥，避免保存跨越破坏性操作的混合快照。
+        let _commit_guard = self.commit_barrier.read();
+        self.serialize_under_commit_guard()
+    }
+
+    /// 调用方已持有 commit_barrier（归档为写锁），不得再次取同一把锁。
+    pub(super) fn serialize_under_commit_guard(&self) -> Option<String> {
         // 短锁内 clone 后立即释放：序列化（MB 级 pretty JSON）不占用
         // timeline 锁，热路径 push 不会被落盘拖住。
         let timeline = self.timeline_snapshot();

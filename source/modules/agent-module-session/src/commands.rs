@@ -56,6 +56,14 @@ pub trait SessionCommandHost: Send + Sync {
     /// 旧 profile）。
     fn forget_session_provider(&self, session_id: &str);
 
+    /// 暂停目标会话的 turn 写者；返回的守卫必须持有到操作和回执结束。
+    /// 宿主必须取消旧 turn、等待其释放串行闸门；超时不得执行清理。
+    fn quiesce_session<'a>(
+        &'a self,
+        team_id: Option<&'a str>,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Box<dyn Send>, String>>;
+
     /// 发一条线协议事件。
     fn emit(&self, event: BackendEvent);
 
@@ -172,8 +180,34 @@ impl SessionCommandHandler {
                         return Ok(());
                     }
                 };
-                target.trunk.clear_session(&session).await;
+                let _turn_guard = match self
+                    .host
+                    .quiesce_session(target.team_id.as_deref(), &session)
+                    .await
+                {
+                    Ok(guard) => guard,
+                    Err(message) => {
+                        self.host.emit(BackendEvent::Notice {
+                            team_id: target.team_id.clone(),
+                            session_id: Some(session),
+                            ok: false,
+                            message: format!("未执行清理：{message}"),
+                        });
+                        return Ok(());
+                    }
+                };
+                let result = target.trunk.clear_session(&session).await;
                 self.host.forget_session_provider(&session);
+                if let Err(error) = result {
+                    self.after_write_result(
+                        &target,
+                        &session,
+                        format!("内存历史已清理，但尚未落盘；重启可能恢复旧历史：{error}"),
+                        false,
+                    )
+                    .await;
+                    return Ok(());
+                }
                 tracing::info!(
                     team = ?target.team_id,
                     session = %session,
@@ -198,8 +232,23 @@ impl SessionCommandHandler {
                         return Ok(());
                     }
                 };
-                // 归档是**非破坏**操作（快照进 `archives/`），但它的旧实现
-                // 顺带清了一次时间线——保持原语义：成功后时间线照旧重发。
+                let _turn_guard = match self
+                    .host
+                    .quiesce_session(target.team_id.as_deref(), &session)
+                    .await
+                {
+                    Ok(guard) => guard,
+                    Err(message) => {
+                        self.host.emit(BackendEvent::Notice {
+                            team_id: target.team_id.clone(),
+                            session_id: Some(session),
+                            ok: false,
+                            message: format!("未执行归档：{message}"),
+                        });
+                        return Ok(());
+                    }
+                };
+                // 归档后清空是破坏性操作：旧 turn 已退出，守卫阻止新 turn 写入。
                 let result = self.archive_with_progress(&target, &session).await;
                 match result {
                     Ok(path) => {
@@ -207,12 +256,13 @@ impl SessionCommandHandler {
                             .await;
                     }
                     Err(error) => {
-                        self.host.emit(BackendEvent::Notice {
-                            team_id: target.team_id,
-                            session_id: Some(session),
-                            ok: false,
-                            message: format!("归档失败：{error}"),
-                        });
+                        self.after_write_result(
+                            &target,
+                            &session,
+                            format!("归档未完整完成：{error}"),
+                            false,
+                        )
+                        .await;
                     }
                 }
                 Ok(())
@@ -266,6 +316,11 @@ impl SessionCommandHandler {
     /// "空全量"当权威数据，会清掉**整个本地聊天缓存**（含未被清理的其他
     /// 会话），本地游标还被推进到最新、刷新也拉不回来。
     async fn after_write(&self, target: &Target, session: &str, notice: String) {
+        self.after_write_result(target, session, notice, true).await;
+    }
+
+    /// 即使保存失败也刷新实际内存状态，不能发出成功回执。
+    async fn after_write_result(&self, target: &Target, session: &str, notice: String, ok: bool) {
         let messages = elide_reasoning_for_wire(target.trunk.timeline_snapshot());
         self.host.emit(BackendEvent::TrunkTimeline {
             messages,
@@ -280,7 +335,7 @@ impl SessionCommandHandler {
         self.host.emit(BackendEvent::Notice {
             team_id: target.team_id.clone(),
             session_id: Some(session.to_string()),
-            ok: true,
+            ok,
             message: notice,
         });
     }
@@ -343,6 +398,7 @@ mod tests {
         compact_calls: Mutex<Vec<(Option<String>, String, usize)>>,
         compact_result: Mutex<Option<Result<String, String>>>,
         trunk: Arc<TrunkStore>,
+        quiesce_error: Option<String>,
     }
 
     impl Default for FakeHost {
@@ -354,6 +410,7 @@ mod tests {
                 compact_calls: Mutex::new(Vec::new()),
                 compact_result: Mutex::new(None),
                 trunk: Arc::new(TrunkStore::new(1000)),
+                quiesce_error: None,
             }
         }
     }
@@ -373,6 +430,18 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(session_id.to_string());
+        }
+        fn quiesce_session<'a>(
+            &'a self,
+            _team_id: Option<&'a str>,
+            _session_id: &'a str,
+        ) -> BoxFuture<'a, Result<Box<dyn Send>, String>> {
+            Box::pin(async move {
+                match &self.quiesce_error {
+                    Some(error) => Err(error.clone()),
+                    None => Ok(Box::new(()) as Box<dyn Send>),
+                }
+            })
         }
         fn emit(&self, event: BackendEvent) {
             self.events.lock().unwrap().push(event);
@@ -566,6 +635,105 @@ mod tests {
             let calls = host.compact_calls.lock().unwrap();
             assert_eq!(calls.last().unwrap().2, want);
         }
+    }
+
+    #[tokio::test]
+    async fn quiesce_failure_refuses_clear_and_archive_without_mutation() {
+        use echo_session::{SessionEvent, UserMessage};
+        for command in ["ClearHistory", "ArchiveHistory"] {
+            let host = Arc::new(FakeHost {
+                quiesce_error: Some("旧 turn 尚未退出".into()),
+                ..Default::default()
+            });
+            host.trunk
+                .append_event(SessionEvent::UserMessage(UserMessage {
+                    content: "must-survive".into(),
+                    timestamp: 1,
+                    message_sequence: None,
+                    source: None,
+                    images: vec![],
+                    files: vec![],
+                    session: Some("s1".into()),
+                }));
+            let before = host.trunk.event_log();
+            let handler = SessionCommandHandler::new(host.clone());
+            handler
+                .handle(command, serde_json::json!({"session_id":"s1"}))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(host.trunk.event_log(), before);
+            assert!(host.cleared_sessions.lock().unwrap().is_empty());
+            let events = host.events.lock().unwrap();
+            assert!(events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Notice { ok: false, .. })));
+            assert!(!events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Notice { ok: true, .. })));
+        }
+    }
+
+    #[tokio::test]
+    async fn clear_save_failure_never_reports_success() {
+        use echo_session::{SessionEvent, UserMessage};
+        let root = std::env::temp_dir().join(format!(
+            "echo-clear-save-failure-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("sessions.json");
+        let trunk = Arc::new(TrunkStore::new(1000));
+        trunk.set_persist_path(&path);
+        trunk.append_event(SessionEvent::UserMessage(UserMessage {
+            content: "durable-before-clear".into(),
+            timestamp: 1,
+            message_sequence: None,
+            source: None,
+            images: vec![],
+            files: vec![],
+            session: Some("s1".into()),
+        }));
+        trunk.save_now_checked().await.unwrap();
+        let original = std::fs::read(&path).unwrap();
+        std::fs::create_dir(root.join("sessions.json.tmp")).unwrap();
+        let host = Arc::new(FakeHost {
+            trunk: Arc::clone(&trunk),
+            ..Default::default()
+        });
+        let handler = SessionCommandHandler::new(host.clone());
+        handler
+            .handle("ClearHistory", serde_json::json!({"session_id":"s1"}))
+            .await
+            .unwrap()
+            .unwrap();
+        let events = host.events.lock().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Notice { ok: true, .. })),
+            "save failed but success reported: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Notice { ok: false, .. })),
+            "failure must be visible"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::TrunkTimeline { .. })),
+            "refresh actual in-memory state even when save fails"
+        );
+        assert!(trunk.is_dirty());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        drop(events);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// 压缩失败 = 一条 Error 事件，不发时间线/回执。

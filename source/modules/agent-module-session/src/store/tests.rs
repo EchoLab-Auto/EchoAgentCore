@@ -522,10 +522,7 @@ async fn ensure_metadata_loads_identities_but_not_events() {
     assert_eq!(store.load_stage(), LoadStage::Metadata);
     assert!(!store.is_loaded(), "元信息档不是全量");
     assert_eq!(store.len(), 2, "会话身份要读到（否则面板丢会话）");
-    assert!(
-        store.event_log().is_empty(),
-        "事件日志不该被元信息档读进来"
-    );
+    assert!(store.event_log().is_empty(), "事件日志不该被元信息档读进来");
     // 头部（v6 档里是 null）应被补成顶层 header，与启动期同语义。
     assert!(store.header().is_some());
 }
@@ -556,10 +553,7 @@ async fn metadata_falls_back_to_full_when_identities_are_empty() {
     store.set_persist_path(&path);
     store.ensure_metadata().await;
 
-    assert!(
-        store.is_loaded(),
-        "身份为空时元信息档不够用，必须退回全量"
-    );
+    assert!(store.is_loaded(), "身份为空时元信息档不够用，必须退回全量");
     assert_eq!(store.len(), 1, "会话要从事件派生出来（面板才有得选）");
     assert_eq!(store.event_log().len(), 1);
 }
@@ -986,7 +980,7 @@ async fn clear_history_wipes_log_trunk_timeline_and_disk() {
     assert_eq!(store.trunk_len(), 1);
     assert_eq!(store.timeline_snapshot().len(), 1);
 
-    store.clear_history().await;
+    store.clear_history().await.unwrap();
 
     assert_eq!(store.trunk_len(), 0, "trunk projection cleared");
     assert!(store.event_log().is_empty(), "event log cleared");
@@ -1024,8 +1018,8 @@ async fn clear_session_only_wipes_target_and_keeps_siblings() {
             files: vec![],
         })
     };
-    let timeline_msg =
-        |session: &str, content: &str, ts: i64| agent_module_management::protocol::TimelineMessage {
+    let timeline_msg = |session: &str, content: &str, ts: i64| {
+        agent_module_management::protocol::TimelineMessage {
             kind: "user".into(),
             content: content.into(),
             session_id: session.into(),
@@ -1038,7 +1032,8 @@ async fn clear_session_only_wipes_target_and_keeps_siblings() {
             archive: None,
             seq: 0,
             ord: 0,
-        };
+        }
+    };
 
     // 会话 A（待清理）与 B（必须完好）各写事件 + 时间线条目。
     store.append_event(user_event(
@@ -1056,7 +1051,10 @@ async fn clear_session_only_wipes_target_and_keeps_siblings() {
     store.save_now().await;
     assert_eq!(store.event_log().len(), 2);
 
-    store.clear_session("local:workspace:proj:alice").await;
+    store
+        .clear_session("local:workspace:proj:alice")
+        .await
+        .unwrap();
 
     // ① 事件日志：只剩 B。
     let log = store.event_log();
@@ -1112,7 +1110,7 @@ async fn clear_session_empties_the_shared_history_arc() {
     ));
     assert!(!session.history.lock().is_empty(), "投影已物化");
 
-    store.clear_session(&session.id).await;
+    store.clear_session(&session.id).await.unwrap();
 
     // 身份持有的旧 Arc 已原地清空（复活路径切断）。
     assert!(
@@ -1170,7 +1168,7 @@ async fn clear_session_keeps_identity_arc_connected_after_new_events() {
     ));
     assert!(!session.history.lock().is_empty(), "投影已物化");
 
-    store.clear_session(&session.id).await;
+    store.clear_session(&session.id).await.unwrap();
     assert!(session.history.lock().is_empty(), "清理后身份 Arc 为空");
 
     // 清理后的新事件：身份 Arc 必须同步收敛（不得与新建投影脱节）。
@@ -1232,7 +1230,7 @@ async fn clear_session_keeps_legacy_unattributed_events() {
         },
     ));
 
-    store.clear_session("s1").await;
+    store.clear_session("s1").await.unwrap();
 
     let log = store.event_log();
     assert_eq!(log.len(), 1, "仅删该会话事件，旧版无归属事件保留: {log:?}");
@@ -1269,7 +1267,7 @@ async fn timeline_probe_counters_track_writes() {
         (TRUNK_TIMELINE_MAX + 3) as u64
     );
     assert_eq!(store.timeline_drained.load(Relaxed), 3, "cap-drain counted");
-    store.clear_session("sA").await;
+    store.clear_session("sA").await.unwrap();
     assert!(
         store.timeline_removed.load(Relaxed) > 0,
         "session-scoped timeline removal counted"
@@ -1697,6 +1695,31 @@ fn ev_user(session: &str, content: &str) -> echo_session::SessionEvent {
     })
 }
 
+/// 带 `message_sequence` 的用户事件：`insert_event_after_sequence` 只有在
+/// 找得到同序号用户事件时才**插入**（否则退回追加），前缀校验用例需要
+/// 真正插入到前缀中间。
+fn seq_user(session: &str, content: &str, sequence: u64) -> echo_session::SessionEvent {
+    echo_session::SessionEvent::UserMessage(echo_session::event::UserMessage {
+        session: Some(session.into()),
+        content: content.into(),
+        timestamp: 1700000000,
+        message_sequence: Some(sequence),
+        source: None,
+        images: vec![],
+        files: vec![],
+    })
+}
+
+fn assistant_reply(session: &str, content: &str) -> echo_session::SessionEvent {
+    echo_session::SessionEvent::AssistantMessage(echo_session::event::AssistantMessage {
+        session: Some(session.into()),
+        timestamp: 1700000001,
+        content: content.into(),
+        reasoning_content: None,
+        tool_calls: vec![],
+    })
+}
+
 fn ev_tool(session: &str, id: &str) -> echo_session::SessionEvent {
     echo_session::SessionEvent::ToolCall(echo_session::event::ToolCallEvent {
         id: id.into(),
@@ -1758,11 +1781,15 @@ async fn apply_compaction_installs_body_summary_and_archive_path() {
 
     let preview = store.compact_preview(2).expect("preview");
     assert_eq!(preview.total_replaced, 4);
-    let summaries = vec![CompactionSummary {
-        session: Some(sid.into()),
-        summary: "用户先问了 m0、m1，随后推进到 m2、m3。".into(),
-        replaced_count: preview.total_replaced,
-    }];
+    let group = preview
+        .groups
+        .iter()
+        .find(|group| group.session.as_deref() == Some(sid))
+        .expect("preview group for the session");
+    let summaries = vec![CompactionSummary::from_group(
+        group,
+        "用户先问了 m0、m1，随后推进到 m2、m3。",
+    )];
     let applied = store
         .apply_compaction(2, &summaries, Some("/tmp/archives/x-precompact.json"))
         .await
@@ -1823,11 +1850,12 @@ async fn apply_compaction_keeps_groups_without_a_summary() {
     assert_eq!(preview.groups.len(), 2);
 
     // 只为 A 组准备摘要：B 组必须原样保留（不能换出无摘要的 Compaction）。
-    let summaries = vec![CompactionSummary {
-        session: Some(a_id.clone()),
-        summary: "A 组摘要".into(),
-        replaced_count: 4,
-    }];
+    let a_group = preview
+        .groups
+        .iter()
+        .find(|group| group.session.as_deref() == Some(a_id.as_str()))
+        .expect("preview group for session A");
+    let summaries = vec![CompactionSummary::from_group(a_group, "A 组摘要")];
     let applied = store
         .apply_compaction(2, &summaries, None)
         .await
@@ -1847,6 +1875,277 @@ async fn apply_compaction_keeps_groups_without_a_summary() {
         .filter(|e| e.session() == Some(b_id.as_str()))
         .count();
     assert_eq!(b_left, 6);
+}
+
+/// **前缀校验（PR2 回归）**：预览后若有一条事件被**插入**到被替换前缀
+/// 中间（并发分支的回答落位），前缀已经变了。此时用旧摘要落地会把
+/// 「回答 X」压进前缀而摘要描述的是「回答 X 之前的那三条」——静默错配。
+/// 必须拒绝该组，日志原样保留。
+#[tokio::test]
+async fn apply_compaction_rejects_event_inserted_into_preview_prefix() {
+    let store = TrunkStore::new(1000);
+    let sid = "local:tui::local_user";
+    for i in 0..4 {
+        store.append_event(seq_user(sid, &format!("m{i}"), i + 1));
+    }
+    let preview = store.compact_preview(1).expect("preview");
+    assert_eq!(preview.total_replaced, 3, "压缩前 3 条，保留 m3");
+
+    // 插入到 m0 之后 = 前缀中间（index 1 < 3）：前缀变为 [m0, 迟到回答, m1]。
+    store.insert_event_after_sequence(1, assistant_reply(sid, "迟到的回答"));
+
+    let summaries = vec![CompactionSummary::from_group(
+        &preview.groups[0],
+        "m0/m1/m2 的旧摘要",
+    )];
+    let result = store.apply_compaction(1, &summaries, None).await;
+    assert!(
+        result.is_err(),
+        "插入改变前缀后，旧摘要必须被拒绝（否则摘要与内容错配）"
+    );
+    let events = store.event_log();
+    assert_eq!(events.len(), 5, "日志必须原样保留");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, echo_session::SessionEvent::Compaction(_))),
+        "被拒绝的组不能写入 Compaction 事件"
+    );
+}
+
+/// 插入发生在**保留尾**（不在被替换前缀里）时，前缀凭据仍然有效——只
+/// 拒绝真正改变前缀的插入，不能把正常的并发回答落位一并拒掉。
+#[tokio::test]
+async fn apply_compaction_allows_insertion_outside_the_prefix() {
+    let store = TrunkStore::new(1000);
+    let sid = "local:tui::local_user";
+    for i in 0..4 {
+        store.append_event(seq_user(sid, &format!("m{i}"), i + 1));
+    }
+    let preview = store.compact_preview(1).expect("preview");
+    assert_eq!(preview.total_replaced, 3);
+    // 插到 m3（保留尾）之后：前缀 [m0,m1,m2] 不变。
+    store.insert_event_after_sequence(4, assistant_reply(sid, "保留尾的回答"));
+
+    let summaries = vec![CompactionSummary::from_group(
+        &preview.groups[0],
+        "前三条摘要",
+    )];
+    let applied = store
+        .apply_compaction(1, &summaries, None)
+        .await
+        .expect("保留尾插入不影响前缀");
+    assert_eq!(applied.total_replaced, 3);
+
+    let events = store.event_log();
+    assert_eq!(events.len(), 3, "Compaction + m3 + 插入的回答");
+    let texts: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            echo_session::SessionEvent::AssistantMessage(m) => Some(m.content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["保留尾的回答".to_string()],
+        "插入的事件留在保留尾"
+    );
+}
+
+/// **重复计划拒绝（PR2 回归）**：同一会话在一次落地里出现两条摘要时，
+/// 谁优先无法判定；不能「先到先得」部分落地，必须整份计划拒绝。
+#[tokio::test]
+async fn apply_compaction_rejects_duplicate_plans_for_one_session() {
+    let store = TrunkStore::new(1000);
+    let sid = "local:tui::local_user";
+    for i in 0..4 {
+        store.append_event(seq_user(sid, &format!("m{i}"), i + 1));
+    }
+    let preview = store.compact_preview(1).expect("preview");
+    let summaries = vec![
+        CompactionSummary::from_group(&preview.groups[0], "第一份摘要"),
+        CompactionSummary::from_group(&preview.groups[0], "第二份摘要"),
+    ];
+    let result = store.apply_compaction(1, &summaries, None).await;
+    assert!(result.is_err(), "重复计划必须拒绝");
+    assert_eq!(store.event_log().len(), 4, "拒绝时日志不动");
+    assert!(!store
+        .event_log()
+        .iter()
+        .any(|e| matches!(e, echo_session::SessionEvent::Compaction(_))));
+}
+
+/// **组级隔离（PR2）**：A 组前缀被并发插入改写 → 只跳过 A（原事件全留），
+/// B 组照常落地。不能因为一个组过期就让整次压缩失败/回滚。
+#[tokio::test]
+async fn apply_compaction_keeps_failed_group_and_applies_others() {
+    let store = TrunkStore::new(100_000);
+    let a_id = store.ensure_workspace_channel("proj", "Proj").id.clone();
+    let b_id = "local:tui::local_user".to_string();
+    // A 用序号 1..=4，B 用 10..=13：`insert_after_sequence` 按全局序号定位，
+    // 不撞号才能确定插入 A 的前缀中间。
+    for i in 0..4 {
+        store.append_event(seq_user(&a_id, &format!("a{i}"), i + 1));
+    }
+    for i in 0..4 {
+        store.append_event(seq_user(&b_id, &format!("b{i}"), i + 10));
+    }
+    let preview = store.compact_preview(1).expect("preview");
+    assert_eq!(preview.groups.len(), 2);
+    let a_group = preview
+        .groups
+        .iter()
+        .find(|group| group.session.as_deref() == Some(a_id.as_str()))
+        .expect("preview group A");
+    let b_group = preview
+        .groups
+        .iter()
+        .find(|group| group.session.as_deref() == Some(b_id.as_str()))
+        .expect("preview group B");
+
+    // 插到 A 的 a0 之后 = A 前缀中间；A 的旧摘要随之失效。
+    store.insert_event_after_sequence(1, assistant_reply(&a_id, "A 迟到的回答"));
+
+    let summaries = vec![
+        CompactionSummary::from_group(a_group, "A 组旧摘要"),
+        CompactionSummary::from_group(b_group, "B 组摘要"),
+    ];
+    let applied = store
+        .apply_compaction(1, &summaries, None)
+        .await
+        .expect("B 组校验通过，整次落地不应失败");
+    assert_eq!(applied.groups, 1, "只有 B 组落地");
+    assert_eq!(applied.total_replaced, 3);
+
+    let events = store.event_log();
+    let compactions: Vec<&echo_session::CompactionEvent> = events
+        .iter()
+        .filter_map(|event| match event {
+            echo_session::SessionEvent::Compaction(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(compactions.len(), 1);
+    assert_eq!(
+        compactions[0].session.as_deref(),
+        Some(b_id.as_str()),
+        "落地的是 B 组"
+    );
+    // A 组 5 条（4 条原事件 + 1 条插入）全部原样保留。
+    let a_left = events
+        .iter()
+        .filter(|event| event.session() == Some(a_id.as_str()))
+        .count();
+    assert_eq!(a_left, 5, "失败的 A 组必须原样保留");
+}
+
+/// **重复计划（跨调用）**：同一份计划落地两次，第二次必须被拒绝且日志、
+/// 代次都不动（幂等失败，不是二次压缩）。
+#[tokio::test]
+async fn apply_compaction_rejects_replaying_the_same_plan() {
+    let store = TrunkStore::new(1000);
+    let sid = "local:tui::local_user";
+    for i in 0..4 {
+        store.append_event(seq_user(sid, &format!("m{i}"), i + 1));
+    }
+    let preview = store.compact_preview(1).expect("preview");
+    let summaries = vec![CompactionSummary::from_group(&preview.groups[0], "摘要")];
+    let first = store
+        .apply_compaction(1, &summaries, None)
+        .await
+        .expect("首次落地");
+    assert_eq!(first.groups, 1);
+    let after_first = store.event_log();
+    let epoch_after_first = store.history_epoch();
+
+    let replay = store.apply_compaction(1, &summaries, None).await;
+    assert!(replay.is_err(), "重复计划必须拒绝");
+    assert_eq!(store.event_log(), after_first, "拒绝的重复计划不改日志");
+    assert_eq!(
+        store.history_epoch(),
+        epoch_after_first,
+        "拒绝的重复计划不推进代次"
+    );
+}
+
+/// **历史代次不可省略（PR2）**：清空后用逐字节相同的事件重建前缀，指纹
+/// 会与旧摘要相同——只有 `history_epoch` 能识破"这段历史其实已经换过
+/// 一轮"。没有代次校验时这里会静默用旧摘要覆盖新历史。
+#[tokio::test]
+async fn expired_plan_rejected_even_when_prefix_bytes_are_recreated() {
+    let store = TrunkStore::new(1000);
+    let sid = "local:tui::local_user";
+    let feed = |store: &TrunkStore| {
+        for i in 0..4 {
+            store.append_event(seq_user(sid, &format!("m{i}"), i + 1));
+        }
+    };
+    feed(&store);
+    let preview = store.compact_preview(1).expect("preview");
+    let summaries = vec![CompactionSummary::from_group(&preview.groups[0], "旧摘要")];
+
+    store.clear_session(sid).await.unwrap();
+    feed(&store);
+    assert_eq!(store.event_log().len(), 4, "前缀已逐字节重建");
+
+    let err = store
+        .apply_compaction(1, &summaries, None)
+        .await
+        .expect_err("跨越清空的计划必须拒绝");
+    assert!(
+        err.contains("代次") || err.contains("过期"),
+        "错误应说明计划过期：{err}"
+    );
+    assert_eq!(store.event_log().len(), 4, "拒绝时日志不动");
+    assert!(!store
+        .event_log()
+        .iter()
+        .any(|e| matches!(e, echo_session::SessionEvent::Compaction(_))));
+}
+
+/// 摘要指向的组在预览后整个消失（会话被清空/删除）：按过期计划拒绝，
+/// 不能 panic、不能凭空写入 Compaction。
+#[tokio::test]
+async fn apply_compaction_rejects_summary_for_vanished_group() {
+    let store = TrunkStore::new(1000);
+    let sid = "local:tui::local_user";
+    for i in 0..4 {
+        store.append_event(seq_user(sid, &format!("m{i}"), i + 1));
+    }
+    let preview = store.compact_preview(1).expect("preview");
+    let summaries = vec![CompactionSummary::from_group(&preview.groups[0], "摘要")];
+    store.clear_session(sid).await.unwrap();
+    assert!(store.event_log().is_empty());
+
+    let err = store
+        .apply_compaction(1, &summaries, None)
+        .await
+        .expect_err("组已消失，计划必须过期");
+    assert!(err.contains("不在日志中") || err.contains("过期"), "{err}");
+    assert!(store.event_log().is_empty(), "拒绝时日志保持为空");
+}
+
+/// 预览把**当前代次**盖在每一组上：落地据此判断计划是否跨越了清空/压缩。
+#[tokio::test]
+async fn compact_preview_stamps_groups_with_the_current_history_epoch() {
+    let store = TrunkStore::new(100_000);
+    let a_id = store.ensure_workspace_channel("proj", "Proj").id.clone();
+    let b_id = "local:tui::local_user".to_string();
+    for i in 0..4 {
+        store.append_event(seq_user(&a_id, &format!("a{i}"), i + 1));
+        store.append_event(seq_user(&b_id, &format!("b{i}"), i + 10));
+    }
+    let epoch = store.history_epoch();
+    let preview = store.compact_preview(1).expect("preview");
+    assert_eq!(preview.groups.len(), 2);
+    assert!(
+        preview
+            .groups
+            .iter()
+            .all(|group| group.history_epoch == epoch),
+        "每组都必须携带预览时的代次"
+    );
 }
 
 #[tokio::test]
@@ -2248,11 +2547,10 @@ async fn apply_compaction_keeps_events_arriving_after_preview() {
     store.append_event(ev_user(sid, "窗口期新消息 A"));
     store.append_event(ev_user(sid, "窗口期新消息 B"));
 
-    let summaries = vec![echo_session::CompactionSummary {
-        session: Some(sid.to_string()),
-        summary: "[历史摘要] 前 7 条的摘要".into(),
-        replaced_count: preview.total_replaced,
-    }];
+    let summaries = vec![echo_session::CompactionSummary::from_group(
+        &preview.groups[0],
+        "[历史摘要] 前 7 条的摘要",
+    )];
     let applied = store
         .apply_compaction(3, &summaries, None)
         .await
@@ -2443,10 +2741,8 @@ async fn live_compaction_on_real_session_file() {
     let summaries: Vec<CompactionSummary> = preview
         .groups
         .iter()
-        .map(|g| CompactionSummary {
-            session: g.session.clone(),
-            summary: format!("[offline-体检] {} 条事件", g.replaced_count),
-            replaced_count: g.replaced_count,
+        .map(|g| {
+            CompactionSummary::from_group(g, format!("[offline-体检] {} 条事件", g.replaced_count))
         })
         .collect();
     let applied = store
@@ -3538,7 +3834,7 @@ async fn clear_session_and_compaction_advance_history_epoch() {
         store.append_event(user_event("qq:dm:1:1", &format!("事件 {index}")));
     }
     let before_clear_session = store.history_epoch();
-    store.clear_session("qq:dm:1:1").await;
+    store.clear_session("qq:dm:1:1").await.unwrap();
     assert!(
         store.history_epoch() > before_clear_session,
         "clear_session 必须推进 history_epoch"
@@ -3549,11 +3845,9 @@ async fn clear_session_and_compaction_advance_history_epoch() {
         store.append_event(user_event("qq:dm:1:1", &format!("压缩前 {index}")));
     }
     let before_compaction = store.history_epoch();
-    let summary = CompactionSummary {
-        session: Some("qq:dm:1:1".into()),
-        summary: "前三条压缩成摘要".into(),
-        replaced_count: 3,
-    };
+    let preview = store.compact_preview(1).expect("preview");
+    assert_eq!(preview.groups[0].history_epoch, before_compaction);
+    let summary = CompactionSummary::from_group(&preview.groups[0], "前三条压缩成摘要");
     let applied = store
         .apply_compaction(1, &[summary], None)
         .await
@@ -3565,7 +3859,7 @@ async fn clear_session_and_compaction_advance_history_epoch() {
     );
 
     let before_clear_history = store.history_epoch();
-    store.clear_history().await;
+    store.clear_history().await.unwrap();
     assert!(
         store.history_epoch() > before_clear_history,
         "clear_history 必须推进 history_epoch"

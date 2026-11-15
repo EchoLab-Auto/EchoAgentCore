@@ -178,14 +178,27 @@ impl Agent {
     /// 每会话一条时间线（2026-11 删掉并行模式后唯一的口径）：并发到达的输入
     /// 在闸门上排队，第二个 turn 看到的是第一轮结束后的上下文，而不是"读到
     /// 一半的历史"。
+    /// **取消优先（PR3）**：`select!` 默认在多个分支同时 ready 时随机选，
+    /// 而"取消"与"拿到锁"同时 ready 正是 clear/archive quiesce 后的常见
+    /// 状态（取消令牌已置位，旧 turn 恰好释放闸门）。若随机选到锁，已取消
+    /// 的输入仍会写进事件日志、甚至跑完一轮——取消语义被打破。这里用
+    /// `biased` 固定取消优先，并在拿到锁后**再查一次**：取消可能发生在
+    /// select 判定与这里之间（另一个线程置位），此时必须丢锁返回 `None`。
     pub(super) async fn acquire_turn_slot(
         &self,
         session: &Session,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
         tokio::select! {
-            slot = Arc::clone(&session.turn_queue).lock_owned() => Some(slot),
+            biased;
             _ = cancel.cancelled() => None,
+            slot = Arc::clone(&session.turn_queue).lock_owned() => {
+                if cancel.is_cancelled() {
+                    None
+                } else {
+                    Some(slot)
+                }
+            }
         }
     }
 
@@ -219,6 +232,14 @@ impl Agent {
             }
         };
         let _turn = session.turn_lock.lock().await;
+        // **turn_lock 后复查（PR3）**：排队期间可能被取消；拿到 `turn_lock`
+        // 之后如果直接 append，事件日志里会留下一条"已取消但没人回复"的
+        // 用户消息（clear/archive quiesce 与排队的 turn 竞争时尤为明显）。
+        // 已取消 → 不写事件、交还登记后返回 None（队列 guard 随作用域丢弃）。
+        if registration.cancel.is_cancelled() {
+            self.finish_inbound_turn(&registration.id);
+            return None;
+        }
         self.trunk
             .append_event(echo_session::SessionEvent::UserMessage(
                 echo_session::event::UserMessage {
