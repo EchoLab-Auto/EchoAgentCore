@@ -190,7 +190,10 @@ impl ToolExecutor {
             branch_id = %cx.branch_id,
             tool_call_id = %call.id,
         );
-        let result = self.dispatch(host, cx, call).instrument(span).await;
+        let result = self
+            .dispatch(host, cx, call, &logged_arguments)
+            .instrument(span)
+            .await;
 
         let elapsed_ms = started.elapsed().as_millis() as u64;
         // 工具耗时是 turn 耗时的主要成分：慢调用与失败恒 INFO（默认级别下
@@ -210,11 +213,17 @@ impl ToolExecutor {
     ///
     /// 与 [`Self::run`] 拆开是为了让整段执行被 `tool_call` span 包裹：开头的
     /// 同步序言（发出调用事件 + 落盘）不应计入工具耗时。
+    ///
+    /// `logged_arguments` 是 [`Self::run`] 里**已经过 `host.redact` 的那一份**。
+    /// 记录面（调用事件、会话落盘、本函数里的 warn）必须共用同一份文本：既
+    /// 不重复脱敏（宿主侧命中计数会被多算一次），也保证「日志里读到的」就是
+    /// 「落盘的那条」。
     async fn dispatch(
         &self,
         host: &dyn ToolExecutionHost,
         cx: &ToolCallContext,
         call: &ToolInvocation,
+        logged_arguments: &str,
     ) -> ToolResult {
         // 上游异常防御（2026-11-09）：网关在后端之间做路由切换时，观测到流式
         // `tool_calls` 里 **`function.name` 被丢掉、只剩 arguments**（同一时刻
@@ -234,10 +243,16 @@ impl ToolExecutor {
                 .map(|definition| definition.name.clone())
                 .collect();
             names.sort();
+            // 记录面纪律：这条 warn 只打**已脱敏**的参数文本（`run` 里那一次
+            // `host.redact` 的结果）。曾经这里打的是 `call.arguments` 原始值，
+            // 而上游丢 `function.name` 的场景恰恰可能夹着明文密钥（网关重新
+            // 序列化参数后原样回传）——运维日志里就留下了明文。
+            // 顺序也有讲究：**先脱敏再截断**。反过来的话，截断可能把一个密钥
+            // 切成两半，脱敏器就再也匹配不到那半截了。
             tracing::warn!(
                 session = %cx.session_id,
                 tool_call_id = %call.id,
-                arguments = %truncate(&call.arguments, 160),
+                arguments = %truncate(logged_arguments, 160),
                 available = names.len(),
                 "tool call arrived without a function name (upstream stripped it?)"
             );
@@ -377,6 +392,42 @@ mod tests {
                 .unwrap()
                 .push(format!("result:{}:{}", call.name, result.text));
         }
+    }
+
+    /// 捕获全部事件字段的极简 subscriber。
+    ///
+    /// 本 crate 不依赖 `tracing-subscriber`（那是组合根的事），而这条回归只关心
+    /// 「某条事件的字面量里有没有明文秘密」——自带一个足矣。用
+    /// `tracing::subscriber::set_default` 装**线程级**默认实现，所以并行的
+    /// 其它测试不受影响。
+    struct CaptureEvents(Arc<Mutex<Vec<String>>>);
+
+    #[derive(Default)]
+    struct FieldCollector(Vec<String>);
+
+    impl tracing::field::Visit for FieldCollector {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            // `%value` 走的是 display-over-debug 包装，`{:?}` 得到的就是展示文本。
+            self.0.push(format!("{}={:?}", field.name(), value));
+        }
+    }
+
+    impl tracing::Subscriber for CaptureEvents {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut collector = FieldCollector::default();
+            event.record(&mut collector);
+            self.0.lock().unwrap().push(collector.0.join(" "));
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
     }
 
     struct EchoTool;
@@ -568,6 +619,47 @@ mod tests {
             !result.text.contains("找不到工具"),
             "缺名字不该退化成「找不到工具」：{}",
             result.text
+        );
+    }
+
+    /// 缺工具名那条 warn 是**记录面**：原始参数必须先过 `host.redact`。
+    ///
+    /// 回归（安全）：这条 warn 曾直接打 `truncate(&call.arguments, 160)`，而上游
+    /// 丢掉 `function.name` 的场景恰恰可能夹着明文密钥（网关重新序列化参数后
+    /// 原样回传）——于是运维日志里就留下了明文。
+    ///
+    /// 断言方式：装一个线程级 subscriber 抓住所有事件字面量，合成 secret 一次
+    /// 都不得出现；同时要求 warn 真的发出来了（否则测试是空转）。
+    #[tokio::test]
+    async fn missing_tool_name_warn_never_leaks_raw_arguments() {
+        const SYNTHETIC: &str = "SECRET-synthetic-9f3a";
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let _guard = tracing::subscriber::set_default(CaptureEvents(Arc::clone(&events)));
+        let (ex, rec) = executor(true);
+        let call = ToolInvocation::new("c1", "", format!(r#"{{"api_key":"{SYNTHETIC}"}}"#));
+        let result = ex.run(&rec, &cx(), &call).await;
+        assert!(
+            result.text.contains("缺少函数名"),
+            "行为不变：仍是可自纠的错误：{}",
+            result.text
+        );
+
+        let captured = events.lock().unwrap().join("\n");
+        assert!(
+            captured.contains("without a function name"),
+            "缺名字的 warn 必须发出来（否则这条回归空转）：{captured}"
+        );
+        assert!(
+            !captured.contains(SYNTHETIC),
+            "warn 不得出现明文参数：{captured}"
+        );
+        assert!(
+            !captured.contains("SECRET"),
+            "warn 不得出现任何未脱敏字面量：{captured}"
+        );
+        assert!(
+            captured.contains("***"),
+            "warn 应记录脱敏后的参数（占位符）：{captured}"
         );
     }
 

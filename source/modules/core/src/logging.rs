@@ -227,10 +227,19 @@ impl RotatingLogState {
     }
 
     fn rotate(&mut self) -> std::io::Result<()> {
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        self.rotate_with_stamp(&stamp)
+    }
+
+    /// 用**给定**时间戳落一次归档（纯抽取，行为与旧 `rotate` 一致）。
+    ///
+    /// 抽出来是可测性：「同秒多次轮转不得覆盖上一条归档」这条性质只在时间戳
+    /// 相同时才成立，而测试没法把真实时钟按住不动——把 stamp 变成参数，回归
+    /// 测试才能稳定复现同秒场景（见 `same_second_compressed_rotations_keep_every_archive`）。
+    fn rotate_with_stamp(&mut self, stamp: &str) -> std::io::Result<()> {
         let _ = std::io::Write::flush(&mut self.file);
         if self.path.exists() {
-            let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-            let archive = self.unique_archive(stamp);
+            let archive = self.unique_archive(stamp.to_string());
             std::fs::rename(&self.path, &archive)?;
             if self.policy.compress {
                 // 压缩失败不是致命错误：归档仍是可读的明文文件。
@@ -255,10 +264,19 @@ impl RotatingLogState {
     }
 
     /// 同秒内多次轮转（超大记录连切）：追加序号避免互相覆盖。
+    ///
+    /// 「这个序号被占了吗」必须同时看**明文**与**已压缩**两种落点：上一轮
+    /// gzip 之后明文已被删掉，只剩 `<name>.gz`，而归档串接通常发生在同一秒内。
+    /// 此前这里用 `candidate.with_extension("gz")` 拼压缩名——`with_extension`
+    /// 替换的是**最后一个点之后**的部分，即时间戳
+    /// （`app.log.20261020-120000` → `app.log.gz`），而 `compress_in_place`
+    /// 是**追加** `.gz`（`app.log.20261020-120000.gz`）。两者永不相等，于是
+    /// 同秒第二次轮转把序号 0 判成空闲，压缩时 `File::create` 直接把上一条
+    /// 归档清空（数据丢失，且丢的是「太吵所以被切开」的那条记录）。
     fn unique_archive(&self, stamp: String) -> PathBuf {
         let mut candidate = archive_path(&self.path, &stamp);
         let mut seq = 1usize;
-        while candidate.exists() || candidate.with_extension("gz").exists() {
+        while candidate.exists() || gz_sibling(&candidate).exists() {
             candidate = archive_path(&self.path, &format!("{stamp}-{seq}"));
             seq += 1;
         }
@@ -325,14 +343,23 @@ fn list_archives(path: &std::path::Path) -> Vec<PathBuf> {
     archives.sort_by(|left, right| left.0.cmp(&right.0));
     archives.into_iter().map(|(_, path)| path).collect()
 }
+
+/// 压缩归档的落点：在明文名后**追加** `.gz`（`app.log.<stamp>` →
+/// `app.log.<stamp>.gz`）。
+///
+/// 抽成函数是为了让「查重」（[`RotatingLogState::unique_archive`]）与
+/// 「真正写」（[`compress_in_place`]）用同一个拼名规则——两处各写一份的后果
+/// 见 `unique_archive` 的注释：一旦漂移就会静默覆盖上一条归档。
+fn gz_sibling(path: &std::path::Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".gz");
+    PathBuf::from(name)
+}
+
 fn compress_in_place(path: &std::path::Path) -> std::io::Result<()> {
     use std::io::Write as _;
     let source = std::fs::File::open(path)?;
-    let target_path = {
-        let mut name = path.as_os_str().to_os_string();
-        name.push(".gz");
-        PathBuf::from(name)
-    };
+    let target_path = gz_sibling(path);
     let target = std::fs::File::create(&target_path)?;
     let mut encoder = flate2::write::GzEncoder::new(target, flate2::Compression::default());
     std::io::copy(&mut std::io::BufReader::new(source), &mut encoder)?;
@@ -575,6 +602,78 @@ mod logging_tests {
             .read_to_string(&mut decoded)
             .unwrap();
         assert_eq!(decoded, "abcd");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 已压缩的归档占着某个时间戳的序号时，`unique_archive` 必须让位。
+    ///
+    /// 回归（数据丢失）：`unique_archive` 曾用 `candidate.with_extension("gz")`
+    /// 拼压缩名判断占用，而 `compress_in_place` 是**追加** `.gz`
+    /// （`app.log.20261020-120000` → `app.log.20261020-120000.gz`）。
+    /// `with_extension` 得到的却是 `app.log.gz` ——一个永不存在的路径，于是
+    /// 「明文已被压缩、只剩 .gz」的同秒序号被判成空闲。
+    #[test]
+    fn unique_archive_skips_stamp_whose_gz_sibling_exists() {
+        let dir = scratch("unique-gz");
+        let path = dir.join("app.log");
+        let writer = RotatingLogWriter::open(path.clone(), policy(1024, 8, true)).unwrap();
+        let state = writer.state.lock().unwrap();
+        let stamp = "20261020-120000";
+        assert_eq!(
+            state.unique_archive(stamp.to_string()),
+            dir.join("app.log.20261020-120000"),
+            "首选名应是明文归档名"
+        );
+        // 模拟该轮归档已经压缩完成：明文被删，只剩 .gz。
+        std::fs::write(dir.join("app.log.20261020-120000.gz"), b"old").unwrap();
+        assert_eq!(
+            state.unique_archive(stamp.to_string()),
+            dir.join("app.log.20261020-120000-1"),
+            "同秒归档必须让位（.gz 也算占用），否则压缩会覆盖上一条"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同秒两次压缩轮转：两条归档都在、内容一字不少。
+    ///
+    /// 用固定 stamp 走 `rotate_with_stamp`，因此与真实时钟无关（不依赖“两次
+    /// 落在同一秒”的运气）。旧实现在这里会只剩一条归档（后一条压缩时
+    /// `File::create` 清空了前一条），故断言“全部内容保留”即回归判据。
+    #[test]
+    fn same_second_compressed_rotations_keep_every_archive() {
+        let dir = scratch("same-stamp");
+        let path = dir.join("app.log");
+        let writer = RotatingLogWriter::open(path.clone(), policy(1024, 8, true)).unwrap();
+        let stamp = "20261020-120000";
+        for chunk in ["first", "second"] {
+            write_event(&writer, chunk.as_bytes(), b"");
+            let mut state = writer.state.lock().unwrap();
+            state.rotate_with_stamp(stamp).unwrap();
+        }
+        let archives = list_archives(&path);
+        assert_eq!(
+            archives.len(),
+            2,
+            "同秒两次轮转必须留两条归档: {archives:?}"
+        );
+        let mut decoded: Vec<String> = Vec::new();
+        for archive in &archives {
+            let text = if archive.to_string_lossy().ends_with(".gz") {
+                let mut text = String::new();
+                flate2::read::GzDecoder::new(std::fs::File::open(archive).unwrap())
+                    .read_to_string(&mut text)
+                    .unwrap();
+                text
+            } else {
+                std::fs::read_to_string(archive).unwrap()
+            };
+            decoded.push(text);
+        }
+        assert_eq!(
+            decoded,
+            vec!["first".to_string(), "second".to_string()],
+            "归档内容必须完整保序（旧实现会丢掉前一条）: {archives:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
