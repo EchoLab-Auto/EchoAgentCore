@@ -40,6 +40,13 @@ type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 
 
 /// 宿主接缝：只有宿主做得了的那几件事。
 pub trait SessionCommandHost: Send + Sync {
+    /// 为一条命令解析并固定目标实例。返回句柄的所有能力必须作用于同一代，
+    /// 后续不得按 team 再查询注册表；Arc 保证异步加载/等待期间实例仍存活。
+    fn bind_target(
+        self: Arc<Self>,
+        team_id: Option<&str>,
+    ) -> Result<Arc<dyn SessionCommandHost>, String>;
+
     /// 命令到达的人格 id（`None` = 未归因的嵌入式宿主）。
     fn self_team_id(&self) -> Option<String>;
 
@@ -83,6 +90,7 @@ pub trait SessionCommandHost: Send + Sync {
 struct Target {
     team_id: Option<String>,
     trunk: Arc<TrunkStore>,
+    host: Arc<dyn SessionCommandHost>,
 }
 
 impl Target {
@@ -110,23 +118,12 @@ impl Target {
         host: &Arc<dyn SessionCommandHost>,
         team_id: Option<String>,
     ) -> Result<Self, String> {
-        match team_id {
-            None => Ok(Self {
-                team_id: None,
-                trunk: host.trunk(),
-            }),
-            Some(id) => match host.resolve_trunk(&id) {
-                Some(trunk) => Ok(Self {
-                    team_id: Some(id),
-                    trunk,
-                }),
-                None if host.self_team_id().as_deref() == Some(id.as_str()) => Ok(Self {
-                    team_id: Some(id),
-                    trunk: host.trunk(),
-                }),
-                None => Err(format!("team {id} 不存在")),
-            },
-        }
+        let bound = Arc::clone(host).bind_target(team_id.as_deref())?;
+        Ok(Self {
+            team_id,
+            trunk: bound.trunk(),
+            host: bound,
+        })
     }
 }
 
@@ -180,7 +177,7 @@ impl SessionCommandHandler {
                         return Ok(());
                     }
                 };
-                let _turn_guard = match self
+                let _turn_guard = match target
                     .host
                     .quiesce_session(target.team_id.as_deref(), &session)
                     .await
@@ -197,7 +194,7 @@ impl SessionCommandHandler {
                     }
                 };
                 let result = target.trunk.clear_session(&session).await;
-                self.host.forget_session_provider(&session);
+                target.host.forget_session_provider(&session);
                 if let Err(error) = result {
                     self.after_write_result(
                         &target,
@@ -232,7 +229,7 @@ impl SessionCommandHandler {
                         return Ok(());
                     }
                 };
-                let _turn_guard = match self
+                let _turn_guard = match target
                     .host
                     .quiesce_session(target.team_id.as_deref(), &session)
                     .await
@@ -289,7 +286,7 @@ impl SessionCommandHandler {
                     }
                 };
                 // 压缩要 provider + 策略模块 → 委托宿主（见模块注释的表）。
-                let result = self.host.compact(team_id, &session, keep).await;
+                let result = target.host.compact(team_id, &session, keep).await;
                 match result {
                     Ok(message) => {
                         self.after_write(&target, &session, message).await;
@@ -322,7 +319,7 @@ impl SessionCommandHandler {
     /// 即使保存失败也刷新实际内存状态，不能发出成功回执。
     async fn after_write_result(&self, target: &Target, session: &str, notice: String, ok: bool) {
         let messages = elide_reasoning_for_wire(target.trunk.timeline_snapshot());
-        self.host.emit(BackendEvent::TrunkTimeline {
+        target.host.emit(BackendEvent::TrunkTimeline {
             messages,
             seq: target.trunk.timeline_seq(),
             team_id: target.team_id.clone(),
@@ -331,8 +328,8 @@ impl SessionCommandHandler {
         });
         // 快照必须发给**被清理的会话**：发 `None` 会落到本地 TUI 会话，
         // 当前窗口的上下文面板因此不刷新（2026-10 作用域普查）。
-        self.host.emit_context_snapshot(session).await;
-        self.host.emit(BackendEvent::Notice {
+        target.host.emit_context_snapshot(session).await;
+        target.host.emit(BackendEvent::Notice {
             team_id: target.team_id.clone(),
             session_id: Some(session.to_string()),
             ok,
@@ -350,7 +347,7 @@ impl SessionCommandHandler {
         session: &str,
     ) -> Result<String, String> {
         let emit = |phase: CompactionPhase, done, total, message: String| {
-            self.host.emit(BackendEvent::CompactionProgress {
+            target.host.emit(BackendEvent::CompactionProgress {
                 team_id: target.team_id.clone(),
                 session_id: Some(session.to_string()),
                 phase: phase.as_str().to_string(),
@@ -416,6 +413,16 @@ mod tests {
     }
 
     impl SessionCommandHost for FakeHost {
+        fn bind_target(
+            self: Arc<Self>,
+            team_id: Option<&str>,
+        ) -> Result<Arc<dyn SessionCommandHost>, String> {
+            if team_id.is_some_and(|id| id != "self") {
+                return Err("team 不存在".into());
+            }
+            Ok(self)
+        }
+
         fn self_team_id(&self) -> Option<String> {
             Some("self".into())
         }

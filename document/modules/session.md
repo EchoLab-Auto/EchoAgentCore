@@ -49,6 +49,8 @@ echo-agent（宿主） ──依赖──► agent-module-session
 - **`mount` 不加载任何会话**：只把工厂 provide 进 `Ctx`。trunk 由宿主在构造 persona 时按需 `create`——部署里可能一个 persona 都不启用，提前加载只会制造空文件
 - **写命令要的宿主接缝**在 `mount` 时绑定、处理命令时取用（`SESSION_COMMAND_HOST_KEY`）：清理/归档/压缩要触碰的东西（会话目录、归档轮转、LLM 摘要调用）都在宿主侧，模块不持有路径
 
+会话写命令通过 `SessionCommandHost::bind_target` 在加载之前固定一个目标实例句柄。句柄的 trunk、quiesce、compact、模型覆盖清理和上下文快照必须属于同一个 Agent；后续不得重新按 team 查询注册表。绑定句柄按命令持有，不缓存跨命令的目标。
+
 ## 启停与门控
 
 - `kind = session`，persona 白名单参与：`enabled_modules` 里去掉它，该人格的会话写命令（清理/归档/压缩）不再被派发

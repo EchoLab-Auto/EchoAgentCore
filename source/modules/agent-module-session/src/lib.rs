@@ -204,6 +204,13 @@ mod tests {
     struct StubHost;
 
     impl SessionCommandHost for StubHost {
+        fn bind_target(
+            self: Arc<Self>,
+            _team_id: Option<&str>,
+        ) -> Result<Arc<dyn SessionCommandHost>, String> {
+            Ok(self)
+        }
+
         fn self_team_id(&self) -> Option<String> {
             None
         }

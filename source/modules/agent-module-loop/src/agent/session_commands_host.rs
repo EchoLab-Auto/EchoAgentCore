@@ -39,11 +39,15 @@ const QUIESCE_POLL: Duration = Duration::from_millis(10);
 /// 宿主适配器：以"某个 persona"为缺省视角的会话写命令。
 pub struct AgentSessionCommandHost {
     agent: Arc<Agent>,
+    bound: bool,
 }
 
 impl AgentSessionCommandHost {
     pub fn new(agent: Arc<Agent>) -> Self {
-        Self { agent }
+        Self {
+            agent,
+            bound: false,
+        }
     }
 
     /// 解析目标 persona（`None` / 解析不到 = 本 agent）。
@@ -57,6 +61,13 @@ impl AgentSessionCommandHost {
     /// 先查注册表，注册表没有时**只允许**回退到本 agent（team id 相同）；
     /// 解析不到且不是自己 → 明确报错，绝不把 A 的 session 按 B 的意图清理。
     fn resolve_agent(&self, team_id: Option<&str>) -> Result<Arc<Agent>, String> {
+        if self.bound {
+            return if team_id.is_none() || team_id == self.agent.team_id().as_deref() {
+                Ok(Arc::clone(&self.agent))
+            } else {
+                Err("绑定的命令目标与 team 不一致".into())
+            };
+        }
         match team_id {
             None => Ok(Arc::clone(&self.agent)),
             Some(id) => {
@@ -101,12 +112,21 @@ impl AgentSessionCommandHost {
 }
 
 impl SessionCommandHost for AgentSessionCommandHost {
+    fn bind_target(
+        self: Arc<Self>,
+        team_id: Option<&str>,
+    ) -> Result<Arc<dyn SessionCommandHost>, String> {
+        let agent = self.resolve_agent(team_id)?;
+        Ok(Arc::new(Self { agent, bound: true }))
+    }
+
     fn self_team_id(&self) -> Option<String> {
         self.agent.team_id()
     }
 
     fn resolve_trunk(&self, team_id: &str) -> Option<Arc<TrunkStore>> {
-        self.target(team_id)
+        self.resolve_agent(Some(team_id))
+            .ok()
             .map(|agent| Arc::new(agent.trunk.clone()))
     }
 
@@ -116,6 +136,8 @@ impl SessionCommandHost for AgentSessionCommandHost {
 
     fn forget_session_provider(&self, session_id: &str) {
         self.agent.model.session_providers.remove(session_id);
+        // 同时清掉持久化意图，避免下一次 resolve/重启惰性恢复旧覆盖。
+        self.agent.model.session_api.clear(session_id);
     }
 
     /// 在 clear / archive **动手之前**把目标会话的在途 turn 停下来。
@@ -196,21 +218,16 @@ impl SessionCommandHost for AgentSessionCommandHost {
         keep_recent: usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
-        let agent = Arc::clone(&self.agent);
-        let session = session_id.to_string();
+        // 在创建 future 前绑定一次；等待/执行期间不再查注册表。
+        let target = self.resolve_agent(team_id.as_deref());
         Box::pin(async move {
-            // team 路由：有 team_id 就压到目标人格上；解析不到且不是自己
-            // → 「不存在」（不回退到自身——那会把 A 的历史按 B 的意图压掉）。
-            match team_id.as_deref() {
-                Some(id) => match agent.registry().and_then(|manager| manager.resolve(id)) {
-                    Some(target) => target.compact_session_history(&session, keep_recent).await,
-                    None if agent.team_id().as_deref() != Some(id) => {
-                        Err(format!("team {id} 不存在"))
-                    }
-                    None => agent.compact_session_history(&session, keep_recent).await,
-                },
-                None => agent.compact_session_history(&session, keep_recent).await,
-            }
+            target?
+                .compact_session_history(session_id, keep_recent)
+                .await
         })
     }
 }
+
+#[cfg(test)]
+#[path = "session_commands_host_tests.rs"]
+mod tests;
