@@ -2226,6 +2226,360 @@ async fn archive_history_without_existing_file_errors() {
     assert!(err.contains("没有可归档"), "{err}");
 }
 
+// ── 归档两阶段提交（问题 1）：确定性慢 IO 窗口 ─────────────────────────
+//
+// 归档 IO 用测试钩子卡住（不 sleep 赌调度）：钩子进入 = 快照与提交凭据
+// 已确定；测试线程在这个窗口里执行 append / push / 周期保存，再放行。
+// 旧实现整个窗口持有 commit_barrier 写锁，这些写会直接卡死；新实现
+// 只在锁内捕获快照、锁外写归档、锁内核对后清理。
+
+struct ArchiveScratch(std::path::PathBuf);
+
+impl ArchiveScratch {
+    fn new(tag: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "echo-archive-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for ArchiveScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// 安装“归档 IO 卡住”钩子：返回（已进入钩子的通知，放行门）。
+fn install_archive_io_gate(
+    store: &TrunkStore,
+    _marker: &str,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    store.install_archive_io_hook(Box::new(move || {
+        let _ = entered_tx.send(());
+        // 测试失败时 release 端会先被丢弃：recv 返回 Err，钩子照常退出，
+        // 不把 blocking 线程永久挂住。
+        let _ = release_rx.recv();
+    }));
+    (entered_rx, release_tx)
+}
+
+fn wait_archive_io_gate(entered: &std::sync::mpsc::Receiver<()>) {
+    entered
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("archive should reach the blocking IO gate");
+}
+
+fn event_text(event: &echo_session::SessionEvent) -> String {
+    serde_json::to_string(event).expect("event serializes")
+}
+
+fn events_text(events: &[echo_session::SessionEvent]) -> String {
+    events.iter().map(event_text).collect()
+}
+
+fn archive_backup_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files: Vec<_> = std::fs::read_dir(dir.join("archives"))
+        .map(|read| read.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    files.sort();
+    files
+}
+
+/// 归档 IO 阻塞期间：其他会话 append/push 与周期保存都必须能完成；
+/// 目标会话归档仍可提交（只核对目标会话，不被其他会话的追加拒绝）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_io_window_keeps_other_session_writes_and_periodic_save_live() {
+    let dir = ArchiveScratch::new("io-other");
+    let path = dir.path().join("sessions.json");
+    let store = TrunkStore::new(100_000);
+    store.set_persist_path(&path);
+    store.append_event(ev_user("s", "target-before"));
+    store.append_event(ev_user("o", "other-before"));
+
+    let (entered, release) = install_archive_io_gate(&store, "io-other");
+    let archive_store = store.clone();
+    let archive_task = tokio::spawn(async move { archive_store.archive_session("s").await });
+    wait_archive_io_gate(&entered);
+
+    let writer_store = store.clone();
+    let writer = tokio::task::spawn_blocking(move || {
+        writer_store.append_event(ev_user("o", "other-during"));
+        writer_store.push_timeline(agent_module_management::protocol::TimelineMessage::system(
+            "other-note",
+            "o",
+            1,
+        ));
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+        .await
+        .expect("other-session append/push must not block behind archive IO")
+        .expect("writer task");
+    tokio::time::timeout(std::time::Duration::from_secs(5), store.save_now_checked())
+        .await
+        .expect("periodic save must not block behind archive IO")
+        .expect("periodic save");
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("other-during"),
+        "periodic save during the archive window wrote the live log"
+    );
+
+    release.send(()).unwrap();
+    let archive = archive_task.await.expect("join").expect("archive succeeds");
+
+    assert!(store.events_for_session("s").is_empty(), "target cleared");
+    assert!(
+        events_text(&store.events_for_session("o")).contains("other-during"),
+        "other-session events retained"
+    );
+    let backup = std::fs::read_to_string(&archive).unwrap();
+    assert!(backup.contains("target-before"));
+    assert!(
+        !backup.contains("other-during"),
+        "backup is the pre-IO snapshot"
+    );
+    assert!(
+        store
+            .timeline
+            .lock()
+            .iter()
+            .any(|entry| entry.session_id == "s" && entry.content.contains("会话历史已归档")),
+        "archive notice pushed after the commit check"
+    );
+}
+
+/// 目标会话在归档 IO 窗口内 append：提交必须拒绝清理，在线历史与备份都保留。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_rejects_target_append_during_io_and_keeps_history_with_backup() {
+    let dir = ArchiveScratch::new("io-target-append");
+    let path = dir.path().join("sessions.json");
+    let store = TrunkStore::new(100_000);
+    store.set_persist_path(&path);
+    store.append_event(ev_user("s", "before"));
+    store.append_event(ev_user("o", "other"));
+
+    let (entered, release) = install_archive_io_gate(&store, "io-target-append");
+    let archive_store = store.clone();
+    let archive_task = tokio::spawn(async move { archive_store.archive_session("s").await });
+    wait_archive_io_gate(&entered);
+
+    let writer_store = store.clone();
+    let writer =
+        tokio::task::spawn_blocking(move || writer_store.append_event(ev_user("s", "during")));
+    tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+        .await
+        .expect("target append must not block behind archive IO")
+        .expect("writer task");
+
+    release.send(()).unwrap();
+    let error = archive_task
+        .await
+        .expect("join")
+        .expect_err("target changed during IO must refuse the clear");
+    assert!(error.contains("归档期间历史已变化"), "{error}");
+    assert!(error.contains("备份已保留"), "{error}");
+
+    let live = events_text(&store.events_for_session("s"));
+    assert!(live.contains("before") && live.contains("during"), "{live}");
+    assert!(
+        events_text(&store.events_for_session("o")).contains("other"),
+        "other-session writes survive a rejected clear"
+    );
+    let files = archive_backup_files(dir.path());
+    assert_eq!(
+        files.len(),
+        1,
+        "one backup written before the rejected clear"
+    );
+    let backup = std::fs::read_to_string(&files[0]).unwrap();
+    assert!(backup.contains("before"));
+    assert!(
+        !backup.contains("during"),
+        "the backup holds the snapshot (pre-append) state"
+    );
+}
+
+/// 目标会话在归档 IO 窗口内 `insert_event_after_sequence`（并发分支归并）：
+/// 事件条数与顺序都变了，必须拒绝清理。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_rejects_target_insert_during_io() {
+    let dir = ArchiveScratch::new("io-target-insert");
+    let path = dir.path().join("sessions.json");
+    let store = TrunkStore::new(100_000);
+    store.set_persist_path(&path);
+    store.append_event(seq_user("s", "question", 1));
+
+    let (entered, release) = install_archive_io_gate(&store, "io-target-insert");
+    let archive_store = store.clone();
+    let archive_task = tokio::spawn(async move { archive_store.archive_session("s").await });
+    wait_archive_io_gate(&entered);
+
+    let writer_store = store.clone();
+    let writer = tokio::task::spawn_blocking(move || {
+        writer_store.insert_event_after_sequence(1, assistant_reply("s", "answer"))
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+        .await
+        .expect("target insert must not block behind archive IO")
+        .expect("writer task");
+
+    release.send(()).unwrap();
+    let error = archive_task
+        .await
+        .expect("join")
+        .expect_err("inserted branch reply must refuse the clear");
+    assert!(error.contains("归档期间历史已变化"), "{error}");
+
+    let live = events_text(&store.events_for_session("s"));
+    assert!(
+        live.contains("question") && live.contains("answer"),
+        "{live}"
+    );
+    let files = archive_backup_files(dir.path());
+    assert_eq!(files.len(), 1);
+    let backup = std::fs::read_to_string(&files[0]).unwrap();
+    assert!(backup.contains("question"));
+    assert!(!backup.contains("answer"));
+}
+
+/// 同条数改写也必须挡住：只比条数会漏掉 replace_all / 归并插入后的同数替换。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_rejects_same_count_target_rewrite_during_io() {
+    let dir = ArchiveScratch::new("io-target-rewrite");
+    let path = dir.path().join("sessions.json");
+    let store = TrunkStore::new(100_000);
+    store.set_persist_path(&path);
+    store.append_event(ev_user("s", "original"));
+
+    let (entered, release) = install_archive_io_gate(&store, "io-target-rewrite");
+    let archive_store = store.clone();
+    let archive_task = tokio::spawn(async move { archive_store.archive_session("s").await });
+    wait_archive_io_gate(&entered);
+
+    // 条数保持 1：不是 append，而是同数替换（例如 insert/归并路径把同条数
+    // 事件改写掉）。提交校验若只看条数会把它当“未变化”。
+    store.event_log.replace_all(vec![ev_user("s", "rewritten")]);
+
+    release.send(()).unwrap();
+    let error = archive_task
+        .await
+        .expect("join")
+        .expect_err("same-count rewrite must refuse the clear");
+    assert!(error.contains("归档期间历史已变化"), "{error}");
+
+    let live = store.events_for_session("s");
+    assert_eq!(live.len(), 1, "same count as the snapshot");
+    assert!(event_text(&live[0]).contains("rewritten"), "{live:?}");
+    let files = archive_backup_files(dir.path());
+    assert_eq!(files.len(), 1);
+    let backup = std::fs::read_to_string(&files[0]).unwrap();
+    assert!(backup.contains("original"));
+    assert!(!backup.contains("rewritten"));
+}
+
+/// 目标会话时间线就地修改（内容变化 + seq 推进）也必须拒绝清理。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_rejects_target_timeline_patch_during_io() {
+    let dir = ArchiveScratch::new("io-target-timeline");
+    let path = dir.path().join("sessions.json");
+    let store = TrunkStore::new(100_000);
+    store.set_persist_path(&path);
+    store.append_event(ev_user("s", "event"));
+    store.push_timeline(agent_module_management::protocol::TimelineMessage::system(
+        "original-entry",
+        "s",
+        1,
+    ));
+
+    let (entered, release) = install_archive_io_gate(&store, "io-target-timeline");
+    let archive_store = store.clone();
+    let archive_task = tokio::spawn(async move { archive_store.archive_session("s").await });
+    wait_archive_io_gate(&entered);
+
+    {
+        let mut timeline = store.timeline_mut();
+        let entry = timeline
+            .iter_mut()
+            .find(|entry| entry.session_id == "s")
+            .expect("target timeline entry");
+        entry.content = "patched-entry".into();
+        entry.seq = store.bump_timeline_seq();
+    }
+
+    release.send(()).unwrap();
+    let error = archive_task
+        .await
+        .expect("join")
+        .expect_err("in-place timeline patch must refuse the clear");
+    assert!(error.contains("归档期间历史已变化"), "{error}");
+    assert!(
+        store
+            .timeline
+            .lock()
+            .iter()
+            .any(|entry| entry.session_id == "s" && entry.content == "patched-entry"),
+        "live timeline keeps the patch"
+    );
+    let files = archive_backup_files(dir.path());
+    assert_eq!(files.len(), 1);
+    let backup = std::fs::read_to_string(&files[0]).unwrap();
+    assert!(backup.contains("original-entry"));
+    assert!(!backup.contains("patched-entry"));
+}
+
+/// 全量 archive_history 做全量核对：归档 IO 窗口内其他会话追加同样拒绝清理。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_history_rejects_other_session_append_during_io() {
+    let dir = ArchiveScratch::new("io-full");
+    let path = dir.path().join("sessions.json");
+    let store = TrunkStore::new(100_000);
+    store.set_persist_path(&path);
+    store.append_event(ev_user("s", "target-before"));
+    store.append_event(ev_user("o", "other-before"));
+
+    let (entered, release) = install_archive_io_gate(&store, "io-full");
+    let archive_store = store.clone();
+    let archive_task = tokio::spawn(async move { archive_store.archive_history().await });
+    wait_archive_io_gate(&entered);
+
+    let writer_store = store.clone();
+    let writer = tokio::task::spawn_blocking(move || {
+        writer_store.append_event(ev_user("o", "other-during"))
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+        .await
+        .expect("append must not block behind archive IO")
+        .expect("writer task");
+
+    release.send(()).unwrap();
+    let error = archive_task
+        .await
+        .expect("join")
+        .expect_err("full archive must verify the whole log");
+    assert!(error.contains("归档期间历史已变化"), "{error}");
+    assert!(events_text(&store.events_for_session("s")).contains("target-before"));
+    assert!(events_text(&store.events_for_session("o")).contains("other-during"));
+    let files = archive_backup_files(dir.path());
+    assert_eq!(files.len(), 1);
+    let backup = std::fs::read_to_string(&files[0]).unwrap();
+    assert!(backup.contains("target-before") && backup.contains("other-before"));
+    assert!(!backup.contains("other-during"));
+}
+
 #[test]
 fn prune_archives_keeps_newest_and_ignores_foreign_stems() {
     let dir = std::env::temp_dir().join(format!("echo-prune-{}", std::process::id()));

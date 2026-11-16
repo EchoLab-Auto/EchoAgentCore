@@ -28,9 +28,9 @@ pub use history::{
     EXPAND_DEPTH_PER_REQUEST, EXPAND_HARD_CAP,
 };
 
+use agent_module_management::protocol::SessionInfo;
 use echo_defs::llm::LlmProvider;
 use echo_defs::message::ChatMessage;
-use agent_module_management::protocol::SessionInfo;
 
 /// 结构化会话标识（口径单源 = `echo_session::SessionKey`，解耦计划
 /// Phase 3 ⑤：词汇下沉，使工作区模块与其它模块能直接构造会话 id）。
@@ -466,10 +466,16 @@ impl PersistOrigin {
     }
 }
 
+#[cfg(test)]
+pub(crate) type ArchiveIoHook = Box<dyn FnOnce() + Send>;
+
 /// **仅测试**的落盘插桩（`#[cfg(test)]` 字段，生产构建不存在）。
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct PersistTestHooks {
+    /// 归档 IO 的一次性插桩；共享给同一 store 的克隆，无全局注册表。
+    pub(crate) before_archive_io: Arc<std::sync::Mutex<Option<ArchiveIoHook>>>,
+
     /// 在"快照序列化完成 → 写 tmp/rename"之间执行一次（取走后即清空）。
     pub(crate) before_commit: std::sync::Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
     /// 在"文件已解析成 ParsedDocument → 提交进 store"之间执行一次
@@ -625,9 +631,12 @@ impl Clone for TrunkStore {
             load_error: Arc::clone(&self.load_error),
             load_stage: Arc::clone(&self.load_stage),
             load_gate: Arc::clone(&self.load_gate),
-            // 钩子是"这一次写盘"的测试插桩，不进克隆。
+            // 写盘/加载钩子不进克隆；归档 IO 钩子按 store 共享，取出后消费一次。
             #[cfg(test)]
-            hooks: PersistTestHooks::default(),
+            hooks: PersistTestHooks {
+                before_archive_io: Arc::clone(&self.hooks.before_archive_io),
+                ..PersistTestHooks::default()
+            },
         }
     }
 }
@@ -781,10 +790,7 @@ impl TrunkStore {
     /// `archive` 两个子模块都要读它——加访问器而不是把字段提成 `pub(crate)`：
     /// 字段是 `Mutex`，直读会把锁语义散到各处。
     pub fn persist_path(&self) -> Option<std::path::PathBuf> {
-        self.persist_path
-            .lock()
-            .ok()
-            .and_then(|slot| slot.clone())
+        self.persist_path.lock().ok().and_then(|slot| slot.clone())
     }
 
     pub fn set_persist_path(&self, path: impl Into<std::path::PathBuf>) {
@@ -891,7 +897,10 @@ impl TrunkStore {
 
     /// 是否有未落盘的改动。
     pub fn is_dirty(&self) -> bool {
-        self.dirty_generation() != self.persisted_gen.load(std::sync::atomic::Ordering::Acquire)
+        self.dirty_generation()
+            != self
+                .persisted_gen
+                .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// 最近一次加载失败的原因（`None` = 正常 / 还没加载过）。

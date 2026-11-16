@@ -26,6 +26,39 @@ enum SaveAttempt {
     Failed(PersistSaveError),
 }
 
+/// **结构化**内存快照：锁内只 clone 数据，MB 级 pretty JSON 序列化与
+/// 文件 IO 在锁外完成（归档两阶段提交，2026-11）。
+///
+/// 字段与持久化文档一一对应，捕获时的顺序/内容就是归档要写出的内容。
+pub(super) struct PersistSnapshot {
+    pub(super) header: Option<echo_session::SessionHeader>,
+    /// 事件日志（事实来源；每会话投影加载时重建）。
+    pub(super) events: Vec<echo_session::SessionEvent>,
+    pub(super) identities: Vec<serde_json::Value>,
+    pub(super) timeline: Vec<agent_module_management::protocol::TimelineMessage>,
+}
+
+impl PersistSnapshot {
+    /// 序列化为持久化文档。返回 `None` 时调用方应跳过写入（不能写过
+    /// 半份/空文档覆盖历史）。
+    pub(super) fn serialize(&self) -> Option<String> {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "version": PERSIST_VERSION,
+            // The event log is the source of truth; per-session histories are
+            // re-projected from it on load.
+            "header": self.header,
+            "events": self.events,
+            "identities": self.identities,
+            "timeline": self.timeline,
+        }))
+        .map_err(|error| {
+            tracing::error!(%error, "trunk serialization failed, skipping save");
+            error
+        })
+        .ok()
+    }
+}
+
 impl TrunkStore {
     /// Save sessions to JSON file if dirty.
     pub async fn maybe_save(&self) {
@@ -756,33 +789,29 @@ impl TrunkStore {
         let _commit_guard = self.commit_barrier.read();
         self.serialize_under_commit_guard()
     }
-
-    /// 调用方已持有 commit_barrier（归档为写锁），不得再次取同一把锁。
+    /// 调用方已持有 commit_barrier（save 为读锁、归档为读锁捕获），
+    /// 不得再次取同一把锁。
     pub(super) fn serialize_under_commit_guard(&self) -> Option<String> {
-        // 短锁内 clone 后立即释放：序列化（MB 级 pretty JSON）不占用
-        // timeline 锁，热路径 push 不会被落盘拖住。
-        let timeline = self.timeline_snapshot();
-        let identities = self.all().iter().map(identity_metadata).collect::<Vec<_>>();
-        let events = self.event_log.log();
-        let header = self
-            .header
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        serde_json::to_string_pretty(&serde_json::json!({
-            "version": PERSIST_VERSION,
-            // The event log is the source of truth; per-session histories are
-            // re-projected from it on load.
-            "header": header,
-            "events": events,
-            "identities": identities,
-            "timeline": &timeline,
-        }))
-        .map_err(|error| {
-            tracing::error!(%error, "trunk serialization failed, skipping save");
-            error
-        })
-        .ok()
+        self.snapshot_under_commit_guard().serialize()
+    }
+
+    /// 在调用方持有的 `commit_barrier` 临界区内捕获结构化快照。
+    ///
+    /// 只做 clone（timeline / identities / events / header），不做 JSON
+    /// 序列化——归档把它移到锁外（blocking 线程）执行，缩短写锁窗口。
+    pub(super) fn snapshot_under_commit_guard(&self) -> PersistSnapshot {
+        PersistSnapshot {
+            // 短锁内 clone 后立即释放：序列化（MB 级 pretty JSON）不占用
+            // timeline 锁，热路径 push 不会被落盘拖住。
+            timeline: self.timeline_snapshot(),
+            identities: self.all().iter().map(identity_metadata).collect::<Vec<_>>(),
+            events: self.event_log.log(),
+            header: self
+                .header
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        }
     }
 
     /// 把隔离解析出来的文档一次性安装进**空 store**。

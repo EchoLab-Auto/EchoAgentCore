@@ -4,6 +4,26 @@
 
 use super::*;
 
+/// 归档第一阶段（锁内）捕获的**提交凭据**：第二阶段在同一把
+/// `commit_barrier` 写锁内逐项核对，全部一致才允许清理在线历史。
+///
+/// 事件用 SHA-256 指纹而不是条数：`insert_after_sequence` / 同数替换
+/// （`replace_all`、归并路径）都能在不改变条数的情况下改写内容，只比
+/// 条数会把它们当成“未变化”而错误清理。时间线条目没有现成指纹类型，
+/// 且规模有上限（`TRUNK_TIMELINE_MAX`），直接保留目标/全量条目的副本做
+/// **逐字段等值**比较——就地修改（content / tool output / seq）同样会被
+/// 挡住，是“可靠等价版本”。
+struct ArchiveCommit {
+    /// 快照时的历史内容代次（清空 / 压缩会推进）。
+    history_epoch: u64,
+    /// 目标会话（`None` = 全量）事件指纹。
+    event_fingerprint: echo_session::CompactionPrefix,
+    /// 快照时目标事件条数（仅诊断文案；判定以指纹为准）。
+    event_count: usize,
+    /// 快照时目标会话（`None` = 全量）的时间线条目。
+    timeline: Vec<agent_module_management::protocol::TimelineMessage>,
+}
+
 impl TrunkStore {
     /// Erase all conversation memory: the durable event log, the in-memory
     /// trunk projection and the display timeline, then persist immediately so
@@ -45,17 +65,25 @@ impl TrunkStore {
     }
 
     fn clear_history_under_commit_guard(&self) -> (usize, usize) {
+        // 先拿 timeline 锁，再清事件日志/投影：归档提交用同一个 guard
+        // 完成“核对目标时间线 → 清时间线 → 推归档提示”，`timeline_mut`
+        // 的就地修改插不进核对与清理之间。
+        let mut timeline = self.timeline.lock();
+        self.clear_history_with_timeline(&mut timeline)
+    }
+
+    /// 清空事件日志 / 投影 / 已锁定的 timeline（调用方持 timeline 锁）。
+    fn clear_history_with_timeline(
+        &self,
+        timeline: &mut Vec<agent_module_management::protocol::TimelineMessage>,
+    ) -> (usize, usize) {
         let events_cleared = self.event_log.len();
         self.event_log.clear();
         for entry in self.session_histories.iter() {
             entry.value().lock().clear();
         }
-        let timeline_cleared = {
-            let mut timeline = self.timeline.lock();
-            let count = timeline.len();
-            timeline.clear();
-            count
-        };
+        let timeline_cleared = timeline.len();
+        timeline.clear();
         self.timeline_removed.fetch_add(
             timeline_cleared as u64,
             std::sync::atomic::Ordering::Relaxed,
@@ -100,6 +128,16 @@ impl TrunkStore {
     }
 
     fn clear_session_under_commit_guard(&self, session_id: &str) -> (usize, usize, usize) {
+        let mut timeline = self.timeline.lock();
+        self.clear_session_with_timeline(session_id, &mut timeline)
+    }
+
+    /// 清空单会话的事件 / 投影 / 已锁定的 timeline（调用方持 timeline 锁）。
+    fn clear_session_with_timeline(
+        &self,
+        session_id: &str,
+        timeline: &mut Vec<agent_module_management::protocol::TimelineMessage>,
+    ) -> (usize, usize, usize) {
         let removed = self.event_log.retain_excluding_session(session_id);
         // 2026-10-15 用户报障修复（uuapi 端点 400 "field messages is
         // required"）：必须**保留映射条目并原地清空**，不能 `remove`。
@@ -113,12 +151,10 @@ impl TrunkStore {
         if let Some(history) = self.history_for(session_id) {
             history.lock().clear();
         }
-        let (timeline_removed, timeline_remaining) = {
-            let mut timeline = self.timeline.lock();
-            let before = timeline.len();
-            timeline.retain(|entry| entry.session_id != session_id);
-            (before - timeline.len(), timeline.len())
-        };
+        let before = timeline.len();
+        timeline.retain(|entry| entry.session_id != session_id);
+        let timeline_removed = before - timeline.len();
+        let timeline_remaining = timeline.len();
         self.timeline_removed.fetch_add(
             timeline_removed as u64,
             std::sync::atomic::Ordering::Relaxed,
@@ -131,6 +167,19 @@ impl TrunkStore {
     /// 归档保留上限（archives/ 下本 stem 的归档文件数，最旧先删；
     /// 2026-10 议题：此前归档只增不减，一年可达数百 MB）。
     pub const DEFAULT_ARCHIVE_MAX_FILES: usize = 20;
+
+    /// 仅测试：同一 store 克隆共享一次性钩子，在归档开始时取走。
+    /// 不依赖路径或全局变量；即使归档提前失败也不会污染下一次操作。
+    #[cfg(test)]
+    pub(super) fn install_archive_io_hook(&self, hook: Box<dyn FnOnce() + Send + 'static>) {
+        let mut slot = self
+            .hooks
+            .before_archive_io
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(slot.is_none(), "归档测试钩子尚未消费");
+        *slot = Some(hook);
+    }
 
     /// 归档文件名是否属于本 stem：`{stem}-{8位日期}-{6位时间}[-{reason}].json`。
     ///
@@ -230,56 +279,189 @@ impl TrunkStore {
     }
 
     async fn archive_scoped(&self, session: Option<String>) -> Result<String, String> {
-        // 必须在取快照之前取得：与压缩等待期间新增的事件不能漏备份。
+        // 压缩互斥仍贯穿全程：压缩的 replace_all / 另一次归档不能插入
+        // “捕获快照 → 写归档 → 提交清理”之间，否则归档与清理会指向
+        // 两个不可解释的状态。
         let _compact_guard = self.compact_lock().await;
-        let store = self.clone();
-        let archive = tokio::task::spawn_blocking(move || {
-            // 同步阻塞区：快照、可靠写出、清空是单一边界。append/push 要么
-            // 在快照前（已备份），要么在清理后（在线保留），没有双失窗口。
-            let _commit_guard = store.commit_barrier.write();
+        #[cfg(test)]
+        let io_hook = self
+            .hooks
+            .before_archive_io
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+
+        // ── 阶段 1：锁内只捕获结构化快照与提交凭据 ─────────────────────
+        //
+        // 读锁（不是写锁）：append / push 都持读锁，快照 clone 期间它们
+        // 可以继续；写锁只在下面很短的第二阶段提交窗口内持有。快照的
+        // 事件日志克隆自身在 EventLog 内部锁里是一次一致的时点副本。
+        let (snapshot, history_epoch) = {
+            let _commit_guard = self.commit_barrier.read();
+            let snapshot = self.snapshot_under_commit_guard();
             let has_content = match session.as_deref() {
                 Some(id) => {
-                    !store.event_log.events_for_session(id).is_empty()
-                        || store
-                            .timeline
-                            .lock()
-                            .iter()
-                            .any(|entry| entry.session_id == id)
+                    snapshot
+                        .events
+                        .iter()
+                        .any(|event| event.session() == Some(id))
+                        || snapshot.timeline.iter().any(|entry| entry.session_id == id)
                 }
-                None => store.has_archivable_content(),
+                None => !snapshot.events.is_empty() || !snapshot.timeline.is_empty(),
             };
             if !has_content {
                 return Err("没有可归档的历史（会话为空）".to_string());
             }
-            let data = store
-                .serialize_under_commit_guard()
-                .ok_or_else(|| "会话快照序列化失败，历史未改动".to_string())?;
-            let archive = store.write_archive_file(&data, None)?;
-            match session.as_deref() {
-                Some(id) => {
-                    store.clear_session_under_commit_guard(id);
-                }
-                None => {
-                    store.clear_history_under_commit_guard();
-                }
+            (snapshot, self.history_epoch())
+        };
+
+        // 指纹/时间线副本从同一份不可变快照推导，放在锁外：归档不需要
+        // 为 SHA-256 / 逐条 clone 占住 commit_barrier。
+        let (event_fingerprint, event_count) = match session.as_deref() {
+            Some(id) => {
+                let events: Vec<_> = snapshot
+                    .events
+                    .iter()
+                    .filter(|event| event.session() == Some(id))
+                    .cloned()
+                    .collect();
+                (echo_session::CompactionPrefix::of(&events), events.len())
             }
-            let mut timeline = store.timeline.lock();
-            store.push_timeline_locked(
-                &mut timeline,
-                agent_module_management::protocol::TimelineMessage::system(
-                    match session.as_deref() {
-                        Some(id) => format!("会话历史已归档：{archive}（会话 {id}）"),
-                        None => format!("历史已归档：{archive}"),
-                    },
-                    session.unwrap_or_default(),
-                    chrono::Utc::now().timestamp(),
-                ),
-            );
-            store.mark_dirty();
-            Ok::<_, String>(archive)
+            None => (
+                echo_session::CompactionPrefix::of(&snapshot.events),
+                snapshot.events.len(),
+            ),
+        };
+        let timeline = match session.as_deref() {
+            Some(id) => snapshot
+                .timeline
+                .iter()
+                .filter(|entry| entry.session_id == id)
+                .cloned()
+                .collect(),
+            None => snapshot.timeline.clone(),
+        };
+        let commit = ArchiveCommit {
+            history_epoch,
+            event_fingerprint,
+            event_count,
+            timeline,
+        };
+
+        // ── 阶段 1b：锁外序列化 + 可靠写出归档（blocking 线程） ────────
+        let store = self.clone();
+        let archive = tokio::task::spawn_blocking(move || {
+            let data = snapshot
+                .serialize()
+                .ok_or_else(|| "会话快照序列化失败，历史未改动".to_string())?;
+            // 仅测试：在“序列化完成 → 写归档”之间模拟慢 IO。
+            #[cfg(test)]
+            if let Some(hook) = io_hook {
+                hook();
+            }
+            store.write_archive_file(&data, None)
         })
         .await
         .map_err(|error| format!("归档任务异常，请核对内存及归档状态：{error}"))??;
+
+        // ── 阶段 2：锁内核对提交凭据，全部一致才清理 ───────────────────
+        //
+        // 变化（append / insert / 同数改写 / 时间线就地修改 / 清空 / 压缩）
+        // 一律拒绝清理，并保留刚写出的备份：错误返回，在线历史原样保留。
+        let commit_result = {
+            let _commit_guard = self.commit_barrier.write();
+            let current_epoch = self.history_epoch();
+            if current_epoch != commit.history_epoch {
+                Err(format!(
+                    "历史代次已变化（快照 {} → 当前 {current_epoch}）",
+                    commit.history_epoch
+                ))
+            } else {
+                let (current_fingerprint, current_count) = match session.as_deref() {
+                    Some(id) => {
+                        let events = self.event_log.events_for_session(id);
+                        let count = events.len();
+                        (echo_session::CompactionPrefix::of(&events), count)
+                    }
+                    None => self.event_log.with_events(|events| {
+                        (echo_session::CompactionPrefix::of(events), events.len())
+                    }),
+                };
+                let scope = if session.is_some() {
+                    "目标会话事件"
+                } else {
+                    "全量事件"
+                };
+                if current_fingerprint != commit.event_fingerprint
+                    || current_count != commit.event_count
+                {
+                    Err(format!(
+                        "{scope}内容或条数已变化（快照 {} 条，当前 {} 条）",
+                        commit.event_count, current_count
+                    ))
+                } else {
+                    // 核对与清理共用同一把 timeline 锁：`timeline_mut` 的
+                    // 就地修改（工具完成回填等）不经过 commit_barrier，
+                    // 只有把“比对 → 清目标条目 → 推归档提示”放在同一个
+                    // guard 里，才能保证不会清掉核对之后才补上的内容。
+                    let mut timeline = self.timeline.lock();
+                    let timeline_matches = match session.as_deref() {
+                        Some(id) => timeline
+                            .iter()
+                            .filter(|entry| entry.session_id == id)
+                            .eq(commit.timeline.iter()),
+                        None => timeline.as_slice() == commit.timeline.as_slice(),
+                    };
+                    let scope = if session.is_some() {
+                        "目标会话时间线"
+                    } else {
+                        "全量时间线"
+                    };
+                    if !timeline_matches {
+                        Err(format!(
+                            "{scope}内容或条数已变化（快照 {} 条，当前 {} 条）",
+                            commit.timeline.len(),
+                            timeline
+                                .iter()
+                                .filter(|entry| session
+                                    .as_deref()
+                                    .is_none_or(|id| entry.session_id == id))
+                                .count()
+                        ))
+                    } else {
+                        match session.as_deref() {
+                            Some(id) => {
+                                self.clear_session_with_timeline(id, &mut timeline);
+                            }
+                            None => {
+                                self.clear_history_with_timeline(&mut timeline);
+                            }
+                        }
+                        self.push_timeline_locked(
+                            &mut timeline,
+                            agent_module_management::protocol::TimelineMessage::system(
+                                match session.as_deref() {
+                                    Some(id) => {
+                                        format!("会话历史已归档：{archive}（会话 {id}）")
+                                    }
+                                    None => format!("历史已归档：{archive}"),
+                                },
+                                session.clone().unwrap_or_default(),
+                                chrono::Utc::now().timestamp(),
+                            ),
+                        );
+                        self.mark_dirty();
+                        Ok(())
+                    }
+                }
+            }
+        };
+        if let Err(reason) = commit_result {
+            return Err(format!(
+                "归档期间历史已变化，在线历史未清理（备份已保留：{archive}）：{reason}"
+            ));
+        }
+
         self.save_now_checked().await.map_err(|error| format!(
             "归档快照已写入 {archive}，内存历史已清理，但清理结果尚未落盘；重启可能恢复旧历史：{error}"
         ))?;
@@ -347,14 +529,6 @@ impl TrunkStore {
             total_replaced,
             total_events,
         })
-    }
-
-    /// 归档前的空档防守：事件日志与显示时间线都为空时无可归档内容。
-    pub(super) fn has_archivable_content(&self) -> bool {
-        if !self.event_log.is_empty() {
-            return true;
-        }
-        !self.timeline.lock().is_empty()
     }
 
     /// 把序列化数据写入 `archives/{stem}-{ts}[-{suffix}].json`，并按
