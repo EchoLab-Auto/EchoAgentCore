@@ -326,6 +326,8 @@ mod tests {
             BackendEvent::SubagentStarted {
                 session_id: "s1".into(),
                 task: "compare designs".into(),
+                profile: None,
+                model: None,
             },
             BackendEvent::SubagentCompleted {
                 session_id: "s1".into(),

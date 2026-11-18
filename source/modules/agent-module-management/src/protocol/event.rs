@@ -469,8 +469,16 @@ pub enum BackendEvent {
     SubagentStarted {
         session_id: String,
         task: String,
+        /// 委派的 API profile 名（`spawn_subagent.profile`；未指定 = 继承）。
+        /// 用于面板详情头展示「运行 API · 模型」。serde(default) 保旧 Core 兼容。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+        profile: Option<String>,
+        /// 实际生效的模型名（解析后；继承场景也填，来自 `provider.default_model()`）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+        model: Option<String>,
     },
-    /// An isolated subagent finished and returned control to the parent agent.
     SubagentCompleted {
         session_id: String,
         success: bool,
