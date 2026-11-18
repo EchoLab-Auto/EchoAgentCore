@@ -627,10 +627,15 @@ impl Agent {
         admin_api::run_test_api(&host, name).await;
     }
 
-    /// 查询 API 账户余额（目前仅 DeepSeek 官方端点支持 `/user/balance`）。
+    /// 查询 API 账户余额 / 订阅额度。
     ///
     /// `name` 空 = 全局默认配置，非空 = 该 profile；用 profile 自身的
-    /// api_key / base_url 请求。成功时同时落一条本地余额快照（图表数据源）。
+    /// api_key / base_url 请求。按 provider 分流：
+    ///
+    /// - `openai-chatgpt`：调 `/backend-api/codex/usage`，把配额百分比、
+    ///   套餐、重置时间塞进 `ApiBalanceResult`，**不落余额快照**（语义不同，
+    ///   进了图表会被当成 CNY 金额）。
+    /// - 其它（DeepSeek）：走 `/user/balance`，成功落一条本地余额快照。
     pub(crate) async fn query_api_balance(&self, name: &str) {
         // 手动「查余额」与周期快照共用同一把锁（2026-10 审计 P2）：慢查询
         // 叠加本轮周期 tick 会造成同秒重复采样。
@@ -643,18 +648,29 @@ impl Agent {
                 return;
             }
         };
+        let is_chatgpt = probe.provider == "openai-chatgpt";
         match fetch_balance(&probe).await {
             Ok(fetched) => {
                 // 成功即落快照：手动查询与周期任务共享同一数据源。
-                if let Some(store) = self.metrics() {
-                    store.record_balance(
-                        name,
-                        &fetched.currency,
-                        parse_amount(&fetched.total),
-                        parse_amount(&fetched.granted),
-                        parse_amount(&fetched.topped_up),
-                    );
+                // ChatGPT 通道跳过——它的"金额"其实是百分比，不是钱。
+                if !is_chatgpt {
+                    if let Some(store) = self.metrics() {
+                        store.record_balance(
+                            name,
+                            &fetched.currency,
+                            parse_amount(&fetched.total),
+                            parse_amount(&fetched.granted),
+                            parse_amount(&fetched.topped_up),
+                        );
+                    }
                 }
+                let message = if is_chatgpt {
+                    chatgpt_quota_summary(&fetched)
+                } else if fetched.available {
+                    "余额已更新".into()
+                } else {
+                    "账户当前不可用（余额不足或已停用）".into()
+                };
                 self.emit(BackendEvent::ApiBalanceResult {
                     name: name.into(),
                     ok: true,
@@ -663,11 +679,7 @@ impl Agent {
                     granted: fetched.granted,
                     topped_up: fetched.topped_up,
                     currency: fetched.currency,
-                    message: if fetched.available {
-                        "余额已更新".into()
-                    } else {
-                        "账户当前不可用（余额不足或已停用）".into()
-                    },
+                    message,
                 });
             }
             Err(message) => self.emit_balance_fail(name, message).await,
@@ -937,6 +949,52 @@ pub(crate) async fn fetch_balance(probe: &AgentConfig) -> Result<BalanceFetch, S
         reasoning_effort: probe.reasoning_effort,
     };
     agent_module_provider_llm::balance::fetch_balance(&projection).await
+}
+
+/// 把 chatgpt 通道的 `BalanceFetch`（字段被借用为配额数据）拼成人话。
+///
+/// 字段含义（见 `agent_module_provider_llm::balance::fetch_chatgpt_quota`）：
+/// - `total` = 已用百分比
+/// - `currency` = 套餐名
+/// - `granted` = reset_at（Unix 秒字符串）
+/// - `topped_up` = reset_after_seconds
+/// - `available` = 是否还能调用
+fn chatgpt_quota_summary(fetched: &BalanceFetch) -> String {
+    let plan = if fetched.currency.is_empty() {
+        "未知套餐"
+    } else {
+        fetched.currency.as_str()
+    };
+    let percent = fetched.total.as_str();
+    let reset_at: i64 = fetched.granted.parse().unwrap_or(0);
+    let reset_text = if reset_at > 0 {
+        match chrono::DateTime::from_timestamp(reset_at, 0) {
+            Some(utc) => {
+                let cn = utc.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
+                cn.format("%Y-%m-%d %H:%M").to_string()
+            }
+            None => format!("unix {reset_at}"),
+        }
+    } else {
+        "未知".to_string()
+    };
+    let secs: u64 = fetched.topped_up.parse().unwrap_or(0);
+    let countdown = if secs > 0 {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        if h > 0 {
+            format!("（约 {h} 小时 {m} 分后）")
+        } else {
+            format!("（约 {m} 分钟后）")
+        }
+    } else {
+        String::new()
+    };
+    if fetched.available {
+        format!("ChatGPT 订阅 {plan} 已用 {percent}%，{reset_text} 重置")
+    } else {
+        format!("ChatGPT 订阅 {plan} 配额已用尽（{percent}%），{reset_text} 重置{countdown}")
+    }
 }
 
 /// 宽松解析金额字符串（失败 = 0.0；不阻断快照记录）。

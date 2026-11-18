@@ -21,6 +21,8 @@
 
 pub mod auth;
 pub mod responses;
+pub mod usage;
 
 pub use auth::{ChatGptAuth, PendingLogin};
 pub use responses::ChatGptProvider;
+pub use usage::ChatGptUsage;

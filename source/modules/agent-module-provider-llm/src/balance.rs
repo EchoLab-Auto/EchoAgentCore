@@ -61,9 +61,42 @@ pub fn parse_amount(text: &str) -> f64 {
     text.trim().parse::<f64>().unwrap_or(0.0)
 }
 
-/// 请求 DeepSeek `/user/balance`（15s 超时；**无副作用**——不 emit、不记录，
+/// 请求供应商余额/额度（15s 超时；**无副作用**——不 emit、不记录，
 /// 供手动查询与周期快照共用）。
+///
+/// 按 provider 分流：
+/// - `openai-chatgpt`：走 [`crate::chatgpt::usage`]，把配额百分比塞进 `total`，
+///   `plan_type` 塞进 `currency`，`granted` / `topped_up` 留空——语义对齐
+///   「总余额 / 币种」但不真的是钱。人话摘要由宿主 `api_admin` 拼。
+/// - 其它（DeepSeek）：走 `/user/balance`。
 pub async fn fetch_balance(probe: &ProviderConfig) -> Result<BalanceFetch, String> {
+    if probe.provider == "openai-chatgpt" {
+        return fetch_chatgpt_quota().await;
+    }
+    fetch_deepseek_balance(probe).await
+}
+
+/// ChatGPT 订阅额度 → `BalanceFetch` 的窄投影。
+///
+/// 字段借用（语义上不是钱，但能让现有 `ApiBalanceResult` 直接携带）：
+/// - `available` = `rate_limit.allowed`（配额触顶 = false）
+/// - `total` = `used_percent` 字符串（如 `"100"`）
+/// - `currency` = `plan_type`（如 `"prolite"`）
+/// - `granted` = `reset_at`（Unix 秒字符串；给上层拼人话用）
+/// - `topped_up` = `reset_after_seconds`
+async fn fetch_chatgpt_quota() -> Result<BalanceFetch, String> {
+    let usage = crate::chatgpt::usage::fetch_usage().await?;
+    Ok(BalanceFetch {
+        available: usage.allowed,
+        total: usage.used_percent.to_string(),
+        granted: usage.reset_at.to_string(),
+        topped_up: usage.reset_after_seconds.to_string(),
+        currency: usage.plan_type,
+    })
+}
+
+/// 请求 DeepSeek `/user/balance`（15s 超时；**无副作用**）。
+async fn fetch_deepseek_balance(probe: &ProviderConfig) -> Result<BalanceFetch, String> {
     #[derive(serde::Deserialize)]
     struct BalanceResponse {
         #[serde(default)]
