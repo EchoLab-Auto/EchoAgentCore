@@ -8,22 +8,22 @@ y: 3600
 
 # 部署与自更新
 
-> **定位**：本文是部署与运维手册——安装（install.sh 与 curl | bash 一键路径）、容器化部署（npm + Docker）、systemd 服务布局、受控自更新与回滚、日常体检。读者：部署与运维 EchoAgent 的操作者。
+> **定位**：本文是部署与运维手册——安装（install.sh 源码路径、install-binary.sh 预构建路径、curl | bash 一键）、容器化部署（npm + Docker）、systemd 服务布局、受控自更新与回滚、日常体检。读者：部署与运维 EchoAgent 的操作者。
 > 相关文档：[协议与数据流](../protocol/protocol.md)、[框架（内核机制）](../core/frame.md)（进程结构）、[开发指南](../dev/guide.md)。
 
-EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。源码托管于受管 git 仓库，更新走 oneshot 更新单元（构建 → 原子替换 → 重启）。
+EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。源码托管于受管 git 仓库，更新走 oneshot 更新单元（构建 → 原子替换 → 重启）——这是**源码安装**的形态；**二进制安装**没有源码检出，更新方式改为重跑安装器，自更新模块在配置里显式关闭（见「二进制安装」一节）。
 
 ## 服务与文件布局
 
 | 组件 | 服务单元 | 二进制/静态目录 | 管理仓库 |
 | --- | --- | --- | --- |
-| Core | `echo-agent-core.service` | `~/.local/libexec/echo-agent-core/echo-agent-core-bin` | `~/.local/share/echo-agent-core/source` |
-| Panel | `echo-agent-panel.service` | `~/.local/libexec/echo-agent-panel/{echo-agent-panel-bin,web}` | `~/.local/share/echo-agent-panel/source` |
-| 更新 | `echo-agent-core-update.service` / `echo-agent-panel-update.service` | — | 同上 |
+| Core | `echo-agent-core.service` | `~/.local/libexec/echo-agent-core/echo-agent-core-bin` | 源码安装：`~/.local/share/echo-agent-core/source`；二进制安装：无 |
+| Panel | `echo-agent-panel.service`（独立形态）/ 无单元（内嵌形态） | `~/.local/libexec/echo-agent-panel/{echo-agent-panel-bin,web}` / 内嵌前端 `~/.local/libexec/echo-agent-core/web` | 同上 |
+| 更新 | `echo-agent-core-update.service` / `echo-agent-panel-update.service` | — | 仅源码安装 |
 
-- Core 工作目录：`~/.local/share/echo-agent-core/source`；配置：`~/.config/echo-agent-core/core.toml`
-- Panel 配置：`~/.config/echo-agent-panel/panel.toml`（`[server].bind_address`、`[core].connect_url` 指向 Core management WS）
-- 更新状态：`~/.local/state/echo-agent-{core,panel}/update-status`；安装回滚快照在 `~/.local/state/echo-agent-core/install-rollback/`（事务期间存放 binary/updater/launcher/服务单元/core.toml/revision/status，安装成功后清空）
+- Core 工作目录：源码安装是 `~/.local/share/echo-agent-core/source`，二进制安装是 `~/.local/share/echo-agent-core`；配置：`~/.config/echo-agent-core/core.toml`
+- Panel 配置：`~/.config/echo-agent-panel/panel.toml`（`[server].bind_address`、`[core].connect_url` 指向 Core management WS）；内嵌形态没有独立配置文件，端口改在 `modules.toml` 的 `[module.config] bind`
+- 更新状态：`~/.local/state/echo-agent-{core,panel}/update-status`；安装回滚快照在 `~/.local/state/echo-agent-core/install-rollback/`（事务期间存放 binary/updater/launcher/服务单元/core.toml/revision/status，安装成功后清空；安装失败时保留现场）
 
 ## 安装（install.sh）
 
@@ -84,6 +84,111 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 ### 服务加固
 
 长驻 `echo-agent-core.service` 与 oneshot 更新单元均设 `NoNewPrivileges=true`——agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），两个单元都限制被攻破进程/构建脚本的提权面。
+
+## 二进制安装（install-binary.sh）
+
+**不装编译链**的投放路径：下载预构建产物解包落盘，不需要 rust / cargo / git / cc。
+适用场景是新机器（干净的服务器、临时验证环境）与"不想为了跑服务装一整套 Rust 工具链"的部署。
+
+```bash
+# 一键（自动取 latest release，按 uname -m 选 x86_64 / aarch64）
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install-binary.sh | bash
+
+# 指定版本
+curl -fsSL .../install-binary.sh | bash -s -- --version v0.1.0
+
+# 本地 tarball / 直链
+./scripts/install-binary.sh --artifact ./echo-agent-core-0.1.0-linux-x86_64.tar.gz
+./scripts/install-binary.sh --artifact https://example.com/artifact.tar.gz
+./scripts/install-binary.sh --dry-run          # 只打印计划，不联网不落盘
+```
+
+预构建产物由 `.github/workflows/release.yml` 在 tag `v*` 上生成，每个架构一个
+tarball（`echo-agent-core-<ver>-linux-<arch>.tar.gz`）加 `.sha256` 侧车。产物内容：
+
+| 路径 | 去向 |
+| --- | --- |
+| `bin/echo-agent-core-bin` | `~/.local/libexec/echo-agent-core/echo-agent-core-bin` |
+| `web/` | `~/.local/libexec/echo-agent-core/web`（内嵌 Panel 前端） |
+| `skills/` | `~/.local/share/echo-agent-core/skills-builtin/` |
+| `config/echo-agent-core.toml` | 配置模板（仅首装或 `--overwrite-config` 时写入） |
+| `systemd/echo-agent-core.service.in` | unit 模板（与源码安装**同一份**） |
+| `manifest.json` | 版本 / 架构 / commit / glibc 基线 |
+
+### 与源码安装的关系
+
+两者**布局完全一致**（同一套路径推导、同一个 launcher、同一份 unit 模板、同一份
+core.toml 模板），受 `source/modules/core/tests/install_binary_script.rs` 守护：
+
+- `scripts/uninstall.sh` 对两种安装通用；
+- 装过一种再装另一种 = **原地换装**，不会并存两套；
+- 二进制装法会清理残留的 `echo-agent-core-update.service`（源码装的遗留）。
+
+差异只有三处，都是"没有源码检出"的必然后果：
+
+| 项 | 源码安装 | 二进制安装 |
+| --- | --- | --- |
+| 工作目录（unit `WorkingDirectory`） | `~/.local/share/echo-agent-core/source` | `~/.local/share/echo-agent-core` |
+| 更新方式 | `echo-agent-core-update.service` 跑 `cargo build` | 重跑 `install-binary.sh`（幂等） |
+| 自更新模块 | 启用 | 在 `modules.toml` 里 `enabled = false` |
+
+### 内嵌 Panel（零配置）
+
+Panel 的**模块代码编译在 Core 二进制里**（`agent-module-panel`，id
+`echo-agent.panel.web`），二进制安装不装第二个二进制；缺的只有前端产物。
+安装器把它放到 Core 二进制同级的 `web/`——这是内嵌模块 `static_dir_candidates`
+的第一个可判定命中项，因此**不需要写 `static_dir`**。
+
+安装器在首装的 `modules.toml` 里显式启用它（模块默认不挂载、不监听）：
+
+```toml
+[[module]]
+id = "echo-agent.panel.web"
+kind = "builtin"
+enabled = true
+
+[module.config]
+bind = "127.0.0.1:18081"     # 可选；默认 127.0.0.1:8080
+```
+
+装完浏览器开 `http://127.0.0.1:8080` 即是面板；`GET /api/panel-identity` 的
+`embedded` 为 `true` 可以确认形态。`--no-panel` 跳过启用（只装 Core）。
+
+> 若想复用**独立 Panel** 的前端产物，把 `static_dir` 指过去即可；两条形态共用
+> 同一条中继代码路径，功能一致，差别只在生命周期（内嵌时面板与 Core 同生共死）。
+
+### 校验与拒绝
+
+安装器默认**只接受带 `.sha256` 侧车的产物**（`--skip-checksum` 才放行），并在落盘前
+拒绝三类不可能工作的组合：
+
+| 检查 | 行为 |
+| --- | --- |
+| SHA256 不符 / 缺侧车 | 直接失败，列出期望值与实际值 |
+| `manifest.arch` 与本机 `uname -m` 不符 | 直接失败（拿错了架构的包） |
+| 本机 glibc < `manifest.glibc_min` | 直接失败并给出两侧版本（否则启动时报 `GLIBC_2.xx not found`，没有指向性）；`--allow-glibc-mismatch` 可强行尝试 |
+
+安装本身仍是事务性的：落盘前快照现有二进制 / 前端 / launcher / unit / 配置，
+任一步失败（含启动后健康检查不通过）整体还原并重启旧 Core，状态写入
+`~/.local/state/echo-agent-core/update-status`（`state=rolled_back`）。
+
+### 产物矩阵与可复现性
+
+- 架构：`x86_64`（`ubuntu-24.04`）与 `aarch64`（`ubuntu-24.04-arm` 原生 runner）。
+  aarch64 用原生机器而不是交叉编译：`ring` 含 C 代码，交叉编译要额外准备
+  aarch64 的 `cc` 与 sysroot，维护成本高于直接换 runner。
+- glibc 基线由构建机决定（Ubuntu 24.04 → 2.39），写进 `manifest.json` 供安装器预检。
+- 面板前端从 `Cargo.lock` 里 pin 住的 panel commit 构建，不用 `branch = main`
+  现取——同一个 tag 必须构建出相同内容。
+
+### 国内网络
+
+```bash
+# 只加速产物下载（脚本本身仍从 raw.githubusercontent.com 取，可按需套代理）
+curl -fsSL .../install-binary.sh | bash -s -- --mirror https://ghfast.top/https://github.com
+# 或环境变量
+ECHO_DOWNLOAD_MIRROR=https://ghfast.top/https://github.com ./scripts/install-binary.sh
+```
 
 ## 容器化部署
 

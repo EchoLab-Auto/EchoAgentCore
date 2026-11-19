@@ -1,0 +1,216 @@
+# Release 产物：**预构建二进制 tarball**（2026-11）
+#
+# 与 npm-publish / docker 的分工：
+#   - docker.yml   出容器镜像
+#   - npm-publish  出「用 docker compose 编排三个镜像」的 CLI
+#   - 本工作流     出**原生 tarball**：解包即用，不需要 rust / cargo / git，
+#                  也不需要 docker。消费方是 `scripts/install-binary.sh`。
+#
+# 触发：推 tag `v*`（如 v0.1.0）或手动。手动触发只跑构建、不发布 Release
+# （便于先看产物对不对）。
+#
+# ## 为什么产物里必须有 panel 前端
+#
+# Web Panel 的**模块代码编译在 Core 二进制里**（`agent-module-panel`，见 Core
+# 的 Cargo.toml），但前端 `web/dist` 是运行时从磁盘读的（内嵌模块的
+# `static_dir_candidates`）。缺了它，装了也是"模块启用却起不来"。所以 web 是
+# 必产物，且必须与 Core 二进制**同源同版本**：前端 API 契约随 Core 演进。
+#
+# ## 为什么 aarch64 用原生 runner
+#
+# `ring`（rustls 的底层）含 C 代码，交叉编译要额外准备 aarch64 的 cc 与
+# sysroot；GitHub 的 `ubuntu-24.04-arm` 是原生 arm64 机器，直接 `cargo build`
+# 即可，比维护一套交叉工具链便宜得多。
+#
+# ## 可复现性
+#
+# `--locked` + Cargo.lock 里 pin 住的 git 依赖 commit：同一个 tag 必须构建出
+# 相同内容，否则"v0.1.0 的二进制"就不是一个确定的东西。web 侧同理——panel
+# 仓的 commit 从 Cargo.lock 里解析，不用 `branch = main` 的浮动引用。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # 错误即失败：release 不该带着警告发出去。
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── 前端产物 ──────────────────────────────────────────────────────
+  web:
+    name: panel frontend
+    runs-on: ubuntu-24.04
+    outputs:
+      panel_revision: ${{ steps.pin.outputs.panel_revision }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 从 Cargo.lock 解析 Panel 仓被 pin 的 commit——这是**唯一真值**：
+      # 若改用 `branch=main` 现取，同一个 tag 重跑会得到不同前端。
+      - name: Resolve pinned panel revision
+        id: pin
+        run: |
+          set -euo pipefail
+          revision=$(awk '
+            /^name = "agent-module-panel"$/ { in_pkg = 1; next }
+            in_pkg && /^source = / {
+              if (match($0, /#[0-9a-f]+"/)) {
+                print substr($0, RSTART + 1, RLENGTH - 2)
+              }
+              exit
+            }
+            in_pkg && /^$/ { in_pkg = 0 }
+          ' Cargo.lock)
+          if [[ -z "$revision" ]]; then
+            echo "error: agent-module-panel not pinned in Cargo.lock" >&2
+            exit 1
+          fi
+          echo "panel_revision=$revision" >>"$GITHUB_OUTPUT"
+          echo "panel revision: $revision"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: EchoLab-Auto/EchoAgentPanel
+          ref: ${{ steps.pin.outputs.panel_revision }}
+          path: panel
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: panel/web/package-lock.json
+
+      - name: Build panel frontend
+        working-directory: panel/web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: panel-web
+          path: panel/web/dist
+          if-no-files-found: error
+
+  # ── 二进制（每个架构一个原生 runner）──────────────────────────────
+  build:
+    name: build (${{ matrix.arch }})
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust 版本跟 Cargo.toml 的 `rust-version` 走：stable 已满足 1.98。
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: panel-web
+          path: stage/web
+
+      - name: Build Core
+        run: cargo build --release --locked -p echo-agent-core
+
+      - name: Assemble release tarball
+        env:
+          ARCH: ${{ matrix.arch }}
+          PANEL_REVISION: ${{ needs.web.outputs.panel_revision }}
+        run: |
+          set -euo pipefail
+
+          version=${GITHUB_REF_NAME#v}
+          if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
+            version="0.0.0-dev-${GITHUB_SHA:0:12}"
+          fi
+          if [[ ! -f stage/web/index.html ]]; then
+            echo "error: panel frontend missing from the build" >&2
+            exit 1
+          fi
+
+          # 目录结构是 install-binary.sh 的输入契约：
+          #   bin/     Core 二进制（装到 <prefix>/libexec/echo-agent-core/）
+          #   web/     Panel 前端（装到 <prefix>/libexec/echo-agent-panel/web）
+          #   skills/  出厂技能（装到 <data>/skills-builtin）
+          #   config/  core.toml 模板
+          #   systemd/ unit 模板（与源码安装共用同一份）
+          install -d -m 755 stage/bin stage/skills stage/config stage/systemd
+          install -m 755 target/release/echo-agent-core stage/bin/echo-agent-core-bin
+          cp -a skills/. stage/skills/
+          install -m 644 config/echo-agent-core.toml stage/config/echo-agent-core.toml
+          install -m 644 packaging/systemd/echo-agent-core.service.in \
+            stage/systemd/echo-agent-core.service.in
+
+          # glibc 基线：二进制的实际下限由构建机决定。写进 manifest 让安装器
+          # 能在装之前拦住老系统（否则报错是 `GLIBC_2.xx not found`，没有指向性）。
+          glibc_min=$(getconf GNU_LIBC_VERSION | awk '{print $2}')
+          rustc_version=$(rustc --version | awk '{print $2}')
+
+          cat >stage/manifest.json <<EOF
+          {
+            "schema": 1,
+            "version": "$version",
+            "arch": "$ARCH",
+            "revision": "$GITHUB_SHA",
+            "panel_revision": "$PANEL_REVISION",
+            "glibc_min": "$glibc_min",
+            "rustc": "$rustc_version",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+          name="echo-agent-core-${version}-linux-${ARCH}"
+          tar -C stage -czf "$name.tar.gz" \
+            --owner=0 --group=0 --numeric-owner --sort=name \
+            bin web skills config systemd manifest.json
+          sha256sum "$name.tar.gz" >"$name.tar.gz.sha256"
+
+          echo "artifact: $name.tar.gz ($(du -h "$name.tar.gz" | cut -f1))"
+          cat stage/manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: |
+            echo-agent-core-*.tar.gz
+            echo-agent-core-*.tar.gz.sha256
+          if-no-files-found: error
+
+  # ── 汇总成一个 Release ─────────────────────────────────────────────
+  publish:
+    name: publish release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -lh
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            echo-agent-core-*.tar.gz
+            echo-agent-core-*.tar.gz.sha256
+          draft: false
+          # 已存在的 tag 重跑时更新资产，而不是因冲突整体失败（重发版本的
+          # 常见场景：某个架构构建挂了、只补一个）。
+          fail_on_unmatched_files: true
