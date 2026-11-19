@@ -306,6 +306,14 @@ fn release_artifact_layout_matches_the_installer() {
         workflow.contains("objdump -T stage/bin/echo-agent-core-bin"),
         "release.yml 应从产物符号表读 glibc 下限"
     );
+
+    // 发版构建不能设 `-D warnings`：2026-11 实测 v0.1.0 首次构建两个架构同时
+    // 失败在 `Build Core`，当前 main 有 40 条既有告警，一条就让构建变 error。
+    // 告警门禁归 CI，发版只负责把已通过 CI 的代码打成产物。
+    assert!(
+        !workflow.contains(r#"RUSTFLAGS: "-D warnings""#),
+        "release.yml 不应设 RUSTFLAGS=-D warnings（既有告警会让发版构建失败）"
+    );
 }
 
 /// aarch64 必须由原生 arm runner 构建（ring 含 C 代码，交叉编译要额外工具链）。
