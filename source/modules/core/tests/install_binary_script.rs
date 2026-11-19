@@ -504,3 +504,39 @@ fn mirror_prefix_supports_both_written_forms() {
         "不应无条件剥掉 https://（含域名的前缀会因此拼出重复的 github.com）"
     );
 }
+
+/// 侧车下载失败不能报成"产物缺侧车"。
+///
+/// 2026-11 容器实测：镜像链路抖动（`Connection reset`）让 108 字节的 `.sha256`
+/// 下载失败，而当时的报错是"no checksum sidecar found … expected next to the
+/// artifact"——用户会去怀疑发布流程漏发文件，实际是网络。原来的 `2>/dev/null`
+/// 把 curl 的真实错误吞掉了。
+#[test]
+fn checksum_download_failure_is_not_reported_as_missing() {
+    let binary = read_script("install-binary.sh");
+    assert!(
+        binary.contains("checksum_failure=$(download"),
+        "侧车下载应保留 curl 的错误输出（否则网络失败会被误报成产物缺失）"
+    );
+    assert!(
+        binary.contains("this is a network failure, not a missing artifact"),
+        "报错应明确区分「网络失败」与「产物没发侧车」"
+    );
+    assert!(
+        !binary.contains(r#"if download "$checksum_url" "$WORK_DIR/artifact.sha256" 2>/dev/null"#),
+        "不应再用 2>/dev/null 吞掉侧车下载的错误"
+    );
+}
+
+/// `download` 必须有总超时，而不只是连接超时。
+///
+/// `--connect-timeout` 只管到"连接建立"；连上之后读数据慢会无限等——下载 15MB
+/// 产物时表现为"看起来在下载、实际永不到头"。
+#[test]
+fn downloads_have_a_total_timeout() {
+    let binary = read_script("install-binary.sh");
+    assert!(
+        binary.contains("--max-time"),
+        "download 应设总超时（--connect-timeout 不覆盖读数据阶段）"
+    );
+}

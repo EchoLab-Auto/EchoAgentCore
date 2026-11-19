@@ -447,9 +447,11 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/echo-agent-install.XXXXXX")
 cleanup_work_dir() { rm -rf -- "$WORK_DIR"; }
 trap cleanup_work_dir EXIT
 
-download() { # url destination
-    local url=$1 destination=$2
-    curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 \
+download() { # url destination [max_time_secs]
+    local url=$1 destination=$2 max_time=${3:-600}
+    # `--connect-timeout` 只管到"连接建立"，连上之后读数据慢仍会无限等。发版产物
+    # 15MB、镜像链路抖动时，没有 `--max-time` 就是"看起来在下载、实际永不到头"。
+    curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time "$max_time" \
         --proto '=https,http' --proto-redir '=https' \
         -o "$destination" "$url"
 }
@@ -494,18 +496,37 @@ fi
 # ── 校验（tarball 旁的 .sha256 是唯一的完整性依据）────────────────────
 if ((VERIFY_CHECKSUM)); then
     checksum_source=""
+    checksum_failure=""
+    checksum_url=""
     if [[ -f "$artifact_file.sha256" ]]; then
         checksum_source="$artifact_file.sha256"
     elif [[ -n "$artifact_url" ]]; then
         checksum_url="$(mirror_url "$artifact_url").sha256"
-        if download "$checksum_url" "$WORK_DIR/artifact.sha256" 2>/dev/null; then
+        if ! checksum_failure=$(download "$checksum_url" "$WORK_DIR/artifact.sha256" 120 2>&1); then
+            checksum_source=""
+        else
             checksum_source="$WORK_DIR/artifact.sha256"
+            checksum_failure=""
         fi
     fi
     if [[ -z "$checksum_source" ]]; then
-        echo "error: no checksum sidecar found for $(basename -- "$artifact_file")" >&2
-        echo "       expected $(basename -- "$artifact_file").sha256 next to the artifact." >&2
-        echo "       Pass --skip-checksum to install anyway (not recommended)." >&2
+        # **必须区分"产物没发侧车"和"侧车没下下来"**。2026-11 容器实测：
+        # 镜像链路抖动（Connection reset）让一个 108 字节的 .sha256 下载失败，
+        # 而当时的报错是"no checksum sidecar found … expected next to the
+        # artifact"——用户会去怀疑发布流程漏发文件，实际是网络。
+        echo "error: cannot verify $(basename -- "$artifact_file"): no .sha256 available" >&2
+        if [[ -z "$checksum_failure" ]]; then
+            echo "       $(basename -- "$artifact_file").sha256 was not found next to the artifact." >&2
+            echo "       Pass --skip-checksum to install anyway (not recommended)." >&2
+        elif [[ "$checksum_failure" == *404* || "$checksum_failure" == *"not found"* ]]; then
+            echo "       the release does not publish $(basename -- "$checksum_url")" >&2
+            echo "       Pass --skip-checksum to install anyway (not recommended)." >&2
+        else
+            echo "       downloading it failed: $(printf '%s' "$checksum_failure" | tail -3 | tr '\n' ' ')" >&2
+            echo "       url: $checksum_url" >&2
+            echo "       this is a network failure, not a missing artifact — retry, or" >&2
+            echo "       pass --mirror <prefix> / --skip-checksum." >&2
+        fi
         exit 1
     fi
     expected=$(awk 'NR==1{print $1}' "$checksum_source")
