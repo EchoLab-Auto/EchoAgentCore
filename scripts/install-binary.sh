@@ -378,7 +378,23 @@ mirror_url() {
         printf '%s\n' "$url"
         return 0
     fi
-    printf '%s/%s\n' "${DOWNLOAD_MIRROR%/}" "${url#https://}"
+    local prefix="${DOWNLOAD_MIRROR%/}"
+    # 两种 mirror 写法都要支持，判据是"前缀里有没有 github.com"：
+    #
+    #   1. 含域名（ghfast.top / gh-proxy.com 的标准用法）：
+    #        https://ghfast.top/https://github.com
+    #      前缀后面直接接**路径**，即 `/EchoLab-Auto/EchoAgentCore/...`。
+    #   2. 纯代理域（自建反代常见）：https://proxy.example
+    #      前缀后面接**完整 URL**，即 `/https://github.com/EchoLab-Auto/...`。
+    #
+    # 早先这里只处理第 2 种（无条件剥掉 `https://` 再拼），于是第 1 种拼出了
+    # `https://ghfast.top/https://github.com/github.com/EchoLab-Auto/...`——
+    # 域名重复，服务器回 404。2026-11 在 ubuntu:24.04 容器里实测踩到。
+    if [[ "$prefix" == *github.com ]]; then
+        printf '%s/%s\n' "$prefix" "${url#"$CANONICAL_PREFIX"/}"
+    else
+        printf '%s/%s\n' "$prefix" "$url"
+    fi
 }
 
 # ── 计划输出（--dry-run 走这条，**不联网、不落盘**）──────────────────

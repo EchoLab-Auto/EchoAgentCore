@@ -481,3 +481,26 @@ fn version_bump_script_is_wired() {
         "root Cargo.toml should declare the workspace version"
     );
 }
+
+/// `--mirror` 必须同时支持两种常见写法。
+///
+/// 2026-11 在 ubuntu:24.04 容器里实测踩到：`--mirror https://ghfast.top/https://github.com`
+/// （ghfast / gh-proxy 的标准用法）被无条件剥掉 `https://` 再拼，拼出了
+/// `https://ghfast.top/https://github.com/github.com/EchoLab-Auto/...`——域名重复，
+/// 服务器回 404。而 help 文本与文档给的例子恰好就是这个写法。
+#[test]
+fn mirror_prefix_supports_both_written_forms() {
+    let binary = read_script("install-binary.sh");
+    assert!(
+        binary.contains(r#"if [[ "$prefix" == *github.com ]]"#),
+        "mirror_url 应区分「含域名的前缀」与「纯代理域」两种写法"
+    );
+    assert!(
+        binary.contains(r#"printf '%s/%s\n' "$prefix" "$url""#),
+        "纯代理域的写法应把完整 URL 接在前缀后面"
+    );
+    assert!(
+        !binary.contains(r#"printf '%s/%s\n' "${DOWNLOAD_MIRROR%/}" "${url#https://}""#),
+        "不应无条件剥掉 https://（含域名的前缀会因此拼出重复的 github.com）"
+    );
+}
