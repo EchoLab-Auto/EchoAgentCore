@@ -314,6 +314,23 @@ fn release_artifact_layout_matches_the_installer() {
         !workflow.contains(r#"RUSTFLAGS: "-D warnings""#),
         "release.yml 不应设 RUSTFLAGS=-D warnings（既有告警会让发版构建失败）"
     );
+
+    // tag 与 Cargo.toml 版本必须一致，且在**构建前**失败。
+    // 背景：v0.2.0 的产物装上去 `--version` 打印 `0.1.0`（`CARGO_PKG_VERSION`
+    // 来自 Cargo.toml，与 tag 无关），用户第一反应是"装错了"。
+    assert!(
+        workflow.contains("Verify tag matches Cargo.toml version"),
+        "release.yml 应在构建前核对 tag 与 Cargo.toml 版本"
+    );
+    assert!(
+        workflow.contains("scripts/bump-version.sh --print"),
+        "release.yml 应通过 scripts/bump-version.sh 读取版本（唯一真值）"
+    );
+    // 声明的版本对 != 编出来的东西对：再验一次二进制的自报版本。
+    assert!(
+        workflow.contains("Verify the built binary reports the tagged version"),
+        "release.yml 应校验产物二进制的自报版本"
+    );
 }
 
 /// aarch64 必须由原生 arm runner 构建（ring 含 C 代码，交叉编译要额外工具链）。
@@ -424,5 +441,43 @@ fn dry_run_survives_a_host_without_systemd() {
     assert!(
         window.contains("DRY_RUN"),
         "user manager 缺失的分支应在 --dry-run 下降级为告警而不是退出"
+    );
+}
+
+/// `scripts/bump-version.sh` 是版本号的唯一写入口，它必须：
+/// 改到 `[workspace.package] version`、带 `--check` / `--print` 两个只读模式、
+/// 且刷新 Cargo.lock（否则 `cargo build --locked` 全线失败）。
+#[test]
+fn version_bump_script_is_wired() {
+    let bump = read_script("bump-version.sh");
+    let root = read_file(&repo_root().join("Cargo.toml"));
+
+    assert!(
+        bump.contains("workspace\\.package"),
+        "bump-version.sh 应只改 [workspace.package] 段的版本"
+    );
+    assert!(
+        bump.contains("--check"),
+        "bump-version.sh 应支持 --check（release.yml 的构建前门禁用它）"
+    );
+    assert!(
+        bump.contains("--print"),
+        "bump-version.sh 应支持 --print（读取唯一真值）"
+    );
+    assert!(
+        bump.contains("cargo metadata"),
+        "bump-version.sh 应刷新 Cargo.lock（否则 --locked 构建失败）"
+    );
+
+    // 成员 crate 必须是"继承"而不是各写一份，否则 bump 只改一处会漏。
+    let inherited = std::fs::read_to_string(repo_root().join("source/modules/core/Cargo.toml"))
+        .expect("read core Cargo.toml");
+    assert!(
+        inherited.contains("version.workspace = true"),
+        "member crates should inherit the workspace version, not hardcode it"
+    );
+    assert!(
+        root.contains("version = "),
+        "root Cargo.toml should declare the workspace version"
     );
 }

@@ -139,8 +139,40 @@ jobs:
           name: panel-web
           path: stage/web
 
+      # tag 与 Cargo.toml 的版本必须一致，否则**在构建前**失败。
+      #
+      # 背景（2026-11 实测）：v0.2.0 的产物装上去，`echo-agent-core --version`
+      # 打印 `0.1.0`——用户第一反应是"装错了"。`--version`、联邦 Hello 的
+      # version 字段、面板模块清单读的都是 `CARGO_PKG_VERSION`，也就是
+      # Cargo.toml 里的那个数。三者不一致的产物不该存在，宁可没有。
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          set -euo pipefail
+          tag_version=${GITHUB_REF_NAME#v}
+          toml_version=$(scripts/bump-version.sh --print)
+          if [[ "$tag_version" != "$toml_version" ]]; then
+            echo "::error::tag v$tag_version does not match Cargo.toml version $toml_version"
+            echo "         run: scripts/bump-version.sh $tag_version && git commit -am 'chore(release): $tag_version'"
+            exit 1
+          fi
+          echo "version $toml_version matches tag v$tag_version"
+
       - name: Build Core
         run: cargo build --release --locked -p echo-agent-core
+
+      # 产物自检：二进制自报的版本必须与 tag 一致。上面的 Cargo.toml 检查是
+      # "声明的版本对"，这一条是"编出来的东西真的是那一版"——防止 build.rs /
+      # 特性开关之类的东西改了实际输出。
+      - name: Verify the built binary reports the tagged version
+        run: |
+          set -euo pipefail
+          tag_version=${GITHUB_REF_NAME#v}
+          reported=$(target/release/echo-agent-core --version | awk '{print $2}')
+          if [[ "$reported" != "$tag_version" ]]; then
+            echo "::error::built binary reports $reported, expected $tag_version"
+            exit 1
+          fi
+          echo "built binary reports $reported"
 
       - name: Assemble release tarball
         env:

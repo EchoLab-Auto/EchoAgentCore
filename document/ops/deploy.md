@@ -95,10 +95,10 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install-binary.sh | bash
 
 # 指定版本
-curl -fsSL .../install-binary.sh | bash -s -- --version v0.1.0
+curl -fsSL .../install-binary.sh | bash -s -- --version v0.2.0
 
 # 本地 tarball / 直链
-./scripts/install-binary.sh --artifact ./echo-agent-core-0.1.0-linux-x86_64.tar.gz
+./scripts/install-binary.sh --artifact ./echo-agent-core-0.2.0-linux-x86_64.tar.gz
 ./scripts/install-binary.sh --artifact https://example.com/artifact.tar.gz
 ./scripts/install-binary.sh --dry-run          # 只打印计划，不联网不落盘
 ```
@@ -174,6 +174,13 @@ bind = "127.0.0.1:18081"     # 可选；默认 127.0.0.1:8080
 
 ### 产物矩阵与可复现性
 
+- **版本号单一真值**：`Cargo.toml` 的 `[workspace.package] version`（17 个成员
+  crate 全部 `version.workspace = true` 继承）。发版流程 = `scripts/bump-version.sh
+  <ver>` → 提交 → 打 tag `v<ver>`。`release.yml` 在两处 fail-closed：构建前核对
+  tag 与 `Cargo.toml` 相等，构建后再让二进制 `--version` 自报一次。
+  为什么需要：v0.2.0 曾出现"产物装上去 `--version` 打印 0.1.0"——`--version`、
+  联邦 Hello 的 version 字段、面板模块清单读的都是 `CARGO_PKG_VERSION`，与 tag
+  毫无关系，两者不一致的产物不该存在。
 - 架构：`x86_64`（**`ubuntu-22.04`**）与 `aarch64`（`ubuntu-24.04-arm` 原生 runner）。
   aarch64 用原生机器而不是交叉编译：`ring` 含 C 代码，交叉编译要额外准备
   aarch64 的 `cc` 与 sysroot，维护成本高于直接换 runner。
