@@ -155,7 +155,8 @@ jobs:
 
           # 目录结构是 install-binary.sh 的输入契约：
           #   bin/     Core 二进制（装到 <prefix>/libexec/echo-agent-core/）
-          #   web/     Panel 前端（装到 <prefix>/libexec/echo-agent-panel/web）
+          #   web/     Panel 前端（装到 <prefix>/libexec/echo-agent-core/web，
+          #            即 Core 二进制同级——内嵌模块自动发现的第一命中项）
           #   skills/  出厂技能（装到 <data>/skills-builtin）
           #   config/  core.toml 模板
           #   systemd/ unit 模板（与源码安装共用同一份）
