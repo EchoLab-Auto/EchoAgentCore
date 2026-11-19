@@ -320,10 +320,13 @@ impl Agent {
             }
             // 工具管理面命令域已迁进 `agent-module-tools`（全模块化 S3：
             // 清单与启停本来就是这个模块拥有的东西）。这里只剩兜底。
-            BackendCommand::RequestToolsList | BackendCommand::ToggleTool { .. } => {
+            BackendCommand::RequestToolsList
+            | BackendCommand::RequestChecklists { .. }
+            | BackendCommand::ToggleTool { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
-                    message: "工具命令由 echo-agent.tools.builtin 模块处理，但该模块未启用".into(),
+                    message: "工具与清单命令由 echo-agent.tools.builtin 模块处理，但该模块未启用"
+                        .into(),
                 });
             }
             BackendCommand::RequestModulesList => {

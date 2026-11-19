@@ -25,6 +25,15 @@ pub use agent_module_shell::{
     resolve_provider as resolve_shell_provider, standalone_provider as standalone_shell_provider,
     ShellHostCtx, ShellToolProvider,
 };
+/// 清单工具集的构造契约（2026-11 从内置工具集拆出）。
+///
+/// 宿主侧只认识这个模块的**接缝**：`resolve_*` 从服务表问"挂上了吗"，
+/// `standalone_*` 是模块尚未挂载时的同一实现。
+pub use agent_module_checklist::{
+    resolve_provider as resolve_checklist_provider,
+    standalone_provider as standalone_checklist_provider, ChecklistHostCtx, ChecklistPort,
+    ChecklistToolProvider,
+};
 /// 实例命令域的宿主接缝。
 pub use agent_module_tools::instance_commands::{
     InstanceCommandHandler, InstanceCommandHost as InstanceCommandHostAlias,
@@ -50,6 +59,11 @@ pub fn build_registry(
     invoker: Option<agent_module_tools::RemoteInvoker>,
     shell: agent_module_shell::ShellHandle,
     session_query: Option<std::sync::Arc<dyn echo_defs::session_query::SessionQuery>>,
+    // 本 persona 的清单端口（持久 store / 冻结失败 / None=内存 store）。
+    // 由组合根按 `ChecklistRuntime` 的 per-persona store 构造。
+    checklist_port: Option<agent_module_checklist::ChecklistPort>,
+    // 清单工具的构造契约（2026-11 拆出 agent-module-checklist）。
+    checklist_provider: Option<std::sync::Arc<dyn agent_module_checklist::ChecklistToolProvider>>,
     provider: Option<std::sync::Arc<dyn BuiltinToolProvider>>,
     shell_provider: Option<std::sync::Arc<dyn ShellToolProvider>>,
 ) -> crate::tool::ToolRegistry {
@@ -64,6 +78,17 @@ pub fn build_registry(
     };
     let mut registry = provider.registry(&cx);
 
+    // 任务清单工具（`checklist`）**由清单模块造**（2026-11 从内置工具集拆出）：
+    // 它有自己的持久化真值（per-persona store）与包标签（`echo-agent.checklist`），
+    // 宿主只把端口递过去。降级口径与 shell 一致：装配期模块尚未挂载时回退到
+    // standalone 实现，persona 门控与包级启停仍在运行期生效。
+    let checklist_provider =
+        checklist_provider.unwrap_or_else(agent_module_checklist::standalone_provider);
+    let checklist_registry = checklist_provider.registry(&agent_module_checklist::ChecklistHostCtx {
+        port: checklist_port,
+    });
+    merge_registry(&mut registry, checklist_registry);
+
     // Shell 会话工具（`bash-start` / `bash-exec` / `bash-stop`）**由 shell 模块
     // 造**（2026-11）：它知道这些工具该打什么包标签、需要什么端口。宿主只把
     // 端口递过去并把产物并进同一个注册表——**不复制工具清单**。
@@ -77,16 +102,25 @@ pub fn build_registry(
         shell: shell.clone(),
         guard: Some(agent_module_shell::self_stop_guard()),
     });
-    for name in shell_registry.names() {
-        let Some(tool) = shell_registry.get(&name) else {
+    merge_registry(&mut registry, shell_registry);
+    registry
+}
+
+/// 把一个模块产出的工具并进宿主注册表（**连包标签一起**）。
+///
+/// 合并而不复制清单：宿主不认识任何一个工具名，"模块装了哪些工具、它们属于
+/// 哪个包"是模块自己的知识。包标签必须跟着走——否则面板按包启停与 persona
+/// 门控会作用在错误的包上（或干脆找不到它们）。
+fn merge_registry(target: &mut crate::tool::ToolRegistry, source: crate::tool::ToolRegistry) {
+    for name in source.names() {
+        let Some(tool) = source.get(&name) else {
             continue;
         };
-        registry.register(tool);
-        if let Some(package) = shell_registry.package_of(&name) {
-            registry.set_package(&name, package);
+        target.register(tool);
+        if let Some(package) = source.package_of(&name) {
+            target.set_package(&name, package);
         }
     }
-    registry
 }
 
 #[cfg(test)]
@@ -107,6 +141,8 @@ mod tests {
             store,
             None,
             agent_module_shell::ShellHandle::new(),
+            None,
+            None,
             None,
             None,
             // 带上 shell 模块造的工具一起查重名：两个模块产出的名字同处一张
@@ -130,6 +166,8 @@ mod tests {
             store,
             None,
             agent_module_shell::ShellHandle::new(),
+            None,
+            None,
             None,
             None,
             None,

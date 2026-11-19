@@ -16,7 +16,6 @@ use tracing_subscriber::EnvFilter;
 
 mod agent_supervisor;
 mod builtin_modules;
-mod module_tag;
 mod config;
 mod deployment;
 mod federation_admin_host;
@@ -27,6 +26,7 @@ mod instance_deploy;
 mod instance_manifests;
 mod instance_tools;
 mod logging;
+mod module_tag;
 mod module_upgrade_cmd;
 mod modules_runtime;
 mod node;
@@ -36,9 +36,9 @@ mod port_cmd;
 use agent_module_management as management;
 mod security;
 
+use agent_module_loop::{Agent, AgentProfile};
 use config::CoreConfig;
 use echo_defs::module_instance::ModuleInstance;
-use agent_module_loop::{Agent, AgentProfile};
 #[allow(unused_imports)]
 use federation_rt::*;
 use logging::init_tracing;
@@ -262,15 +262,16 @@ async fn login_chatgpt_command(print_url: bool) -> Result<()> {
         .map_err(|error| anyhow::anyhow!(error))?;
     println!("在浏览器里打开这个地址完成授权：\n\n{}\n", pending.url);
     println!("回调地址：{}", auth::redirect_uri());
-    println!(
-        "（该地址由 OAuth 客户端注册决定，端口不能改；本机 codex CLI 登录时会占同一端口。）"
-    );
+    println!("（该地址由 OAuth 客户端注册决定，端口不能改；本机 codex CLI 登录时会占同一端口。）");
     if print_url {
         println!("\n--print-url：已打印，不等待回调。");
         return Ok(());
     }
     println!("\n等待授权回调（最多 5 分钟）…");
-    let auth = pending.wait().await.map_err(|error| anyhow::anyhow!(error))?;
+    let auth = pending
+        .wait()
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
     println!("登录成功。");
     if !auth.email.is_empty() {
         println!("账户：{}", auth.email);
@@ -305,10 +306,8 @@ fn dump_protocol_ts_command(out: Option<&std::path::Path>) -> Result<()> {
             // 原子替换：Panel 的 `tsc` / `vitest` 可能并发读这个文件，
             // 直接覆写会让它们读到半截内容并报出莫名其妙的语法错误。
             let tmp = path.with_extension("ts.tmp");
-            std::fs::write(&tmp, body)
-                .with_context(|| format!("写入失败：{}", tmp.display()))?;
-            std::fs::rename(&tmp, path)
-                .with_context(|| format!("替换失败：{}", path.display()))?;
+            std::fs::write(&tmp, body).with_context(|| format!("写入失败：{}", tmp.display()))?;
+            std::fs::rename(&tmp, path).with_context(|| format!("替换失败：{}", path.display()))?;
             eprintln!("wrote {}", path.display());
             Ok(())
         }
@@ -1227,6 +1226,22 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_outbound_policy =
         crate::security::OutboundPolicy::from_config(&cfg.security.sanitize.outbound);
     let factory_config_path = args.config_path();
+    // ── 清单持久化（2026-11 清单可靠化）──
+    //
+    // 存储根：**config 文件所在目录 / checklists**（不是 CWD，也不是
+    // 进程级 global 槽）。这个 `Arc` 是进程内唯一实例：`make_agent` 按
+    // persona 取 store，人格重建复用同一个 Arc；Agent 退场不销毁 store。
+    let checklist_root = factory_config_path
+        .parent()
+        .map(|parent| parent.join("checklists"))
+        .unwrap_or_else(|| std::path::PathBuf::from("checklists"));
+    let checklist_runtime = std::sync::Arc::new(
+        agent_module_checklist::runtime::ChecklistRuntime::new(
+            checklist_root,
+            factory_redactor.clone(),
+        ),
+    );
+    let factory_checklist = checklist_runtime.clone();
     // 节点身份（NodeId + 区域名）：所有 persona 共用一份，装配期下发。
     let factory_node_identity = node_identity.clone();
     // 联邦出口集合：同上（全部 persona 看同一个聚合器与同一组链路出口）。
@@ -1266,6 +1281,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let pt = factory_module_tools.clone();
             let workspace_mirrors = factory_workspace_mirrors.clone();
             let tool_ctx = tool_ctx.clone();
+            let checklist_runtime = factory_checklist.clone();
             let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             {
                 let mut cfg = base_cfg.clone();
@@ -1290,6 +1306,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| default_instances.clone());
+                // 本 persona 的清单端口：`__core` 是进程级服务代理（不是
+                // 人格），不落盘；其它人格从 runtime 取共享 store。加载失败
+                // 时端口是 Failed——模块注册失败工具，绝不以空 store 顶上。
+                let checklist_port = if id == "__core" {
+                    None
+                } else {
+                    Some(match checklist_runtime.store_for(&id) {
+                        Ok(store) => agent_module_checklist::ChecklistPort::Ready(store),
+                        Err(error) => agent_module_checklist::ChecklistPort::Failed(error),
+                    })
+                };
                 let mut t = agent_module_loop::tool::builtin::build_registry(
                     instances2.clone(),
                     workspace.clone(),
@@ -1297,6 +1324,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     factory_federation.invoker.clone(),
                     factory_shell_handle.clone(),
                     Some(factory_session_queries.clone()),
+                    checklist_port,
+                    // 清单工具由清单模块造（2026-11 拆出的独立模块）：
+                    // 未挂载 = 这个 persona 没有 `checklist` 工具。
+                    agent_module_loop::tool::builtin::resolve_checklist_provider(&tool_ctx),
                     agent_module_loop::tool::builtin::resolve_provider(&tool_ctx),
                     // Shell 工具由 shell 模块造（2026-11 拆出的独立模块）：
                     // 未挂载 = 这个 persona 没有 `bash-*` 工具，正是想要的效果。
@@ -1424,47 +1455,45 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
                 // 自己的 provider（从全局池解析，不共享默认 provider）。
                 let mut api_cfg_override: Option<agent_module_loop::AgentConfig> = None;
-                let persona_provider: Option<Arc<dyn agent_module_loop::LlmProvider>> = if let Some(
-                    ref name,
-                ) =
-                    profile.api_profile
-                {
-                    let mut resolved = cfg.clone();
-                    if resolved.apply_named_profile(name) {
-                        resolved.api_key = resolved.effective_api_key();
-                        resolved.base_url = resolved.effective_base_url();
-                        match agent_module_loop::llm::create_provider(&resolved) {
-                            Ok(p) => {
-                                api_cfg_override = Some(resolved.clone());
-                                let provider: Arc<dyn agent_module_loop::LlmProvider> = Arc::from(p);
-                                let provider = agent_module_loop::llm::wrap_metering(
-                                    provider,
-                                    metrics2.clone(),
-                                    name.clone(),
-                                );
-                                let provider = match &redactor2 {
-                                    Some(redactor) => agent_module_loop::llm::wrap_redacting(
+                let persona_provider: Option<Arc<dyn agent_module_loop::LlmProvider>> =
+                    if let Some(ref name) = profile.api_profile {
+                        let mut resolved = cfg.clone();
+                        if resolved.apply_named_profile(name) {
+                            resolved.api_key = resolved.effective_api_key();
+                            resolved.base_url = resolved.effective_base_url();
+                            match agent_module_loop::llm::create_provider(&resolved) {
+                                Ok(p) => {
+                                    api_cfg_override = Some(resolved.clone());
+                                    let provider: Arc<dyn agent_module_loop::LlmProvider> =
+                                        Arc::from(p);
+                                    let provider = agent_module_loop::llm::wrap_metering(
                                         provider,
-                                        redactor.clone(),
-                                    ),
-                                    None => provider,
-                                };
-                                Some(provider)
-                            }
-                            Err(e) => {
-                                tracing::warn!(agent = %id, profile = %name, error = %e,
+                                        metrics2.clone(),
+                                        name.clone(),
+                                    );
+                                    let provider = match &redactor2 {
+                                        Some(redactor) => agent_module_loop::llm::wrap_redacting(
+                                            provider,
+                                            redactor.clone(),
+                                        ),
+                                        None => provider,
+                                    };
+                                    Some(provider)
+                                }
+                                Err(e) => {
+                                    tracing::warn!(agent = %id, profile = %name, error = %e,
                                     "persona API profile provider build failed; falling back to default provider");
-                                None
+                                    None
+                                }
                             }
+                        } else {
+                            tracing::warn!(agent = %id, profile = %name,
+                            "persona API profile not found in pool; falling back to default provider");
+                            None
                         }
                     } else {
-                        tracing::warn!(agent = %id, profile = %name,
-                            "persona API profile not found in pool; falling back to default provider");
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
                 // 声明式装配（AgentBuilder，框架优化议题 2）：必填槽
                 // （module_host/event_sink）缺失即装配 bug 直接 panic；
                 // 工作区会话存储（命令处理 + 系统提示注入共用同一实例）、
@@ -1542,6 +1571,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .session_persist_path(file)
                     .session_api_path(session_api_file)
                     .build();
+                // 每个 persona 都要有“状态 → 线上事件”的绑定：此前只有
+                // `core_agent`（host_services 注册）拿到，人格内执行 checklist
+                // 永远不会发 `ChecklistUpdated`。绑定由模块声明，这里按列表
+                // 装配（不按工具名特判）。
+                for (key, build_event) in agent_module_checklist::all_state_event_bindings()
+                {
+                    built.register_tool_state_event(key, build_event);
+                }
                 factory_session_queries.register(id.clone(), &built.trunk);
                 // **新建人格补装远程工具**（2026-11 S13）。
                 //
@@ -1599,6 +1636,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     supervisor
         .manager()
         .set_node_identity(node_identity.clone());
+    // 清单摘要的门控直接问目标 Agent 的实际工具表：已注册（模块已挂载）
+    // 且当前未禁用才可注入。配置名单不是运行事实；锁竞争时本轮不注入。
+    {
+        let manager = supervisor.manager();
+        checklist_runtime.set_tool_gate(std::sync::Arc::new(move |team, tool| {
+            manager
+                .get(team)
+                .is_some_and(|running| running.agent.tools.is_enabled_now(tool))
+        }));
+    }
     // 去"主智能体"：不存在默认人格。全局/管理用途一律走进程级核心服务代理
     // （`core_agent`，team_id 为空、不在 TeamsList 中）；聊天与会话按 team_id
     // 显式路由到具体人格。
@@ -1798,9 +1845,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         crate::builtin_modules::skill_contributions(),
                     ),
                 )
-                    as std::sync::Arc<
-                        dyn agent_module_skills::host_keys::SkillContributionSource,
-                    >),
+                    as std::sync::Arc<dyn agent_module_skills::host_keys::SkillContributionSource>),
+                // 清单运行时：进程内唯一实例（模块按服务键解析）。
+                checklist: Some(checklist_runtime.clone()),
+                // 运行中人格表：`RequestState` 补全所有 persona 清单。
+                manager: Some(supervisor.manager()),
             },
         );
 
@@ -1838,11 +1887,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
 
         // ── 内置模块目录：零参数（纯静态：这个二进制里有什么）──
-        let mut catalog =
-            crate::builtin_modules::catalog_with(
-                version,
-                external_builtin_modules(version, &cfg.core),
-            )?;
+        let mut catalog = crate::builtin_modules::catalog_with(
+            version,
+            external_builtin_modules(version, &cfg.core),
+        )?;
         // 配置驱动的两项在目录之后追加：平台实例（id 由 `[instances.<平台>]`
         // 派生）与外部条目（`modules.toml` 的非 builtin 行）——它们的"存在"
         // 取决于这份部署的配置，不该混进静态目录的签名。
@@ -1892,12 +1940,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     agent_module_loop::modules::BUILTIN_MODULE_IDS
                         .contains(&module.manifest().id.as_str())
                 })
-                .map(|module| {
-                    (
-                        module.manifest().id.clone(),
-                        module.manifest().name.clone(),
-                    )
-                })
+                .map(|module| (module.manifest().id.clone(), module.manifest().name.clone()))
                 .collect();
             modules_runtime::ensure_modules_base(&args.config_path(), &baseline);
         }
@@ -1936,7 +1979,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 为什么必须失败而不是静默跳过：静默跳过等于给了运维一个**假动作**
         // （"我关掉了它，系统还在跑"），而实际后果要么是启动到一半才发现
         // 缺东西，要么是运行期某个能力静默失效。假动作比不给开关更糟。
-        if let Some(off) = agent_module_loop::modules::disabled_kernel_modules(&catalog_ids, &plan) {
+        if let Some(off) = agent_module_loop::modules::disabled_kernel_modules(&catalog_ids, &plan)
+        {
             return Err(anyhow::anyhow!(
                 "modules.toml 试图禁用 kernel 模块 {off:?}——它们是其它模块的运行地基\
                  （kind = \"kernel\"），禁用后系统无法启动。\n\
@@ -1988,7 +2032,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .unwrap_or_default()
         };
         let (order, dependency_diagnostics) =
-            agent_module_loop::modules::order_by_service_dependencies(order, provides_of, requires_of);
+            agent_module_loop::modules::order_by_service_dependencies(
+                order,
+                provides_of,
+                requires_of,
+            );
         for diagnostic in &dependency_diagnostics {
             warn!(%diagnostic, "module service dependency");
         }
@@ -2346,8 +2394,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     Err(_) => {
                         pump_core.emit(agent_module_loop::BackendEvent::Error {
                             session_id: None,
-                            message: "deployment maintenance in progress; management command rejected"
-                                .into(),
+                            message:
+                                "deployment maintenance in progress; management command rejected"
+                                    .into(),
                         });
                         continue;
                     }
@@ -2433,8 +2482,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             //
             // S4b：绑的是**两个收窄后的面向**（查询 / 管理），不是 manager 本身。
             {
-                let registry: std::sync::Arc<dyn agent_module_loop::agent::registry::AgentRegistry> =
-                    mgr_arc.clone();
+                let registry: std::sync::Arc<
+                    dyn agent_module_loop::agent::registry::AgentRegistry,
+                > = mgr_arc.clone();
                 core_agent.set_registry(&registry);
             }
             // 联邦运行时也绑定同一 manager（迁移需要枚举 source persona）。
@@ -2445,14 +2495,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     }
     // 部署控制 socket：未设置 `ECHO_DEPLOY_CONTROL_SOCKET` 时返回 None，旧行为
     // 完全不变。设置后由独立 task 服务；Core 退出时 abort。
-    let deployment_control = deployment::start_from_env(Arc::new(
-        deployment::CoreDeploymentHandler::new(
+    let deployment_control =
+        deployment::start_from_env(Arc::new(deployment::CoreDeploymentHandler::new(
             deployment_gate.clone(),
             core_agent.clone(),
             supervisor.manager(),
-        ),
-    ))
-    .await?;
+        )))
+        .await?;
 
     // ---- Auto-start instance instances if enabled ----
     // 接线完成，标记 wired：此后 instance.qq 模块的运行期 enable 才会真正

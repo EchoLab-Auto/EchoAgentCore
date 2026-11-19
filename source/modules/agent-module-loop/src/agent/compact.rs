@@ -137,6 +137,16 @@ impl CompactionHost for AgentCompactionHost<'_> {
         })
     }
 
+    /// 模型窗口 → 摘要的输入/输出预算。
+    ///
+    /// 与 [`Self::provider`] 一样**现读**而不是构造快照：`UpdateApiConfig`
+    /// 可以在运行期改 `context_window_tokens`，摘要预算应当跟着走。
+    fn context_window_tokens(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<usize>> + Send + '_>> {
+        Box::pin(async move { self.agent.model.config.read().await.context_window_tokens })
+    }
+
     /// 进度 → 线协议事件（面板画进度条）。
     ///
     /// 此前是把一句话塞进 `BackendEvent::Error`：面板会把它当**错误**处理

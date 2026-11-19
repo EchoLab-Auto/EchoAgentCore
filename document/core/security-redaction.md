@@ -52,6 +52,8 @@ core 组合根                  收集秘密表 → 调模块构造 → 注册 "
 | # | 卡口 | 位置 | 覆盖 |
 |---|---|---|---|
 | 1 | 工具结果出口 | `ToolRegistry::execute` / `execute_rich_in` 出口（结果文本与错误消息，出口持有脱敏器） | 一切工具：内置 / 模块 / 远程 / **子代理直呼** / 联邦路由 |
+| 1a | 结构化工具状态 | `ToolRegistry::snapshot` / `snapshot_for_session` 出口递归处理字符串值，不修改 schema 键、数字、布尔或 null；仅 `Tool::snapshot_machine_fields` 显式声明的稳定 ID / epoch / 会话键豁免，`name` / `text` / `summary` 等内容不豁免 | 防止状态面板绕过文本结果脱敏；std 短锁竞争不得在 current_thread runtime panic，也不得当成未注入脱敏器 |
+| 1b | 清单持久状态 | `ChecklistStore` 写入前处理清单名和条目文本，快照/摘要出口再次处理 | 清单文件与直接补拉接口也受保护；机器身份不是用户内容 |
 | 2 | LLM 请求出口 | `agent-module-provider-llm::redacting::wrap_redacting`（装饰 provider，请求侧全文扫描；`echo_agent::llm` 只 re-export） | 全部 LLM 出口：turn 循环（agent-module-loop）/ 子代理 / 等待回复 |
 | 3 | 模块实例外发出口 | `agent-module-tools::instance_bridge` 的 `gate_outbound`（**全部**模块实例工具，不按 `send_` 前缀；组合根侧的 `core::instance_tools` 只是 re-export） | 文本命中按策略阻断/替换（`block` 默认 / `redact`）；`file_path`/`file`/`image` 落在敏感目录直接拒发 |
 | 4 | 入站与落盘 | `Agent::process_message` / `process_inbound_branch` / `record_incoming_and_snapshot` / `run_tool` 参数 | 用户与 QQ 输入、工具调用参数（事件与会话日志）、工具结果事件 |

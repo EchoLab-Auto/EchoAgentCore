@@ -224,7 +224,7 @@ fn test_agent(provider: Arc<dyn LlmProvider>) -> Agent {
 /// ② 会话归属来自上下文（不是参数魔术键）；③ **没绑定就不发**——不许猜。
 #[tokio::test]
 async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
-    use agent_module_tools::checklist::ChecklistTool;
+    use agent_module_checklist::ChecklistTool;
 
     let agent = Arc::new(test_agent(Arc::new(MockProvider {
         calls: Arc::new(AtomicUsize::new(0)),
@@ -261,7 +261,7 @@ async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
     );
 
     // ② 注册绑定（由拥有该工具的模块给出声明）→ 发，且会话来自上下文。
-    for (key, build) in agent_module_tools::checklist::all_state_event_bindings() {
+    for (key, build) in agent_module_checklist::all_state_event_bindings() {
         agent.register_tool_state_event(key, build);
     }
     received.lock().unwrap().clear();
@@ -3062,12 +3062,13 @@ async fn spawn_subagent_call_and_receipt_are_recorded_in_event_log() {
         "面板 ToolResult 缺失"
     );
 }
-/// agent-module-loop 路径的工具超时守卫（2026-09-26 补：此前该路径没有守卫，
-/// 挂死的工具会永久拖住 turn——内置循环的外圈守卫在 agent-module-loop 上不生效）。
-/// 超时后 turn 继续（notice 喂回模型），事件日志补记中断结果、不留悬空调用。
+/// agent-module-loop 路径的工具超时守卫：超时只取消该调用，turn 继续；
+/// 事件日志补记中断结果，不留悬空调用。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_module_loop_path_guards_hung_tools_with_timeout() {
-    struct HungTool;
+    struct HungTool {
+        observed_cancel: Arc<std::sync::Mutex<Option<Arc<dyn echo_defs::tool::Cancellation>>>>,
+    }
     #[async_trait::async_trait]
     impl crate::tool::Tool for HungTool {
         fn name(&self) -> &str {
@@ -3080,6 +3081,14 @@ async fn agent_module_loop_path_guards_hung_tools_with_timeout() {
             &self,
             _arguments: serde_json::Value,
         ) -> Result<String, crate::tool::ToolError> {
+            unreachable!("context dispatch must use execute_in")
+        }
+        async fn execute_in(
+            &self,
+            cx: &echo_defs::tool::ToolContext,
+            _arguments: serde_json::Value,
+        ) -> Result<echo_defs::tool::ToolResult, crate::tool::ToolError> {
+            *self.observed_cancel.lock().unwrap() = cx.cancel.clone();
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             Ok("never".into())
         }
@@ -3106,11 +3115,13 @@ async fn agent_module_loop_path_guards_hung_tools_with_timeout() {
         },
     ]));
     let mut tools = ToolRegistry::new();
-    tools.register(Arc::new(HungTool));
+    let observed_cancel = Arc::new(std::sync::Mutex::new(None));
+    tools.register(Arc::new(HungTool {
+        observed_cancel: observed_cancel.clone(),
+    }));
     let agent = Arc::new(Agent::new(
         provider.clone(),
         AgentConfig {
-            // 1s 守卫：挂死工具（60s）必须被中止。
             tool_timeout_secs: Some(1),
             ..Default::default()
         },
@@ -3135,6 +3146,14 @@ async fn agent_module_loop_path_guards_hung_tools_with_timeout() {
         .await
         .unwrap();
     assert_eq!(reply, "done", "turn must continue after a tool timeout");
+    assert!(
+        observed_cancel
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|cancel| cancel.is_cancelled()),
+        "timeout must cancel the invocation token, not merely drop its future"
+    );
     assert!(
         started.elapsed() < std::time::Duration::from_secs(20),
         "guard must abort the 60s tool long before it finishes: {:?}",

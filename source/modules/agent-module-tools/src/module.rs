@@ -44,7 +44,7 @@ pub const LOOP_SERVICE_KEY: &str = "loop";
 /// 宿主要塞给工具箱的**端口**（都是"运行时才知道"的东西）。
 ///
 /// 每项都对应工具箱里一个真实接缝（见 lib.rs 的「接缝」章节）——多一项都
-/// 意味着模块多知道一件宿主内部结构，所以这里刻意只有四个。
+/// 意味着模块多知道一件宿主内部结构。
 ///
 /// 2026-11 之前有第五个（`shell`）：`bash-*` 三个工具需要它。那三个工具搬进
 /// `agent-module-shell` 之后，本模块不再认识 shell 会话管理器。
@@ -167,6 +167,8 @@ pub fn module(version: &str) -> Arc<dyn Module> {
 
     let instance = ServiceSlot::<Arc<dyn crate::instance_commands::InstanceCommandHost>>::new();
     let tools = ServiceSlot::<Arc<dyn crate::tool_commands::ToolsCommandHost>>::new();
+    // 清单运行时（可选依赖）：宿主注册了就绑定；没注册时摘要/查询降级为
+    // 明确错误，但模块本身照常挂载（工具仍可用内存 store）。
     let (bind_instance, bind_tools) = (instance.clone(), tools.clone());
     let (b_instance, b_tools) = (instance.clone(), tools.clone());
 
@@ -188,11 +190,13 @@ pub fn module(version: &str) -> Arc<dyn Module> {
         })
         // 依赖（loop + 两个 host 接缝）声明在 `module.toml` 的 `requires` 里：
         // 框架用 `Inject::from_manifest` 取，这里不再重复一遍。
-        // 命令域：`*Instance*` + 工具管理面两条域由本模块处理
+        // 命令域：`*Instance*` + 工具管理面两条由本模块处理
         // （宿主 `apply_command` 在落内置 match 之前问一次模块）。
         //
-        // `*Shell*` 四条已随 shell 工具搬进 `agent-module-shell`（2026-11）：
-        // 会话生命周期是一个独立能力，不该让"想关 shell"变成"关掉整个工具集"。
+        // `*Shell*` 四条已随 shell 工具搬进 `agent-module-shell`（2026-11）；
+        // `RequestChecklists` 随清单搬进 `agent-module-checklist`（2026-11）。
+        // 三者同一个理由：会话生命周期、清单真值都是独立能力，不该让
+        // "想关其中一个"变成"关掉整个工具集"。
         .with_commands(
             crate::instance_commands::COMMANDS
                 .into_iter()
@@ -207,7 +211,7 @@ pub fn module(version: &str) -> Arc<dyn Module> {
                         "命令 {name} 到 {MODULE_ID} 时模块尚未挂载（宿主接缝未绑定）"
                     ));
                 };
-                // 两个域依次问一次；都没认领 = 错（`with_commands` 与处理器
+                // 三个域依次问一次；都没认领 = 错（`with_commands` 与处理器
                 // 必须同步，测试守着）。
                 if let Some(outcome) =
                     crate::instance_commands::InstanceCommandHandler::new(instance_host)
@@ -216,12 +220,12 @@ pub fn module(version: &str) -> Arc<dyn Module> {
                 {
                     return outcome;
                 }
-                crate::tool_commands::ToolsCommandHandler::new(tools_host)
+                crate::tool_commands::ToolsCommandHandler::new(tools_host.clone())
                     .handle(&name, payload)
                     .await
                     .unwrap_or_else(|| {
                         Err(format!(
-                            "命令 {name} 被 {MODULE_ID} 声明，但 tools 的三个域都没有认领它"
+                            "命令 {name} 被 {MODULE_ID} 声明，但 tools 的两个域都没有认领它"
                         ))
                     })
             })

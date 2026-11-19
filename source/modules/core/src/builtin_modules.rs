@@ -197,6 +197,13 @@ pub(crate) fn catalog_with(
         agent_module_loop::tool::builtin::builtin_module::module(version),
     )?;
 
+    // ── 任务清单（`checklist` 工具 + 持久 store + `RequestChecklists`）──
+    //
+    // 2026-11 从工具集拆出：清单的状态真值是 per-persona 文件，装配面是
+    // 「宿主给端口、模块造工具」。顺序紧跟工具集——它不依赖工具集，但两者
+    // 在面板里应当相邻（同属「模型能力」）。
+    push_module(&mut catalog, agent_module_checklist::module(version))?;
+
     // ── Shell 会话（`bash-start` / `bash-exec` / `bash-stop` + 命令域）──
     //
     // 2026-11 从工具集拆出：它有自己的机制依赖（`agent-module-shell` 的进程组

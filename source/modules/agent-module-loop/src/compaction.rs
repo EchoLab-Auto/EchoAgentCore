@@ -39,7 +39,7 @@
 
 use std::sync::Arc;
 
-use echo_defs::llm::LlmProvider;
+use echo_defs::llm::{LlmProvider, TRUNCATION_CONTINUE_PROMPT};
 use echo_defs::message::{ChatMessage, ChatRequest};
 use echo_defs::token::estimate_tokens;
 use echo_session::event::SessionEvent;
@@ -47,15 +47,85 @@ use echo_session::{
     CompactGroup, CompactPreview, CompactionPhase, CompactionProgress, CompactionSummary,
 };
 
-/// 一次摘要调用的转录 token 预算（被替换的前缀通常远小于它；超了就按
-/// [`TRANSCRIPT_TIERS`] 收缩）。
+/// 一次摘要调用的转录 token 预算**上限**（被替换的前缀通常远小于它；超了就
+/// 按 `TRANSCRIPT_TIERS` 逐级收紧）。
+///
+/// 这是上限而非定值：模型窗口已知时按 [`SummaryLimits::for_context_window`]
+/// 收到半窗以内——50k 输入喂给 8k 窗口的模型会先撞 HTTP 400，比截断更难恢复。
 pub const TRANSCRIPT_TOKEN_BUDGET: usize = 50_000;
 
-/// 一次摘要的输出上限（提示词要求 ≤ 800 字）。
-pub const SUMMARY_MAX_TOKENS: u32 = 1500;
+/// 一次摘要的输出上限（**未配置模型窗口时**的默认值）。
+///
+/// **这是保险丝，不是目标字数**：提示词要的是 ≤800 字（约 800–1200 token），
+/// 但思考模式与正文**共享 completion 预算**（`echo_defs::message::
+/// DEFAULT_MAX_TOKENS` 的注释记着同一个坑）。取 1500 时，推理模型光思考就能
+/// 吃掉整笔预算，稳定撞 `max_tokens`（`ChatResponse::truncated()` 为真）→
+/// 整组判失败；`groups = 1` 时一组失败即整次压缩全失败，历史一条不动、上下文
+/// 照旧爆满（2026-11 实测）。
+///
+/// 抬到 8000 只抬高**上限**，不产生额外成本：按实际生成长度计费，且仍远低于
+/// 任何主流模型的单次输出上限（提示词已把正文压在 800 字以内，正常情况根本
+/// 走不到这里）。
+pub const SUMMARY_MAX_TOKENS: u32 = 8_000;
 
-/// 单组摘要的截止时间。
+/// 输出预算的下限：窗口再小也要给模型留出写四节正文的空间。
+const MIN_OUTPUT_TOKENS: u32 = 256;
+
+/// 单组摘要的截止时间（**含续写**，不是每次调用的预算）。
+///
+/// 截断续写会把单组从 1 次调用变成最多 [`MAX_SUMMARY_CONTINUES`] + 1 次，
+/// 所以这里约束的是**整组**：开始时就定下 deadline，续写只能花剩余时间。
+/// 否则单组最坏耗时 = 180s × 3，进度条上看起来就是卡死。
 pub const SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// 单组内允许的续写次数（截断后让模型接着写）。
+///
+/// 手段与主循环同源（残片入栈 + [`TRUNCATION_CONTINUE_PROMPT`]），但**预算
+/// 独立**：主循环的 [`echo_defs::llm::MAX_TRUNCATION_CONTINUES`] 是 4，因为
+/// 它面对的是开放性长输出；摘要正文被提示词限在 800 字，2 次足够覆盖"思考
+/// 吃掉预算"的常见形状，再多只会在真正的死循环上白烧额度。
+pub const MAX_SUMMARY_CONTINUES: usize = 2;
+
+/// 摘要请求的两项预算。
+///
+/// 合成一个结构体而不是两个参数：两者必须**同时**随窗口收缩——只收输入不收
+/// 输出，会得到"输入 4k + 输出 8k"的超窗请求。
+#[derive(Debug, Clone, Copy)]
+pub struct SummaryLimits {
+    /// 转录（输入）预算，见 [`TRANSCRIPT_TOKEN_BUDGET`]。
+    pub transcript_budget: usize,
+    /// 单次输出上限，见 [`SUMMARY_MAX_TOKENS`]。
+    pub max_tokens: u32,
+}
+
+impl SummaryLimits {
+    /// 按模型上下文窗口推导预算。
+    ///
+    /// - 输入取**半窗**（另一半留给输出、系统提示词与 token 估算误差）；
+    /// - 输出取**四分之一窗**，封顶 [`SUMMARY_MAX_TOKENS`]、兜底
+    ///   `MIN_OUTPUT_TOKENS`；
+    /// - 窗口未知 / 为 0 → 沿用内置默认（多数部署不配 `context_window_tokens`，
+    ///   这时行为与引入窗口推导之前完全一致）。
+    pub fn for_context_window(window: Option<usize>) -> Self {
+        match window {
+            Some(window) if window > 0 => Self {
+                transcript_budget: TRANSCRIPT_TOKEN_BUDGET.min(window / 2),
+                max_tokens: (window / 4).clamp(MIN_OUTPUT_TOKENS as usize, SUMMARY_MAX_TOKENS as usize)
+                    as u32,
+            },
+            _ => Self {
+                transcript_budget: TRANSCRIPT_TOKEN_BUDGET,
+                max_tokens: SUMMARY_MAX_TOKENS,
+            },
+        }
+    }
+}
+
+impl Default for SummaryLimits {
+    fn default() -> Self {
+        Self::for_context_window(None)
+    }
+}
 
 /// 一档转录的单事件字符上限。
 #[derive(Debug, Clone, Copy)]
@@ -99,6 +169,237 @@ const SUMMARY_SYSTEM_PROMPT: &str = "\
 - 全文不超过 800 字
 - 直接输出摘要正文（含四节小标题），不要任何前后缀或额外解释";
 
+/// 摘要失败**按处置分类**。
+///
+/// 为什么不再是一个 `String`：不同失败的正确动作是互斥的。
+///
+/// | 失败 | 正确动作 | 换出口有用吗 |
+/// |---|---|---|
+/// | 截断 | 续写（残片当 assistant 前缀） | 不一定——同族模型额度一样 |
+/// | 额度/限流 | **冷却该出口**，别再打 | 有用：备用是另一个 profile |
+/// | 超时 / 网络 / 解析 | 换出口重试一次 | 有用 |
+/// | 空 / 工具调用 | 拒绝，别重试 | 无用（形状异常，换个出口也一样） |
+///
+/// 压成一个字符串时，这些信息全丢了：调用方只能一律"换个出口再试"，于是
+/// 429 在每一组上重复撞、截断永远得不到补救（2026-11 实测：`groups = 1` 的
+/// 一次压缩因"截断 + 备用出口 429"整体失败，历史一条不动）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SummaryError {
+    /// 输出被 token 上限截断。`partial` 是已生成的部分（可作续写前缀）。
+    Truncated {
+        /// 已生成的残片。
+        partial: String,
+    },
+    /// 额度 / 限流：`resets_at` 是上游给的恢复时刻（Unix 秒，可能缺）。
+    Quota {
+        /// 上游 HTTP 状态码（429 限流 / 402 欠费）。
+        status: u16,
+        /// 上游返回的错误摘要（已截断，用于排障）。
+        detail: String,
+        /// 上游声明的恢复时刻（Unix 秒）。
+        resets_at: Option<i64>,
+    },
+    /// 该出口在本次压缩中已被判定不可用，**未发起调用**。
+    Skipped {
+        /// 冷却原因（沿用该出口上一次的真实失败）。
+        reason: Box<SummaryError>,
+    },
+    /// 单组总预算用尽。
+    Timeout,
+    /// 响应里冒出工具调用（请求根本没给工具）。
+    ToolCalls {
+        /// 调用个数。
+        count: usize,
+    },
+    /// 响应为空。
+    Empty,
+    /// 组内没有可压缩事件（不该调用模型）。
+    NoEvents,
+    /// 其它 provider 失败（网络 / 解析 / 配置）。
+    Provider {
+        /// 原始错误文案。
+        detail: String,
+    },
+    /// 主备两个出口都失败（保留两条原因，供排障与文案排序）。
+    Both {
+        /// 主出口的失败。
+        primary: Box<SummaryError>,
+        /// 备用出口的失败。
+        fallback: Box<SummaryError>,
+    },
+}
+
+/// 额度类失败的默认冷却时长（上游没给 `resets_at` 时）。
+///
+/// 取 60s 而不是几分钟：provider 内部已经对 429 退避重试过 2 次
+/// （`TRANSIENT_RETRIES`），能走到这里说明"短退避不管用"；但也不能太长——
+/// 上游的限流窗口常是滚动的一分钟。
+const DEFAULT_QUOTA_COOLDOWN_SECS: u64 = 60;
+
+/// 冷却时长的上限（防止 `resets_at` 异常值把 `Instant` 推溢出）。
+const MAX_QUOTA_COOLDOWN_SECS: u64 = 86_400;
+
+impl SummaryError {
+    /// 从 `LlmError` 分类：`Api` 里的 `HTTP {status}` 是唯一可靠信号。
+    ///
+    /// 为什么靠字符串而不是结构化字段：`LlmError`（`echo-defs`）刻意不依赖
+    /// HTTP 客户端，也**没有** status 字段——providers 一律把状态码编进
+    /// `Api(String)` 的前缀，格式是 `HTTP {status}[:：]…`（半角见
+    /// `openai.rs` / `anthropic.rs`，全角见 `chatgpt/auth.rs`）。改 `LlmError`
+    /// 的变体会波及所有 provider 与外部下游，不值。
+    pub fn from_provider_error(error: &echo_defs::llm::LlmError) -> Self {
+        let detail = error.to_string();
+        match extract_http_status(&detail) {
+            // 402 欠费 / 429 限流：都是"这个出口暂时不该再用"。
+            Some(status @ (402 | 429)) => Self::Quota {
+                status,
+                resets_at: extract_resets_at(&detail),
+                detail,
+            },
+            _ => Self::Provider { detail },
+        }
+    }
+
+    /// 该出口应冷却到何时；`None` = 不必冷却（换出口或直接失败即可）。
+    ///
+    /// 只对额度类返回时长：其它失败重试是**有意义**的（网络抖动、超时），
+    /// 冷却反而会误杀。
+    fn cooldown(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::Quota { resets_at, .. } => {
+                let secs = match resets_at {
+                    Some(at) => (at - now_unix()).clamp(0, MAX_QUOTA_COOLDOWN_SECS as i64) as u64,
+                    None => DEFAULT_QUOTA_COOLDOWN_SECS,
+                };
+                // 已过恢复时刻（或上游是过去的时间戳）→ 仍给最小冷却，
+                // 避免"命中即过期"导致对同一组连续重打。
+                Some(std::time::Duration::from_secs(secs.max(1)))
+            }
+            _ => None,
+        }
+    }
+
+    /// 报告严重度：数字越小越"难恢复"，排在最前面。
+    ///
+    /// 用户最先看到的那一条应该是最需要动手的那一条——之前按组序拼接，
+    /// 可修复的截断会排在不可恢复的额度失败前面，排障方向直接被带偏。
+    fn severity(&self) -> u8 {
+        match self {
+            Self::Quota { .. } => 0,
+            Self::Skipped { reason } => reason.severity(),
+            Self::Provider { .. } | Self::Timeout => 1,
+            Self::Truncated { .. } | Self::ToolCalls { .. } | Self::Empty | Self::NoEvents => 2,
+            // 合成原因取两者中更严重的那一个（数字更小）。
+            Self::Both { primary, fallback } => primary.severity().min(fallback.severity()),
+        }
+    }
+}
+
+impl std::fmt::Display for SummaryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated { partial } => write!(
+                f,
+                "摘要输出被截断（达到 token 上限，只有 {} 字的残片；已尝试续写 {} 次）",
+                partial.chars().count(),
+                MAX_SUMMARY_CONTINUES
+            ),
+            Self::Quota {
+                status,
+                resets_at,
+                ..
+            } => {
+                let what = if *status == 402 {
+                    "额度不足"
+                } else {
+                    "被限流"
+                };
+                match resets_at {
+                    // 已过期时不能拼成"额度已到期恢复"——那是病句，且会误导
+                    // 用户继续等。单独给一句可执行的话。
+                    Some(at) if *at <= now_unix() => write!(
+                        f,
+                        "摘要请求{what}（HTTP {status}；额度已到期，可立即重试）"
+                    ),
+                    Some(at) => write!(
+                        f,
+                        "摘要请求{what}（HTTP {status}；额度{}恢复）",
+                        humanize_reset(*at)
+                    ),
+                    None => write!(f, "摘要请求{what}（HTTP {status}）"),
+                }
+            }
+            Self::Skipped { reason } => {
+                write!(f, "{reason}（本次压缩已跳过对该出口的重复尝试）")
+            }
+            Self::Timeout => write!(
+                f,
+                "摘要请求超时（单组 {} 秒预算用尽，含续写）",
+                SUMMARY_TIMEOUT.as_secs()
+            ),
+            Self::ToolCalls { count } => {
+                write!(f, "摘要响应包含 {count} 个工具调用（应为纯文本）")
+            }
+            Self::Empty => write!(f, "摘要输出为空"),
+            Self::NoEvents => write!(f, "组内没有可压缩事件"),
+            Self::Provider { detail } => write!(f, "摘要请求失败：{detail}"),
+            // 两条原因都保留：`both_providers_failing_keeps_both_reasons`
+            // 钉住这条形状——排障时"主为什么挂 + 备为什么也挂"缺一不可。
+            Self::Both { primary, fallback } => {
+                write!(f, "{primary}；备用出口重试亦失败：{fallback}")
+            }
+        }
+    }
+}
+
+/// 当前 Unix 秒。
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 从 provider 错误文案里取 `HTTP {status}` 的状态码。
+fn extract_http_status(detail: &str) -> Option<u16> {
+    let start = detail.find("HTTP ")? + "HTTP ".len();
+    let digits: String = detail[start..]
+        .chars()
+        .take(3)
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+/// 从 provider 错误文案里取 `"resets_at":<unix>`。
+///
+/// 不引入 JSON 解析：这段 body 已被 provider 截断（300–400 字符），本身就
+/// 不是合法 JSON；上游把 `resets_at` 放在靠前位置，子串扫描足够。
+fn extract_resets_at(detail: &str) -> Option<i64> {
+    const NEEDLE: &str = "\"resets_at\"";
+    let rest = detail.get(detail.find(NEEDLE)? + NEEDLE.len()..)?;
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// 把 Unix 秒描述成"约 N 分钟/小时后"。
+///
+/// 刻意**不做**绝对时间格式化：标准库没有本地时区换算，引入日期库只为一行
+/// 文案不划算；而"还有多久"才是用户真正要的判断依据。
+///
+/// 只处理**未来**时刻；已过期的分支由调用方（`Display`）单独表述。
+fn humanize_reset(resets_at: i64) -> String {
+    let remaining = resets_at - now_unix();
+    if remaining >= 86_400 {
+        format!("约 {} 天后", remaining / 86_400)
+    } else if remaining >= 3_600 {
+        format!("约 {} 小时后", remaining / 3_600)
+    } else {
+        format!("约 {} 分钟后", (remaining / 60).max(1))
+    }
+}
+
 /// 宿主端口：压缩策略需要而模块不该知道的六件事。
 ///
 /// `compact_history` 的**互斥锁由宿主持有**（在调用本函数之前拿），所以这里
@@ -129,6 +430,19 @@ pub trait CompactionHost: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Option<Arc<dyn LlmProvider>>> + Send + '_>,
     > {
+        Box::pin(async { None })
+    }
+    /// 模型的上下文窗口（token）；`None` = 未知 / 未配置。
+    ///
+    /// 摘要的输入输出预算都从它推导（[`SummaryLimits::for_context_window`]）。
+    /// 不读它时用内置默认（50k 输入 / 8k 输出），在**小窗口模型上会先撞
+    /// HTTP 400**——那是比截断更没救的失败：请求根本没被受理，续写与换出口
+    /// 都无从谈起。
+    ///
+    /// 默认 `None`：嵌入式宿主不认识这份配置，保持引入窗口推导之前的行为。
+    fn context_window_tokens(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<usize>> + Send + '_>> {
         Box::pin(async { None })
     }
     /// 进度上报（阶段 + 分子分母 + 一句话）。
@@ -220,14 +534,12 @@ pub async fn compact_history(
             format!("正在生成摘要 {done}/{total}{who}…"),
         ));
     };
-    let (summaries, llm_count, failed_count) = summarize_preview_with_progress(
-        &provider,
-        fallback.as_ref(),
-        &preview,
-        keep_recent,
-        &reporter,
-    )
-    .await;
+    // 预算按模型窗口收缩：50k 输入 / 8k 输出在小窗口模型上会先撞 400
+    // （请求根本没被受理），比截断更难恢复。窗口未知时与旧行为完全一致。
+    let limits = SummaryLimits::for_context_window(host.context_window_tokens().await);
+    let (summaries, llm_count, failed_count) =
+        summarize_preview_with_limits(&provider, fallback.as_ref(), &preview, limits, &reporter)
+            .await;
     debug_assert_eq!(groups, llm_count + failed_count);
     if llm_count == 0 {
         // 全失败：返回 Err 且**不 apply**——历史保持原样，用户看到真实原因。
@@ -291,13 +603,145 @@ pub async fn compact_history(
 }
 
 /// 失败组的去重原因（供整体错误与混合结果文案共用）。
+///
+/// **按严重度排序**（额度 → 其它 → 形状异常），不是按组序：用户最先看到的
+/// 那条应该是最需要动手的那条。此前按组序拼接，可修复的截断会排在不可恢复的
+/// 429 前面，排障方向直接被带偏（2026-11 实测：用户先看到"摘要输出被截断"，
+/// 而真正让整次压缩失败的是备用出口的 429）。
 fn failure_reasons(summaries: &[SummaryOrFallback]) -> Vec<String> {
-    let mut reasons: Vec<String> = summaries
+    let mut ranked: Vec<(u8, String)> = summaries
         .iter()
-        .filter_map(|summary| summary.failure_reason.clone())
+        .filter_map(|summary| {
+            summary
+                .failure_reason
+                .as_ref()
+                .map(|error| (error.severity(), error.to_string()))
+        })
         .collect();
-    reasons.dedup();
-    reasons
+    ranked.sort_by_key(|(severity, _)| *severity);
+    let mut out: Vec<String> = Vec::new();
+    for (_, text) in ranked {
+        // 完全相同的原因只留一份。`dedup` 不够：它只去**相邻**重复，而排序
+        // 打乱了原本的组序。
+        if !out.contains(&text) {
+            out.push(text);
+        }
+    }
+    out
+}
+
+/// 一个出口的冷却状态（本次压缩内有效）。
+#[derive(Default)]
+struct OutletState {
+    /// 冷却截止时刻；`None` = 从未命中额度类失败。
+    until: Option<tokio::time::Instant>,
+    /// 上一次真实失败原因（跳过时沿用它，不丢排障信息）。
+    last: Option<SummaryError>,
+}
+
+impl OutletState {
+    /// 现在可否调用；不可用时给出"本次已跳过"的原因。
+    fn blocked(&self) -> Option<SummaryError> {
+        let until = self.until?;
+        if tokio::time::Instant::now() < until {
+            return Some(SummaryError::Skipped {
+                reason: Box::new(self.last.clone()?),
+            });
+        }
+        None
+    }
+
+    /// 记下一次真实失败：只有额度类会真的把出口打进冷却。
+    fn record(&mut self, error: &SummaryError) {
+        self.last = Some(error.clone());
+        self.until = error
+            .cooldown()
+            .map(|duration| tokio::time::Instant::now() + duration);
+    }
+}
+
+/// 本次压缩内的**出口冷却**（主 / 备各一个槽位）。
+///
+/// 为什么是局部状态而不是进程级单例：
+///
+/// - 需求本身就是"**同一次压缩里**后续组别再撞同一下不可用的出口"——"后续组"
+///   只在一次压缩内存在；
+/// - 进程级静态状态会被并行测试互相污染（`ScriptedProvider` 用 402 模拟失败，
+///   一条用例的熔断会让其它用例全部跳过），也会让"用户手动再点一次压缩"
+///   静默什么都不做；
+/// - 跨压缩的冷却上游自己会声明 `resets_at`，用户的下一步动作本来就该是等它。
+///
+/// 注意冷却的是**槽位**不是"额度池"：主出口欠费（402）时换备用出口（另一个
+/// profile）是 2026-10 修复的正解，必须继续允许。
+#[derive(Default)]
+struct OutletCooldown {
+    primary: OutletState,
+    fallback: OutletState,
+}
+
+/// 一组的执行结果：`(摘要正文, 是否拿到可安装摘要, 失败原因)`。
+type GroupOutcome = (String, bool, Option<SummaryError>);
+
+/// 单组摘要：主出口 →（必要时）备用出口，两者都受本组冷却约束。
+///
+/// 与旧实现的顺序差异：旧实现"主出口失败就立刻换出口"，把额度类失败也换了
+/// 过去——两个出口若指向同一额度池，只会白打一次。现在先看槽位是否在冷却，
+/// 在冷却就直接跳过并沿用上次原因。
+async fn summarize_one(
+    provider: &Arc<dyn LlmProvider>,
+    fallback: Option<&Arc<dyn LlmProvider>>,
+    group: &CompactGroup,
+    limits: SummaryLimits,
+    cooldown: &mut OutletCooldown,
+) -> GroupOutcome {
+    let primary = match cooldown.primary.blocked() {
+        Some(skipped) => Err(skipped),
+        None => match summarize_group_with(provider, group, limits).await {
+            Ok(body) => Ok(body),
+            Err(error) => {
+                cooldown.primary.record(&error);
+                Err(error)
+            }
+        },
+    };
+    match primary {
+        Ok(body) => (body, true, None),
+        Err(primary_error) => {
+            let Some(alternative) = fallback else {
+                return (String::new(), false, Some(primary_error));
+            };
+            // 2026-10 修复：人格 profile 欠费（HTTP 402）/ 端点不可用时，
+            // 此前整组直接降级为统计文案，历史信息全丢。这里换全局默认
+            // 出口重试一次；两次失败原因都留在失败原因里便于排障。
+            let retry = match cooldown.fallback.blocked() {
+                Some(skipped) => Err(skipped),
+                None => match summarize_group_with(alternative, group, limits).await {
+                    Ok(body) => Ok(body),
+                    Err(error) => {
+                        cooldown.fallback.record(&error);
+                        Err(error)
+                    }
+                },
+            };
+            match retry {
+                Ok(body) => {
+                    tracing::warn!(
+                        session = group.session.as_deref().unwrap_or("<legacy>"),
+                        "compaction: primary provider failed, fallback provider succeeded"
+                    );
+                    (body, true, None)
+                }
+                Err(fallback_error) => (
+                    String::new(),
+                    false,
+                    Some(SummaryError::Both {
+                        primary: Box::new(primary_error),
+                        fallback: Box::new(fallback_error),
+                    }),
+                ),
+            }
+        }
+    }
 }
 
 /// 逐组摘要（按序，每组**最多两次**调用：主出口 + 备用出口）。
@@ -325,6 +769,9 @@ pub async fn summarize_preview(
 /// 同 [`summarize_preview`]，但**每完成一组**就回调一次进度
 /// `(done, total, 会话)`。`progress` 必须是廉价操作（见
 /// [`CompactionHost::progress`] 的说明）。
+///
+/// 预算用内置默认（[`SummaryLimits::default`]）；生产路径走
+/// [`summarize_preview_with_limits`] 以便按模型窗口收缩。
 pub async fn summarize_preview_with_progress(
     provider: &Arc<dyn LlmProvider>,
     fallback: Option<&Arc<dyn LlmProvider>>,
@@ -332,54 +779,36 @@ pub async fn summarize_preview_with_progress(
     _keep_recent: usize,
     progress: &(dyn Fn(usize, usize, Option<&str>) + Sync),
 ) -> (Vec<SummaryOrFallback>, usize, usize) {
+    summarize_preview_with_limits(provider, fallback, preview, SummaryLimits::default(), progress)
+        .await
+}
+
+/// 同 [`summarize_preview_with_progress`]，但预算显式给出。
+pub async fn summarize_preview_with_limits(
+    provider: &Arc<dyn LlmProvider>,
+    fallback: Option<&Arc<dyn LlmProvider>>,
+    preview: &CompactPreview,
+    limits: SummaryLimits,
+    progress: &(dyn Fn(usize, usize, Option<&str>) + Sync),
+) -> (Vec<SummaryOrFallback>, usize, usize) {
+    let mut cooldown = OutletCooldown::default();
     let mut out = Vec::new();
     let mut llm_count = 0usize;
     let mut failed_count = 0usize;
     let total = preview.groups.len();
     for (index, group) in preview.groups.iter().enumerate() {
-        let primary = summarize_group(provider, group).await;
-        let mut retried = false;
-        let (summary, from_llm, failure_reason) = match primary {
-            Ok(body) => (body, true, None),
-            Err(primary_reason) => {
-                // 2026-10 修复：人格 profile 欠费（HTTP 402）/ 端点不可用时，
-                // 此前整组直接降级为统计文案，历史信息全丢。这里换全局默认
-                // 出口重试一次；两次失败原因都留在失败原因里便于排障。
-                let retry = match fallback {
-                    Some(alternative) => {
-                        retried = true;
-                        summarize_group(alternative, group)
-                            .await
-                            .map_err(|retry_reason| {
-                                format!("{primary_reason}；备用出口重试亦失败：{retry_reason}")
-                            })
-                    }
-                    None => Err(primary_reason),
-                };
-                match retry {
-                    Ok(body) => {
-                        tracing::warn!(
-                            session = group.session.as_deref().unwrap_or("<legacy>"),
-                            "compaction: primary provider failed, fallback provider succeeded"
-                        );
-                        (body, true, None)
-                    }
-                    Err(reason) => {
-                        failed_count += 1;
-                        // 失败组不生成摘要（PR1）：绝不用统计文案替换历史。
-                        (String::new(), false, Some(reason))
-                    }
-                }
-            }
-        };
+        let (summary, from_llm, failure_reason) =
+            summarize_one(provider, fallback, group, limits, &mut cooldown).await;
         if from_llm {
             llm_count += 1;
+        } else {
+            failed_count += 1;
+            // 失败组不生成摘要（PR1）：绝不用统计文案替换历史。
         }
         tracing::info!(
             session = group.session.as_deref().unwrap_or("<legacy>"),
             replaced = group.replaced_count,
             from_llm,
-            retried,
             "compaction: group summarized"
         );
         out.push(SummaryOrFallback {
@@ -408,10 +837,13 @@ pub struct SummaryOrFallback {
     /// 是否拿到可安装的摘要（主出口或备用出口成功）。
     pub from_llm: bool,
     /// 失败原因（仅 `from_llm == false` 时有值，用于给用户的报告）。
-    pub failure_reason: Option<String>,
+    ///
+    /// 用 [`SummaryError`] 而不是 `String`：调用方需要按**类别**排序（见
+    /// `failure_reasons`），字符串只能靠关键字猜。
+    pub failure_reason: Option<SummaryError>,
 }
 
-/// 用模型摘要一组。`Err` 携带短原因（同时用于给用户的报告）。
+/// 用模型摘要一组（内置默认预算）。`Err` 是**分类过**的失败原因。
 ///
 /// 只接受**完整纯文本**：非空但被 token 上限截断（`stop_reason` 为
 /// `max_tokens` / `length`）、或响应里带工具调用（请求根本没给工具）都算
@@ -419,59 +851,111 @@ pub struct SummaryOrFallback {
 pub async fn summarize_group(
     provider: &Arc<dyn LlmProvider>,
     group: &CompactGroup,
-) -> Result<String, String> {
-    if group.replaced.is_empty() {
-        return Err("组内没有可压缩事件".into());
-    }
-    let transcript = render_transcript(&group.replaced);
-    let request = ChatRequest {
-        model: provider.default_model().to_string(),
-        messages: vec![
-            ChatMessage::system(SUMMARY_SYSTEM_PROMPT),
-            ChatMessage::user(format!("旧对话记录：\n\n{transcript}")),
-        ],
-        tools: None,
-        temperature: None,
-        max_tokens: Some(SUMMARY_MAX_TOKENS),
-    };
-    let response = match tokio::time::timeout(SUMMARY_TIMEOUT, provider.chat(&request)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err(error)) => return Err(format!("摘要请求失败：{error}")),
-        Err(_) => return Err("摘要请求超时".into()),
-    };
-    if response.truncated() {
-        return Err("摘要输出被截断（达到 token 上限，只有残片）".into());
-    }
-    if !response.tool_calls.is_empty() {
-        return Err(format!(
-            "摘要响应包含 {} 个工具调用（应为纯文本）",
-            response.tool_calls.len()
-        ));
-    }
-    let body = response.content.unwrap_or_default();
-    let body = body.trim();
-    if body.is_empty() {
-        return Err("摘要输出为空".into());
-    }
-    Ok(body.to_string())
+) -> Result<String, SummaryError> {
+    summarize_group_with(provider, group, SummaryLimits::default()).await
 }
 
-/// 把被替换的事件渲染成带角色标签的转录，逐级收缩直到装进
-/// [`TRANSCRIPT_TOKEN_BUDGET`]：先收紧单事件上限，仍超就丢最老的事件
-/// （新上下文优先）。
+/// 同 [`summarize_group`]，但预算显式给出。
+///
+/// 与旧实现的唯一行为差异：**截断不再一次判死**。残片会被当成 assistant
+/// 前缀、追加 [`TRUNCATION_CONTINUE_PROMPT`] 让模型接着写（上限
+/// [`MAX_SUMMARY_CONTINUES`] 次，与主循环同源的手段）。
+///
+/// 为什么值得续写：压缩的输入是一整段历史，输出是一份四节摘要——一旦在半途
+/// 被 `max_tokens` 切断，换个出口再问一遍等于把整段输入重发一次，而续写只花
+/// 一个残片的钱。这也是主循环早就在做的事（`runner.rs` 的截断续跑），压缩
+/// 路径此前漏了。
+///
+/// 单组的总时限是 [`SUMMARY_TIMEOUT`]（**含**全部续写），用同一个 deadline
+/// 约束，否则最坏耗时 = 180s × 3，在进度条上就是"卡住"。
+pub async fn summarize_group_with(
+    provider: &Arc<dyn LlmProvider>,
+    group: &CompactGroup,
+    limits: SummaryLimits,
+) -> Result<String, SummaryError> {
+    if group.replaced.is_empty() {
+        return Err(SummaryError::NoEvents);
+    }
+    let deadline = tokio::time::Instant::now() + SUMMARY_TIMEOUT;
+    let transcript = render_transcript_with_budget(&group.replaced, limits.transcript_budget);
+    let mut messages = vec![
+        ChatMessage::system(SUMMARY_SYSTEM_PROMPT),
+        ChatMessage::user(format!("旧对话记录：\n\n{transcript}")),
+    ];
+    // 逐轮累积：续写出来的片段拼在残片之后，拼的是一份**连续**的摘要。
+    // 这里刻意不同于主循环（它只保留最后一轮的 content）——主循环里前半截
+    // 已经作为 assistant 消息留在 messages 里、可被后续轮读到；压缩这里
+    // 只要最终那一份摘要文本，丢了就真丢了。
+    let mut assembled = String::new();
+    for round in 0..=MAX_SUMMARY_CONTINUES {
+        let request = ChatRequest {
+            model: provider.default_model().to_string(),
+            messages: messages.clone(),
+            tools: None,
+            temperature: None,
+            max_tokens: Some(limits.max_tokens),
+        };
+        let response = match tokio::time::timeout_at(deadline, provider.chat(&request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => return Err(SummaryError::from_provider_error(&error)),
+            Err(_) => return Err(SummaryError::Timeout),
+        };
+        if !response.tool_calls.is_empty() {
+            return Err(SummaryError::ToolCalls {
+                count: response.tool_calls.len(),
+            });
+        }
+        // 先取截断判定再解构 content：`unwrap_or_default` 会移走 content。
+        let truncated = response.truncated();
+        let piece = response.content.unwrap_or_default();
+        // 累积到同一份摘要：续写出来的片段接在残片之后（见上文的说明）。
+        assembled.push_str(&piece);
+        if !truncated {
+            let body = assembled.trim();
+            if body.is_empty() {
+                return Err(SummaryError::Empty);
+            }
+            return Ok(body.to_string());
+        }
+        // 残片为空 = 模型把整笔预算花在了思考上（或直接吐出空 delta）。
+        // 续写只会以同样的理由再截一次，直接报截断让人去调预算。
+        if piece.trim().is_empty() {
+            break;
+        }
+        tracing::warn!(
+            round,
+            partial_chars = piece.chars().count(),
+            max_tokens = limits.max_tokens,
+            "compaction: summary truncated at token limit; continuing"
+        );
+        messages.push(ChatMessage::assistant(piece));
+        messages.push(ChatMessage::user(TRUNCATION_CONTINUE_PROMPT));
+    }
+    Err(SummaryError::Truncated {
+        partial: assembled.trim().to_string(),
+    })
+}
+
+/// 把被替换的事件渲染成带角色标签的转录（内置预算）。
 pub fn render_transcript(events: &[SessionEvent]) -> String {
+    render_transcript_with_budget(events, TRANSCRIPT_TOKEN_BUDGET)
+}
+
+/// 同 [`render_transcript`]，但预算显式给出（见 [`SummaryLimits`]）。
+///
+/// 逐级收缩直到装进 `budget`：先收紧单事件上限，仍超就丢最老的事件
+/// （新上下文优先）。
+pub fn render_transcript_with_budget(events: &[SessionEvent], budget: usize) -> String {
     for caps in TRANSCRIPT_TIERS {
         let text = render_with_caps(events, caps);
-        if estimate_tokens(&text) <= TRANSCRIPT_TOKEN_BUDGET {
+        if estimate_tokens(&text) <= budget {
             return text;
         }
     }
     // 最后手段：只留有最新的一批。丢前缀使转录单调收缩，所以二分找截断点，
     // 不必每丢一条就重渲染（O(n log n) vs O(n²)）。
     let caps = TRANSCRIPT_TIERS[TRANSCRIPT_TIERS.len() - 1];
-    let fits = |start: usize| {
-        estimate_tokens(&render_with_caps(&events[start..], caps)) <= TRANSCRIPT_TOKEN_BUDGET
-    };
+    let fits = |start: usize| estimate_tokens(&render_with_caps(&events[start..], caps)) <= budget;
     if fits(0) {
         return render_with_caps(events, caps);
     }
@@ -486,8 +970,8 @@ pub fn render_transcript(events: &[SessionEvent]) -> String {
     }
     let mut text = render_with_caps(&events[lo..], caps);
     // 病态情况：单条事件就超过整个预算——硬截断。
-    if estimate_tokens(&text) > TRANSCRIPT_TOKEN_BUDGET {
-        let head: String = text.chars().take(TRANSCRIPT_TOKEN_BUDGET / 2).collect();
+    if estimate_tokens(&text) > budget {
+        let head: String = text.chars().take(budget / 2).collect();
         text = format!("{head}…（截断）");
     }
     if lo > 0 {
@@ -819,7 +1303,11 @@ mod tests {
         assert_eq!(failed_count, 1);
         assert!(!summaries[0].from_llm);
         assert!(summaries[0].summary.is_empty(), "失败组不得有摘要正文");
-        let reason = summaries[0].failure_reason.as_deref().unwrap_or_default();
+        let reason = summaries[0]
+            .failure_reason
+            .as_ref()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
         assert!(reason.contains("402"), "主出口原因缺失：{reason}");
         assert!(
             reason.contains("备用出口重试亦失败"),
@@ -841,7 +1329,8 @@ mod tests {
         assert!(summaries[0].summary.is_empty());
         assert!(summaries[0]
             .failure_reason
-            .as_deref()
+            .as_ref()
+            .map(|error| error.to_string())
             .unwrap_or_default()
             .contains("402"));
     }
@@ -1203,6 +1692,7 @@ mod tests {
         let error = summarize_group(&provider, &group(vec![user("继续")]))
             .await
             .expect_err("非空但截断的摘要必须拒绝");
+        let error = error.to_string();
         assert!(error.contains("截断"), "{error}");
     }
 
@@ -1219,6 +1709,7 @@ mod tests {
         let error = summarize_group(&provider, &group(vec![user("继续")]))
             .await
             .expect_err("摘要响应带工具调用必须拒绝");
+        let error = error.to_string();
         assert!(error.contains("工具调用"), "{error}");
     }
 
@@ -1267,7 +1758,14 @@ mod tests {
         let message = compact_history(&host, 10)
             .await
             .expect("备用出口成功应完成压缩");
-        assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+        // 主出口**先续写**再放弃：`CannedProvider` 每次都返回同一个截断响应，
+        // 所以首发 + 每次续写都撞一次上限，共 `MAX_SUMMARY_CONTINUES + 1` 次。
+        // 旧行为是"截断即死"（1 次），但那等于把可续写的半份摘要直接扔掉。
+        assert_eq!(
+            primary_calls.load(Ordering::SeqCst),
+            MAX_SUMMARY_CONTINUES + 1,
+            "截断必须先尝试续写，用完预算才换出口"
+        );
         assert_eq!(
             fallback_calls.load(Ordering::SeqCst),
             1,
@@ -1290,4 +1788,323 @@ mod tests {
             "必须先归档成功再获取 provider：{steps:?}"
         );
     }
+
+    // ── 失败分类 / 续写 / 出口冷却（2026-11）─────────────────────────────
+
+    /// 按调用序返回预设结果的 provider：用来表达"第一次截断、第二次正常"
+    /// 这类**跨轮**形状——`CannedProvider` 每次返回同一个响应，做不到。
+    struct SequenceProvider {
+        script: std::sync::Mutex<std::collections::VecDeque<
+            Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError>,
+        >>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SequenceProvider {
+        fn new(
+            script: Vec<
+                Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError>,
+            >,
+        ) -> Self {
+            Self {
+                script: std::sync::Mutex::new(script.into()),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for SequenceProvider {
+        fn name(&self) -> &str {
+            "sequence"
+        }
+        fn default_model(&self) -> &str {
+            "sequence-model"
+        }
+        async fn chat(
+            &self,
+            _request: &ChatRequest,
+        ) -> Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut queue = self.script.lock().unwrap();
+            // 脚本用尽后重复最后一个结果（续写循环会多打几次）。
+            if queue.len() > 1 {
+                queue.pop_front().unwrap()
+            } else {
+                match queue.front() {
+                    Some(Ok(response)) => Ok(response.clone()),
+                    Some(Err(error)) => Err(clone_llm_error(error)),
+                    None => Err(echo_defs::llm::LlmError::Api("脚本为空".into())),
+                }
+            }
+        }
+        async fn chat_stream(
+            &self,
+            request: &ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<echo_defs::message::ChatChunk>,
+        ) -> Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError> {
+            self.chat(request).await
+        }
+    }
+
+    /// `LlmError` 没有 `Clone`（`thiserror` 派生只给了 `Display`）。测试里用
+    /// 字符串重建一个等价错误——分类只读字符串，足够。
+    fn clone_llm_error(error: &echo_defs::llm::LlmError) -> echo_defs::llm::LlmError {
+        echo_defs::llm::LlmError::Api(error.to_string())
+    }
+
+    fn truncated(content: &str) -> echo_defs::message::ChatResponse {
+        let mut response = canned(content);
+        response.stop_reason = Some("max_tokens".into());
+        response
+    }
+
+    fn quota_error(status: u16) -> echo_defs::llm::LlmError {
+        echo_defs::llm::LlmError::Api(format!(
+            "HTTP {status}：{{\"error\":{{\"type\":\"usage_limit_reached\",\"resets_at\":{}}}}}",
+            now_unix() + 7_200
+        ))
+    }
+
+    /// 截断是**可续写的**：第二轮回后半截，两段拼成一份完整摘要。
+    ///
+    /// 旧行为是"截断即判失败"——把模型已经写出来的半份摘要直接扔掉，然后
+    /// 换个出口把整段输入重发一次。这条测试钉住"续写优先"。
+    #[tokio::test]
+    async fn truncated_summary_is_continued_and_spliced() {
+        let provider: Arc<dyn LlmProvider> = Arc::new(SequenceProvider::new(vec![
+            Ok(truncated("【当前目标】排查自更新")),
+            Ok(canned("模块的部署形状")),
+        ]));
+        let body = summarize_group_with(&provider, &group(vec![user("继续")]), SummaryLimits::default())
+            .await
+            .expect("第二轮写完即为成功");
+        assert_eq!(
+            body, "【当前目标】排查自更新模块的部署形状",
+            "续写片段必须拼在残片之后，而不是丢掉前半截"
+        );
+    }
+
+    /// 续写无果（每轮都截断）→ 报 `Truncated` 且带上已生成的残片。
+    ///
+    /// 残片有内容时不能再降级成"空"：那是模型确实写了东西，只是没写完。
+    #[tokio::test]
+    async fn exhausted_continuations_report_truncated_with_partial() {
+        let provider: Arc<dyn LlmProvider> =
+            Arc::new(SequenceProvider::new(vec![Ok(truncated("半截摘要"))]));
+        let error = summarize_group_with(&provider, &group(vec![user("继续")]), SummaryLimits::default())
+            .await
+            .expect_err("每轮都截断必须按失败处理");
+        match error {
+            SummaryError::Truncated { partial } => {
+                assert!(!partial.is_empty(), "残片要跟着错误一起报出来");
+            }
+            other => panic!("应为 Truncated，实际 {other:?}"),
+        }
+    }
+
+    /// 额度失败**冷却该槽位**：同一次压缩里后续组不再打同一个出口。
+    ///
+    /// 主备**各自**冷却：主出口 429 不等于备用出口不可用（备用是另一个
+    /// profile/额度池，这正是 2026-10 修复的场景）。所以第一组仍然会试备用，
+    /// 之后两组才两个槽都跳过。
+    #[tokio::test]
+    async fn quota_failure_cools_both_outlets_and_skips_later_groups() {
+        let primary = Arc::new(SequenceProvider::new(vec![Err(quota_error(429))]));
+        let fallback = Arc::new(SequenceProvider::new(vec![Err(quota_error(429))]));
+        let primary_calls = Arc::clone(&primary.calls);
+        let fallback_calls = Arc::clone(&fallback.calls);
+        let provider: Arc<dyn LlmProvider> = primary;
+        let alternative: Arc<dyn LlmProvider> = fallback;
+
+        let preview = CompactPreview {
+            groups: vec![
+                group(vec![user("a")]),
+                group(vec![user("b")]),
+                group(vec![user("c")]),
+            ],
+            total_replaced: 3,
+            total_events: 3,
+        };
+        let (summaries, llm, failed) = summarize_preview_with_progress(
+            &provider,
+            Some(&alternative),
+            &preview,
+            1,
+            &|_done, _total, _session| {},
+        )
+        .await;
+
+        assert_eq!((llm, failed), (0, 3), "三组都失败");
+        assert_eq!(
+            primary_calls.load(Ordering::SeqCst),
+            1,
+            "主出口 429 后必须冷却：后续组不得再打它"
+        );
+        assert_eq!(
+            fallback_calls.load(Ordering::SeqCst),
+            1,
+            "备用出口同样冷却；但不是被主出口的 429 连坐"
+        );
+        assert!(
+            summaries[1]
+                .failure_reason
+                .as_ref()
+                .is_some_and(|error| error.to_string().contains("跳过")),
+            "被跳过的组要如实说明原因：{:?}",
+            summaries[1].failure_reason
+        );
+    }
+
+    /// 额度类文案把 `resets_at` 说成"还有多久"，不把原始 JSON 抛给用户。
+    #[test]
+    fn quota_message_humanizes_resets_at() {
+        let soon = SummaryError::Quota {
+            status: 429,
+            detail: "{\"resets_at\":123}".into(),
+            resets_at: Some(now_unix() + 7_200),
+        };
+        let text = soon.to_string();
+        assert!(text.contains("429"), "{text}");
+        assert!(text.contains("约 2 小时后"), "要给出相对时间：{text}");
+        assert!(!text.contains("resets_at"), "原始 JSON 不该出现在文案里：{text}");
+
+        let unknown = SummaryError::Quota {
+            status: 402,
+            detail: String::new(),
+            resets_at: None,
+        };
+        assert!(unknown.to_string().contains("额度不足"), "{unknown}");
+
+        // 已过期：不能拼成"额度已到期恢复"这种病句，也不能让用户继续等。
+        let expired = SummaryError::Quota {
+            status: 429,
+            detail: String::new(),
+            resets_at: Some(now_unix() - 60),
+        };
+        let text = expired.to_string();
+        assert!(text.contains("已到期"), "{text}");
+        assert!(text.contains("可立即重试"), "{text}");
+        assert!(!text.contains("恢复）"), "过期不该再说等它恢复：{text}");
+    }
+
+    /// 失败原因按**可操作性**排序：不可恢复的额度失败排最前。
+    ///
+    /// 此前按组序拼接，用户先看到"摘要输出被截断"，而真正让压缩失败的是
+    /// 后面那条 429——排障方向被带偏。
+    #[test]
+    fn failure_reasons_rank_quota_before_repairable_ones() {
+        let summaries = vec![
+            SummaryOrFallback {
+                session: None,
+                summary: String::new(),
+                from_llm: false,
+                failure_reason: Some(SummaryError::Truncated {
+                    partial: "半截".into(),
+                }),
+            },
+            SummaryOrFallback {
+                session: None,
+                summary: String::new(),
+                from_llm: false,
+                failure_reason: Some(SummaryError::Quota {
+                    status: 429,
+                    detail: String::new(),
+                    resets_at: None,
+                }),
+            },
+        ];
+        let reasons = failure_reasons(&summaries);
+        assert_eq!(reasons.len(), 2);
+        assert!(
+            reasons[0].contains("429"),
+            "额度失败必须排第一：{reasons:?}"
+        );
+        assert!(reasons[1].contains("截断"), "{reasons:?}");
+    }
+
+    /// 同一原因不因跨组重复而刷屏（`dedup` 只能去相邻重复）。
+    #[test]
+    fn failure_reasons_deduplicate_non_adjacent() {
+        let truncated = || SummaryOrFallback {
+            session: None,
+            summary: String::new(),
+            from_llm: false,
+            failure_reason: Some(SummaryError::Truncated {
+                partial: "x".into(),
+            }),
+        };
+        let quota = SummaryOrFallback {
+            session: None,
+            summary: String::new(),
+            from_llm: false,
+            failure_reason: Some(SummaryError::Quota {
+                status: 429,
+                detail: String::new(),
+                resets_at: None,
+            }),
+        };
+        let reasons = failure_reasons(&vec![truncated(), quota, truncated()]);
+        assert_eq!(reasons.len(), 2, "同一条截断原因只报一次：{reasons:?}");
+    }
+
+    /// 预算随窗口收缩：小窗口不能拼出"输入半窗 + 输出 8k"的超窗请求。
+    #[test]
+    fn summary_limits_shrink_with_context_window() {
+        // 未配置窗口 → 内置默认，与引入窗口推导之前一致。
+        let default = SummaryLimits::for_context_window(None);
+        assert_eq!(default.transcript_budget, TRANSCRIPT_TOKEN_BUDGET);
+        assert_eq!(default.max_tokens, SUMMARY_MAX_TOKENS);
+
+        // 大窗口（1M）→ 仍受内置上限约束，不会无限放大。
+        let large = SummaryLimits::for_context_window(Some(1_000_000));
+        assert_eq!(large.transcript_budget, TRANSCRIPT_TOKEN_BUDGET);
+        assert_eq!(large.max_tokens, SUMMARY_MAX_TOKENS);
+
+        // 8k 窗口 → 输入 4k、输出 2k，合计不超窗。
+        let small = SummaryLimits::for_context_window(Some(8_192));
+        assert_eq!(small.transcript_budget, 4_096);
+        assert_eq!(small.max_tokens, 2_048);
+        assert!(
+            small.transcript_budget + small.max_tokens as usize <= 8_192,
+            "输入 + 输出必须装得下窗口：{small:?}"
+        );
+
+        // 极窄窗口 → 输出兜底到下限，不会被压成 0（那样永远写不出摘要）。
+        let tiny = SummaryLimits::for_context_window(Some(600));
+        assert_eq!(tiny.max_tokens, MIN_OUTPUT_TOKENS);
+    }
+
+    /// 转录预算跟着 `SummaryLimits` 走（同一个窗口推导结果必须传得下去）。
+    #[test]
+    fn transcript_respects_explicit_budget() {
+        let mut events = Vec::new();
+        for index in 0..50 {
+            events.push(user(&format!("第{index}条：{}", "x".repeat(2000))));
+        }
+        let generous = render_transcript_with_budget(&events, 50_000);
+        let tight = render_transcript_with_budget(&events, 2_000);
+        assert!(
+            estimate_tokens(&tight) < estimate_tokens(&generous),
+            "收紧预算必须真的少渲染"
+        );
+        assert!(tight.contains("更早记录已省略"), "丢前缀要显式标注");
+    }
+
+    /// 429 之外的重试仍然换出口（冷却只针对额度类）。
+    #[tokio::test]
+    async fn transient_failure_still_retries_fallback() {
+        let primary = Arc::new(SequenceProvider::new(vec![Err(
+            echo_defs::llm::LlmError::Http("connection reset".into()),
+        )]));
+        let fallback = Arc::new(SequenceProvider::new(vec![Ok(canned("【当前目标】ok"))]));
+        let provider: Arc<dyn LlmProvider> = primary;
+        let alternative: Arc<dyn LlmProvider> = fallback;
+        let (summaries, llm, failed) =
+            summarize_preview(&provider, Some(&alternative), &preview_of(vec![user("a")]), 10)
+                .await;
+        assert_eq!((llm, failed), (1, 0), "网络抖动必须允许换出口重试");
+        assert!(summaries[0].summary.contains("ok"));
+    }
+
 }

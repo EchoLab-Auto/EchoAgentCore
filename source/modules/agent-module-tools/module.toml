@@ -17,7 +17,7 @@
 id = "echo-agent.tools.builtin"
 name = "内置工具集"
 kind = "tool"
-description = "平台无关的内置工具（计算/搜索/清单/编码/模块实例管理）"
+description = "平台无关的内置工具（计算/搜索/编码/模块实例管理）"
 builtin = true
 # 分类标签（不是能力类别）：随 Core 发布 → inner。
 # 决定面板的分组，与 `kind`（决定门控作用域）正交。

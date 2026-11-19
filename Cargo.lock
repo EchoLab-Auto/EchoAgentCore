@@ -46,6 +46,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-module-checklist"
+version = "0.1.0"
+source = "git+https://github.com/EchoLab-Auto/agent-module-checklist?branch=main#5fceb20968e1f6dd4190ff52681bb2b90a810ec4"
+dependencies = [
+ "agent-module-management",
+ "async-trait",
+ "echo-context",
+ "echo-defs",
+ "echo-module",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "agent-module-federation"
 version = "0.1.0"
 dependencies = [
@@ -70,6 +88,7 @@ dependencies = [
 name = "agent-module-loop"
 version = "0.1.0"
 dependencies = [
+ "agent-module-checklist",
  "agent-module-federation",
  "agent-module-management",
  "agent-module-prodoc",
@@ -268,7 +287,7 @@ dependencies = [
 [[package]]
 name = "agent-module-subagent"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#51dd3515a0600f4eaba82f0c9885ac02288bbe9d"
+source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#5f85e0c460a804838b3fb8f06d89c43e7c3b4a88"
 dependencies = [
  "agent-module-federation",
  "agent-module-tools",
@@ -299,6 +318,7 @@ dependencies = [
  "libc",
  "regex",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "toml",
@@ -1065,6 +1085,7 @@ dependencies = [
 name = "echo-agent-core"
 version = "0.1.0"
 dependencies = [
+ "agent-module-checklist",
  "agent-module-federation",
  "agent-module-loop",
  "agent-module-management",
@@ -3294,7 +3315,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

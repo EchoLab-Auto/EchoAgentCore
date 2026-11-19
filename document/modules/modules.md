@@ -82,7 +82,8 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 | [`echo-agent.kernel.config`](./kernel.md) | Kernel | 进程内 | 配置存储：TOML 原子读改写 |
 | [`echo-agent.kernel.protocol`](./kernel.md) | Kernel | 进程内 | 线契约：`BackendCommand` / `BackendEvent` / bridge |
 | [`echo-agent.kernel.session`](./kernel.md) | Kernel | 进程内 | 事件溯源：`SessionEvent` / `EventLog` / 投影 / compaction |
-| [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话** |
+| [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话与任务清单** |
+| [`echo-agent.checklist`](./tools.md) | Tool | 进程内（独立仓） | 任务清单：`checklist` 工具 + per-persona 持久 store + `RequestChecklists`（2026-11 从工具集拆出，随后外置为 `agent-module-checklist` 仓） |
 | [`echo-agent.shell`](./shell.md) | Tool | 进程内 | 后台 bash 会话 + Shell 面板命令域 |
 | [`echo-agent.workspace`](./workspace.md) | Tool | 进程内（**独立仓**） | 工作区会话（多目录管理 + git 状态 + 只读文件浏览）。2026-11 迁出 Core 至 `EchoLab-Auto/agent-module-workspace`：store 与命令域归模块，宿主只留只读镜像 + 工具代理 |
 | [`echo-agent.prodoc`](./prodoc.md) | Tool | 进程内（**独立仓**） | ProDoc 文档群：把 Markdown 目录读成文档图 + 单文件读写（带 `base` 冲突检测）+ 文档图检查；渲染在浏览器（`DocGraphViewer`）。实现位于 `EchoLab-Auto/agent-module-prodoc` |
@@ -100,7 +101,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 
 > **`Kernel` 是什么**：2026-11 取消「中间层 / 模块」二分之后新增的类别——提供其它模块的**运行地基**（词汇 / 线契约 / 注册表 / 事件日志 / 配置存储 / 循环驱动）。它们与其它模块同形（有 manifest、进 catalog、出现在本表），但**不可禁用**：`modules.toml` 写 `enabled = false` 会让启动失败并点名。逐条理由见 [运行地基](./kernel.md)。
 
-表的来源分两类，别混算：**框架内置 17 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 17]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 18 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 18]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 > **Panel 进程内模块的实现完全在 Panel 仓**（`source/agent-module-panel`）。Core 的组合根只引用其公开工厂，不持有 Panel 代码；挂载语义与本文相同，默认不启用。详见 Panel 仓文档。
 
@@ -137,7 +138,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
 - 每个条目可带 `[module.limits]`（子进程资源限额：CPU / 地址空间 / 单文件 / fd / 进程数，缺省不限制）——见 [模块开发指南](./module-authoring.md)「资源限额」
 - 排查"最终这一行来自哪一层、值是什么"用 `echo-agent-core dump-config`（只合成不启动）
 
-> 以上 id 也是更新器（`scripts/update.sh`）模块感知校验的核对清单——`expected_ids` 由**框架 22 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id；清单真值在 `scripts/update.sh` 的 `expected_ids` 一行，与 `BUILTIN_MODULE_IDS` 由单测守护）；选单（present_menu）已废弃移除，任务清单（checklist）为普通内置工具。
+> 以上 id 也是更新器（`scripts/update.sh`）模块感知校验的核对清单——`expected_ids` 由**框架 23 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id；清单真值在 `scripts/update.sh` 的 `expected_ids` 一行，与 `BUILTIN_MODULE_IDS` 由单测守护）；选单（present_menu）已废弃移除；任务清单（checklist）2026-11 从内置工具集拆出为独立模块 `echo-agent.checklist`（见 [工具系统](./tools.md)§任务清单）。
 
 ## 能力开关（per-persona）
 
@@ -163,8 +164,9 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
   - `provider.llm`：**命令域随模块启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因模块挂载而改变
   - `selfupdate`：进程级、`kind = orchestration`（按人格启停是假开关——挂载是进程级的，命令分发不看人格白名单）
 - **优先级**：全局禁用（`ToggleModule` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
-- **任务清单的会话隔离**：`ChecklistTool` 状态按**会话**隔离（session_id → 清单名 → 项）——同一 persona 的不同会话（local:tui / qq:group:…）的清单互不可见、互不覆盖；会话键由 `Agent::run_tool` 在参数校验后注入 `__session_id`（联邦远程/无会话上下文调用落 `__global` 兜底键）。事件 `ChecklistUpdated` 带 `team_id`，Panel 按 `(core, team_id, session_id)` 复合键存储并显示
-- **内置工具包覆盖**：任务清单（checklist）已降级为普通内置工具（随 `tools.builtin` 包，见上表注）；关闭内置工具集 = checklist 一并不可用，单独停用请在「启用工具」里按名勾选（运行期双向、即时生效），Panel 入口行同步移除「清单」入口、关闭已打开浮层并清空徽标状态；`base` 人格演示了"纯对话"配置（禁用 tools.builtin + skills.dir）
+- **任务清单的状态所有权**：`agent-module-checklist::ChecklistRuntime` 长期持有每个人格的 `ChecklistStore`，工具只作适配；人格重建复用同一 Arc。持久文件位于配置目录的 `checklists/` 下，按人格隔离，文件内按会话隔离；会话身份优先来自 `ToolContext`，不再由宿主向参数注入 `__session_id`。旧式直接调用的参数退路不用于联邦远程面（checklist 不声明 remote_capable）。
+- **任务清单同步**：`ChecklistUpdated` 是带身份与版本的单会话投影，`RequestChecklists` / `ChecklistsSnapshot` 提供权威补拉（空结果也必须表达，且带顶层 `epoch`/`revision`——与 `states` 同一次一致读；低 revision 的 full 不得覆盖更高的 live 投影）。Panel 按 `(core, team_id, session_id)` 存储，不通过解析键字符串推断来源。参见[工具系统](./tools.md)。
+- **内置工具包覆盖**：清单随 `tools.builtin` 发布，工具启停控制模型能否修改；停用工具不删除 Store 或前端投影，已有清单可只读展示。清理/归档聊天历史不等于清空任务清单；明确的 `reset_session` 才重置该会话的清单状态。
 
 ### 同步清单
 

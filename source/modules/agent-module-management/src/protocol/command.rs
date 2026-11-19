@@ -667,6 +667,20 @@ pub enum BackendCommand {
     /// Request the list of all registered tool definitions.
     /// Responds with `BackendEvent::ToolsList`.
     RequestToolsList,
+    /// 请求某人格的**权威清单快照**（2026-11 清单可靠化）。
+    ///
+    /// - `session_id` 缺省 = 该人格全部会话，回
+    ///   [`BackendEvent::ChecklistsSnapshot`]（`states` 为空也是权威结果：
+    ///   明确没有清单，前端必须整体替换而不是保留旧缓存）；
+    /// - `session_id` 指定 = 只回该会话的 [`BackendEvent::ChecklistUpdated`]。
+    ///
+    /// `team_id` 必填且必须**精确存在**：不存在就拒绝，绝不回落到默认人格。
+    RequestChecklists {
+        team_id: String,
+        #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+        session_id: Option<String>,
+    },
 
     // ── 自更新（2026-10，**Frontend-only**）──
     /// 触发框架自更新：启动 `echo-agent-core-update.service`（oneshot，
@@ -781,6 +795,7 @@ impl BackendCommand {
             Self::RequestSkillsList { .. } => "RequestSkillsList",
             Self::ReloadSkills { .. } => "ReloadSkills",
             Self::RequestToolsList { .. } => "RequestToolsList",
+            Self::RequestChecklists { .. } => "RequestChecklists",
             Self::SaveFederationPeer { .. } => "SaveFederationPeer",
             Self::DeleteFederationPeer { .. } => "DeleteFederationPeer",
             Self::RequestFederationStatus { .. } => "RequestFederationStatus",
@@ -835,6 +850,7 @@ pub const BROADCAST_READONLY_COMMANDS: &[&str] = &[
     "RequestModulesList",
     "RequestSkillsList",
     "RequestToolsList",
+    "RequestChecklists",
     "RequestSystemPrompt",
     "RequestRemoteApiProfiles",
     "RequestChatGptStatus",
@@ -870,6 +886,7 @@ pub const PANEL_READONLY_COMMANDS: &[&str] = &[
     "RequestModulesList",
     "RequestSkillsList",
     "RequestToolsList",
+    "RequestChecklists",
     "RequestSystemPrompt",
     "RequestRemoteApiProfiles",
     "RequestInstanceStatus",
@@ -1004,6 +1021,7 @@ mod tests {
             names,
             vec![
                 "RequestChatGptStatus",
+                "RequestChecklists",
                 "RequestFederationDirectory",
                 "RequestFederationInvite",
                 "RequestFederationStatus",
@@ -1172,6 +1190,10 @@ mod tests {
                 team_id: None,
                 path: String::new(),
             },
+            BackendCommand::RequestChecklists {
+                team_id: "alix".into(),
+                session_id: None,
+            },
         ];
         for cmd in &samples {
             let value = serde_json::to_value(cmd).expect("serialize");
@@ -1185,6 +1207,35 @@ mod tests {
             };
             assert_eq!(&tag, cmd.kind_name(), "kind_name 与 serde tag 分叉");
         }
+    }
+
+    /// `RequestChecklists` 的线形状：`team_id` 必填，`session_id` 可缺席。
+    #[test]
+    fn request_checklists_requires_team_and_allows_absent_session() {
+        let with_session: BackendCommand = serde_json::from_str(
+            r#"{"RequestChecklists":{"team_id":"alix","session_id":"local:tui::u"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            with_session,
+            BackendCommand::RequestChecklists {
+                team_id: "alix".into(),
+                session_id: Some("local:tui::u".into()),
+            }
+        );
+        // 缺 session_id 合法（= 整人格补拉）；缺 team_id 必须失败。
+        let no_session: BackendCommand =
+            serde_json::from_str(r#"{"RequestChecklists":{"team_id":"alix"}}"#).unwrap();
+        assert_eq!(
+            no_session,
+            BackendCommand::RequestChecklists {
+                team_id: "alix".into(),
+                session_id: None,
+            }
+        );
+        assert!(serde_json::from_str::<BackendCommand>(r#"{"RequestChecklists":{}}"#).is_err());
+        assert!(is_broadcast_readonly("RequestChecklists"));
+        assert!(is_panel_readonly_allowed("RequestChecklists"));
     }
 
     /// `payload_value()` 剥掉外层 tag：模块拿到的就是命令自己的字段。

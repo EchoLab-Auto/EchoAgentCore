@@ -217,6 +217,11 @@ pub trait Tool: Send + Sync {
     /// the returned value in a `ChecklistUpdated` event after each execution.
     /// This is a UI projection that will move out of the definition layer
     /// (Phase 4: state panels become event subscriptions).
+    ///
+    /// **Schema 约束**：返回对象的键必须是**常量 schema**，用户内容只能
+    /// 出现在值里、**不得**做键。快照出口按工具声明
+    /// （[`Self::snapshot_machine_fields`]）按键名豁免机器字段；用户可控
+    /// 的键名会让脱敏无法区分机器字段与用户数据。
     fn snapshot(&self) -> Option<Value> {
         None
     }
@@ -227,6 +232,26 @@ pub trait Tool: Send + Sync {
     /// 其他会话的状态挂到当前会话上广播。
     fn snapshot_for_session(&self, _session_id: &str) -> Option<Value> {
         self.snapshot()
+    }
+
+    /// 快照里哪些**对象键**是机器字段（稳定 id / 版本号 / 会话键等），
+    /// 出口脱敏时只跳过这些键的 `String` 值。
+    ///
+    /// 为什么需要它：注册表在快照出口递归脱敏所有字符串值，但状态面板 /
+    /// 远程消费方要靠稳定 id（`item_id`、`list_id`、`epoch` 等）定位条目；
+    /// 把 UUID 换成占位符，后续 `update_item` / `remove_item` 就再也对不上。
+    /// 机器字段不是用户内容，不应按秘密处理。
+    ///
+    /// **安全约束（硬性）**：快照对象键必须是**常量 schema**，用户内容
+    /// **不得**做键。脱敏按「键名」判定：若用户能控制键名，就能把秘密放进
+    /// 声明为机器字段的键里绕过脱敏。用户内容只能出现在值里（`name` /
+    /// `text` / `summary` / `display` …），这些键不得出现在本列表。
+    ///
+    /// 默认空 = 全部字符串值都脱敏（fail-closed；新工具不声明就得到最严格
+    /// 的处理）。只跳过该键的**字符串**值；若机器键下意外出现对象 / 数组，
+    /// 其中内容仍会递归脱敏。
+    fn snapshot_machine_fields(&self) -> &'static [&'static str] {
+        &[]
     }
 
     /// 本工具是否产生**可见状态**，以及该状态在线上的标识（2026-11）。

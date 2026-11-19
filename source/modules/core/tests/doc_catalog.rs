@@ -60,6 +60,10 @@ async fn render_tool_catalog() -> String {
         Some(std::sync::Arc::new(
             agent_module_loop::agent::session_query::SessionQueryRegistry::new(),
         )),
+        // 清单端口：目录生成用内存 store（文档只关心工具定义，不关心状态）。
+        None,
+        // 清单工具由清单模块造：目录里必须有 `checklist`，所以给它 standalone。
+        Some(agent_module_checklist::standalone_provider()),
         None,
         // Shell 工具（`bash-start` / `bash-exec` / `bash-stop`）由 shell 模块造
         // （2026-11 拆出）——目录要包含它们，所以这里给它一个 standalone provider。
@@ -384,7 +388,10 @@ fn every_declared_command_is_mentioned_in_docs() {
             "agent-module-transcript",
             &agent_module_transcript::session_view::COMMANDS,
         ),
-        ("agent-module-shell", &agent_module_shell::commands::COMMANDS),
+        (
+            "agent-module-shell",
+            &agent_module_shell::commands::COMMANDS,
+        ),
         (
             "agent-module-federation",
             &agent_module_federation::commands::COMMANDS,

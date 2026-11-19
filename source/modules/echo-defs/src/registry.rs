@@ -12,8 +12,10 @@
 //! 2. **定义缓存**：模型可见的工具清单缓存为 `Arc<Vec<ToolDefinition>>`，
 //!    任何注册变更即失效——避免每次组 prompt 重算；
 //! 3. **出口脱敏**：注入 `Redactor` 后，全部执行出口（`execute` /
-//!    `execute_rich`）的结果文本统一过卡口。
-//!
+//!    （`snapshot` / `snapshot_for_session`）同样递归脱敏字符串值；
+//!    工具声明的机器字段（[`Tool::snapshot_machine_fields`]：稳定 id /
+//!    epoch / 会话键等）是 schema 而非用户内容，跳过其字符串值，其余键
+//!    一律脱敏（对象键不改写——schema 靠键匹配）。
 //! **依赖纪律**：只依赖 `echo-defs` + `echo-context` + tokio——不认识任何
 //! 具体工具实现（内置工具集在 `echo-agent` 的 `packages/tools_builtin`）。
 
@@ -113,7 +115,13 @@ pub struct ToolRegistry {
     /// 结果脱敏器（安全服务注入；`None` = 透传）。
     /// 出口统一处理：所有工具（内置 / 模块 / 远程 / 子代理直呼 / 联邦）
     /// 的结果文本经此处脱敏后才交给任何消费者（2026-10 敏感信息隔离）。
-    redactor: tokio::sync::RwLock<Option<Arc<dyn crate::sanitize::Redactor>>>,
+    ///
+    /// 用 `std::sync::RwLock` 而不是 tokio 的：这个槽只存一个 `Arc`，读写都
+    /// 只做克隆、**从不跨 await 持锁**。同步快照出口（[`Self::snapshot`]）
+    /// 不能 await；此前 `try_read` 失败后退到 tokio 的 `blocking_read`，在
+    /// current_thread runtime 上会直接 panic（阻塞了运行时线程）。std 锁
+    /// 竞争时阻塞的是 OS 线程，不依赖运行时，因而不存在该 panic 路径。
+    redactor: std::sync::RwLock<Option<Arc<dyn crate::sanitize::Redactor>>>,
 }
 
 impl std::fmt::Debug for ToolRegistry {
@@ -138,26 +146,51 @@ impl ToolRegistry {
             disabled: tokio::sync::RwLock::new(std::collections::HashSet::new()),
             packages: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             conflicts: tokio::sync::RwLock::new(std::collections::BTreeMap::new()),
-            redactor: tokio::sync::RwLock::new(None),
+            redactor: std::sync::RwLock::new(None),
         }
     }
 
     /// 注入结果脱敏器（组合根装配期调用；`None` = 关闭）。
     ///
-    /// 生效范围：本注册表的**全部**执行出口（`execute` / `execute_rich`）。
-    /// 装配期无竞争（`try_write` 直通）；意外竞争时退到阻塞段落。
+    /// 生效范围：本注册表的**全部**执行出口（`execute` / `execute_rich`）
+    /// 与结构化快照出口。锁只做一次 `Arc` 交换、不跨 await；装配期无竞争，
+    /// 意外竞争时同步等锁（临界区仅一次赋值，不会长期占用）。
+    ///
+    /// 中毒处理：持锁线程 panic 留下的 poison **不能**阻止本次注入——否则
+    /// 旧脱敏器（或 `None`）会继续生效，等于静默丢掉调用方的安全决策。
     pub fn set_redactor(&self, redactor: Option<Arc<dyn crate::sanitize::Redactor>>) {
-        match self.redactor.try_write() {
-            Ok(mut slot) => *slot = redactor,
-            Err(_) => blocking_section(|| {
-                *self.redactor.blocking_write() = redactor;
-            }),
-        }
+        let mut slot = self
+            .redactor
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = redactor;
     }
 
     /// 当前脱敏器（未注入 = None）。
-    async fn redactor(&self) -> Option<Arc<dyn crate::sanitize::Redactor>> {
-        self.redactor.read().await.clone()
+    ///
+    /// 锁读取只做一次 `Arc` 克隆，不跨 await 持锁。锁中毒时取回最后一次
+    /// 写入的值（`into_inner`）：**不得**把中毒当成"没有脱敏器"而透传
+    /// 未脱敏数据。
+    fn redactor(&self) -> Option<Arc<dyn crate::sanitize::Redactor>> {
+        match self.redactor.read() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => {
+                tracing::error!(
+                    "tool registry redactor lock poisoned; recovering last injected redactor"
+                );
+                poisoned.into_inner().clone()
+            }
+        }
+    }
+
+    /// 同步路径的脱敏器（快照出口是同步 API，不能 await）。
+    ///
+    /// 与 [`Self::redactor`] 同一个 std 锁：读不依赖 tokio 的
+    /// `blocking_read`，竞争时阻塞 OS 线程等写锁释放（临界区只有一次 Arc
+    /// 克隆），current_thread runtime 上不会 panic。**不得**把锁竞争当成
+    /// "没有脱敏器"而原样透传。
+    fn redactor_blocking(&self) -> Option<Arc<dyn crate::sanitize::Redactor>> {
+        self.redactor()
     }
 
     /// Register a tool during static assembly.
@@ -317,6 +350,21 @@ impl ToolRegistry {
     /// Whether a registered tool is currently disabled.
     pub async fn is_disabled(&self, name: &str) -> bool {
         self.disabled.read().await.contains(name)
+    }
+
+    /// 同步门控探针：只有“当前已注册且未禁用”才算可用。
+    ///
+    /// 给系统提示词摘要等同步装配路径使用；模块未挂载时工具不在表里，
+    /// 不能靠人格配置猜成可用。任一锁竞争都返回 false（本轮不注入摘要），
+    /// 不在 current_thread runtime 上调用 tokio blocking_*，也不放宽权限。
+    pub fn is_enabled_now(&self, name: &str) -> bool {
+        let Ok(disabled) = self.disabled.try_read() else {
+            return false;
+        };
+        let Ok(tools) = self.tools.try_read() else {
+            return false;
+        };
+        tools.contains_key(name) && !disabled.contains(name)
     }
 
     /// 是否已注册同名工具（宿主保留名判定）。
@@ -481,22 +529,86 @@ impl ToolRegistry {
             Err(_) => blocking_section(|| self.tools.blocking_read().keys().cloned().collect()),
         }
     }
-
     /// Structured state snapshot of a registered tool, if it publishes one.
+    ///
+    /// **出口脱敏**：注入 [`crate::sanitize::Redactor`] 后，快照里的
+    /// `String` **值**递归过卡口（对象键不改写——消费方按键匹配 schema）；
+    /// [`Tool::snapshot_machine_fields`] 声明的机器字段（稳定 id / epoch /
+    /// 会话键等）只跳过其字符串值，其余键（`name` / `text` / `summary` /
+    /// `display` …）一律脱敏。数字 / 布尔 / null 原样保留；未注入 = 透传
+    /// （旧行为）。
+    ///
+    /// 锁序：先在工具表读锁内拷出快照与机器字段声明，读锁释放后才取
+    /// 脱敏器——不持有工具表锁去等脱敏器锁。
     pub fn snapshot(&self, name: &str) -> Option<Value> {
-        match self.tools.try_read() {
-            Ok(tools) => tools.get(name).and_then(|tool| tool.snapshot()),
-            Err(_) => blocking_section(|| {
-                self.tools
-                    .blocking_read()
-                    .get(name)
-                    .and_then(|tool| tool.snapshot())
-            }),
-        }
+        let (snapshot, machine_fields) = {
+            match self.tools.try_read() {
+                Ok(tools) => match tools.get(name) {
+                    Some(tool) => (tool.snapshot(), tool.snapshot_machine_fields()),
+                    None => (None, &[] as &'static [&'static str]),
+                },
+                Err(_) => blocking_section(|| match self.tools.blocking_read().get(name) {
+                    Some(tool) => (tool.snapshot(), tool.snapshot_machine_fields()),
+                    None => (None, &[] as &'static [&'static str]),
+                }),
+            }
+        };
+        self.redact_snapshot(name, snapshot, machine_fields)
     }
 
     /// 按会话过滤的状态快照（2026-10，带会话维度的工具用；默认同
     /// [`Self::snapshot`]）。
+    ///
+    /// 与 [`Self::snapshot`] 同口径：会话视图里的字符串值同样在出口
+    /// 脱敏（机器字段例外），且只含该会话的数据（不跨会话合并）。
+    pub fn snapshot_for_session(&self, name: &str, session_id: &str) -> Option<Value> {
+        let (snapshot, machine_fields) = {
+            match self.tools.try_read() {
+                Ok(tools) => match tools.get(name) {
+                    Some(tool) => (
+                        tool.snapshot_for_session(session_id),
+                        tool.snapshot_machine_fields(),
+                    ),
+                    None => (None, &[] as &'static [&'static str]),
+                },
+                Err(_) => blocking_section(|| match self.tools.blocking_read().get(name) {
+                    Some(tool) => (
+                        tool.snapshot_for_session(session_id),
+                        tool.snapshot_machine_fields(),
+                    ),
+                    None => (None, &[] as &'static [&'static str]),
+                }),
+            }
+        };
+        self.redact_snapshot(name, snapshot, machine_fields)
+    }
+
+    /// 快照出口共用脱敏：递归改写字符串值，跳过工具声明的机器字段。
+    ///
+    /// 调用时**不得持有工具表读锁**（快照已拷贝出来；锁序见
+    /// [`Self::snapshot`]）。未注入脱敏器 = 原样透传。
+    fn redact_snapshot(
+        &self,
+        tool: &str,
+        snapshot: Option<Value>,
+        machine_fields: &'static [&'static str],
+    ) -> Option<Value> {
+        let mut snapshot = snapshot?;
+        let Some(redactor) = self.redactor_blocking() else {
+            return Some(snapshot);
+        };
+        let changed = redact_value_strings(redactor.as_ref(), &mut snapshot, machine_fields);
+        if changed > 0 {
+            // debug 而非 warn：正常使用里用户完全可能把已登记秘密写进
+            // 清单项，快照每次刷新都 warn 会持续刷屏；安全动作本身不变。
+            tracing::debug!(
+                tool,
+                changed,
+                "tool state snapshot contained sensitive data; redacted at exit"
+            );
+        }
+        Some(snapshot)
+    }
     /// 按名字取工具句柄（读侧访问器：执行链拿它问工具自己的声明）。
     ///
     /// 为什么需要它：状态广播要问"这个工具有可见状态吗"（[`Tool::state_key`]），
@@ -579,20 +691,6 @@ impl ToolRegistry {
         self.get(name)
             .map(|tool| tool.path_arguments())
             .unwrap_or(&[])
-    }
-
-    pub fn snapshot_for_session(&self, name: &str, session_id: &str) -> Option<Value> {
-        match self.tools.try_read() {
-            Ok(tools) => tools
-                .get(name)
-                .and_then(|tool| tool.snapshot_for_session(session_id)),
-            Err(_) => blocking_section(|| {
-                self.tools
-                    .blocking_read()
-                    .get(name)
-                    .and_then(|tool| tool.snapshot_for_session(session_id))
-            }),
-        }
     }
 
     /// Parameter JSON schema of a registered tool, if present.
@@ -695,7 +793,7 @@ impl ToolRegistry {
         &self,
         result: Result<String, ToolError>,
     ) -> Result<String, ToolError> {
-        let Some(redactor) = self.redactor().await else {
+        let Some(redactor) = self.redactor() else {
             return result;
         };
         match result {
@@ -712,7 +810,7 @@ impl ToolRegistry {
         &self,
         result: Result<crate::tool::ToolResult, ToolError>,
     ) -> Result<crate::tool::ToolResult, ToolError> {
-        let Some(redactor) = self.redactor().await else {
+        let Some(redactor) = self.redactor() else {
             return result;
         };
         match result {
@@ -807,6 +905,59 @@ fn redact_error(redactor: &dyn crate::sanitize::Redactor, error: ToolError) -> T
         }
         ToolError::Execution(inner) => ToolError::Execution(redact_inner(redactor, inner)),
         ToolError::NotFound(inner) => ToolError::NotFound(redact_inner(redactor, inner)),
+    }
+}
+
+/// 结构化快照的递归脱敏：改写字符串 **值**，返回被改写的字符串个数。
+///
+/// - 对象**键**不改写：键是 schema 的一部分，改成占位符会让消费方
+///   （面板 / 事件协议）查不到字段；
+/// - `machine_fields` 里的键只跳过其 **`String` 值**（稳定 id / epoch /
+///   会话键等机器字段；按 UUID 形态全局跳过是不允许的——同形态的用户
+///   秘密文本会因此漏出）。这些键下若意外出现对象 / 数组，内容仍递归
+///   脱敏；
+/// - 数组与嵌套对象逐层下钻；
+/// - 数字 / 布尔 / null 原样保留。
+///
+/// 直接改结构化 `Value`，不做"序列化成文本替换再解析"——后者会破坏
+/// 转义与类型边界（例如数字字符串、引号、换行）。
+fn redact_value_strings(
+    redactor: &dyn crate::sanitize::Redactor,
+    value: &mut Value,
+    machine_fields: &[&str],
+) -> usize {
+    match value {
+        Value::String(text) => {
+            let report = redactor.redact(text);
+            if report.changed {
+                *text = report.text;
+                1
+            } else {
+                0
+            }
+        }
+        Value::Array(items) => {
+            let mut changed = 0;
+            for item in items {
+                changed += redact_value_strings(redactor, item, machine_fields);
+            }
+            changed
+        }
+        Value::Object(map) => {
+            let mut changed = 0;
+            for (key, item) in map.iter_mut() {
+                if machine_fields.contains(&key.as_str()) {
+                    // 机器字段：只豁免标量字符串（id / epoch / session），
+                    // 防止声明一个键就把其下所有用户内容一并放过。
+                    if matches!(item, Value::String(_)) {
+                        continue;
+                    }
+                }
+                changed += redact_value_strings(redactor, item, machine_fields);
+            }
+            changed
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
     }
 }
 
@@ -1249,8 +1400,12 @@ mod tests {
         let _keep_stub = registry.register_reversible(Arc::new(StubTool { name: "stub" }));
         let _keep_keeper = registry.register_reversible(Arc::new(StubTool { name: "keeper" }));
         assert_eq!(registry.definitions().await.len(), 2);
+        assert!(registry.is_enabled_now("stub"));
+        assert!(!registry.is_enabled_now("ghost"), "未挂载不是可用");
 
         assert!(registry.set_enabled("stub", false).await);
+        assert!(!registry.is_enabled_now("stub"));
+        assert!(registry.is_enabled_now("keeper"));
         let names: Vec<String> = registry
             .definitions()
             .await
@@ -1267,6 +1422,7 @@ mod tests {
 
         // Re-enable restores visibility and callability.
         assert!(registry.set_enabled("stub", true).await);
+        assert!(registry.is_enabled_now("stub"));
         assert_eq!(registry.definitions().await.len(), 2);
         assert_eq!(registry.execute("stub", Value::Null).await.unwrap(), "stub");
         // Unknown tool cannot be toggled.
@@ -1374,6 +1530,383 @@ mod tests {
         registry.register(Arc::new(StubTool { name: "stub" }));
         registry.set_redactor(None);
         assert_eq!(registry.execute("stub", Value::Null).await.unwrap(), "stub");
+    }
+
+    /// 结构化快照桩：值里埋秘密，覆盖嵌套对象 / 数组 / 引号换行 /
+    /// 秘密形态的对象键；会话快照按 session_id 返回不同数据。
+    const SNAPSHOT_SECRET: &str = "snapshot-secret-7f3a9c";
+
+    struct StatefulTool;
+
+    #[async_trait]
+    impl Tool for StatefulTool {
+        fn name(&self) -> &str {
+            "stateful"
+        }
+        fn description(&self) -> &str {
+            "stateful stub"
+        }
+        async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
+            Ok("ok".into())
+        }
+        fn snapshot(&self) -> Option<Value> {
+            let mut root = serde_json::json!({
+                "text": format!("before {SNAPSHOT_SECRET} after"),
+                "quoted": format!("line1 \"{SNAPSHOT_SECRET}\"\nline2"),
+                "nested": {
+                    "token": SNAPSHOT_SECRET,
+                    "count": 3,
+                    "ok": true,
+                    "none": null,
+                },
+                "items": [SNAPSHOT_SECRET, 7, {"deep": SNAPSHOT_SECRET}],
+            });
+            // 键名本身命中秘密形态：键不得被改写（schema 契约）。
+            root[SNAPSHOT_SECRET] = Value::String("value-kept".into());
+            Some(root)
+        }
+        fn snapshot_for_session(&self, session_id: &str) -> Option<Value> {
+            match session_id {
+                "session-a" | "session-b" => Some(serde_json::json!({
+                    "session": session_id,
+                    "items": [{
+                        "text": format!("{session_id}:{SNAPSHOT_SECRET}"),
+                        "done": false,
+                    }],
+                })),
+                _ => None,
+            }
+        }
+    }
+
+    /// 机器字段桩：UUID 形态的**秘密文本**出现在用户字段里仍必须脱敏，
+    /// 而声明为机器字段的稳定 id / epoch / session 必须原样保留。
+    const UUID_SECRET: &str = "550e8400-e29b-41d4-a716-446655440000";
+    const MACHINE_UUID: &str = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+
+    struct MachineFieldTool;
+
+    #[async_trait]
+    impl Tool for MachineFieldTool {
+        fn name(&self) -> &str {
+            "machine-field"
+        }
+        fn description(&self) -> &str {
+            "machine field stub"
+        }
+        async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
+            Ok("ok".into())
+        }
+        fn snapshot(&self) -> Option<Value> {
+            Some(serde_json::json!({
+                "id": MACHINE_UUID,
+                "session": "local:tui::local_user",
+                "epoch": MACHINE_UUID,
+                // 非机器键：值恰好是 UUID 形态的秘密 → 必须脱敏。
+                "note": UUID_SECRET,
+                "items": [{
+                    "id": MACHINE_UUID,
+                    "text": format!("rotate {UUID_SECRET}"),
+                }],
+            }))
+        }
+        fn snapshot_for_session(&self, _session_id: &str) -> Option<Value> {
+            self.snapshot()
+        }
+        fn snapshot_machine_fields(&self) -> &'static [&'static str] {
+            &["id", "list_id", "item_id", "epoch", "session", "session_id"]
+        }
+    }
+
+    /// 递归断言：快照的字符串**值**里不得再出现秘密（对象键允许保留）。
+    fn assert_no_secret_in_values(value: &Value) {
+        match value {
+            Value::String(text) => assert!(
+                !text.contains(SNAPSHOT_SECRET),
+                "snapshot leaked secret: {text:?}"
+            ),
+            Value::Array(items) => items.iter().for_each(assert_no_secret_in_values),
+            Value::Object(map) => map.values().for_each(assert_no_secret_in_values),
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        }
+    }
+
+    /// 全量快照：嵌套对象 / 数组里的字符串值全部脱敏；数字、布尔、null
+    /// 保持原样；对象键不改写（否则面板按键取字段会失效）。
+    #[test]
+    fn snapshot_redacts_full_view_recursively_and_keeps_schema() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(StatefulTool));
+        let redactor = Arc::new(TestRedactor::new());
+        redactor.register_secret(SNAPSHOT_SECRET, "api_key:test");
+        registry.set_redactor(Some(redactor));
+
+        let snapshot = registry.snapshot("stateful").expect("snapshot");
+        assert_no_secret_in_values(&snapshot);
+        assert_eq!(
+            snapshot["text"],
+            Value::String("before 【已隐藏:api_key:test】 after".into())
+        );
+        assert_eq!(
+            snapshot["quoted"],
+            Value::String("line1 \"【已隐藏:api_key:test】\"\nline2".into()),
+            "引号与换行必须原样保留，只替换秘密本身"
+        );
+        assert_eq!(
+            snapshot["nested"]["token"],
+            Value::String("【已隐藏:api_key:test】".into())
+        );
+        assert_eq!(snapshot["nested"]["count"], Value::from(3));
+        assert_eq!(snapshot["nested"]["ok"], Value::Bool(true));
+        assert_eq!(snapshot["nested"]["none"], Value::Null);
+        assert_eq!(
+            snapshot["items"][0],
+            Value::String("【已隐藏:api_key:test】".into())
+        );
+        assert_eq!(snapshot["items"][1], Value::from(7));
+        assert_eq!(
+            snapshot["items"][2]["deep"],
+            Value::String("【已隐藏:api_key:test】".into())
+        );
+        // 对象键不改写：秘密形态的键仍在，其值也未被动过。
+        assert_eq!(
+            snapshot[SNAPSHOT_SECRET],
+            Value::String("value-kept".into()),
+            "对象键是 schema，不得替换"
+        );
+        assert!(snapshot.get("【已隐藏:api_key:test】").is_none());
+    }
+
+    /// schema 感知脱敏：UUID 形态的**秘密文本**仍被脱敏，而工具声明的
+    /// 机器字段（id / epoch / session）原样保留。
+    ///
+    /// 反向约束：不能按「值长得像 UUID」全局跳过——那样同形态秘密文本
+    /// 会漏出去；只有**键名**命中声明才豁免。
+    #[test]
+    fn snapshot_redacts_uuid_shaped_secret_text_but_keeps_machine_ids() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(MachineFieldTool));
+        let redactor = Arc::new(TestRedactor::new());
+        redactor.register_secret(UUID_SECRET, "uuid-secret");
+        registry.set_redactor(Some(redactor));
+
+        let snapshot = registry.snapshot("machine-field").expect("snapshot");
+        assert_eq!(snapshot["id"], MACHINE_UUID);
+        assert_eq!(snapshot["session"], "local:tui::local_user");
+        assert_eq!(snapshot["epoch"], MACHINE_UUID);
+        assert_eq!(snapshot["items"][0]["id"], MACHINE_UUID);
+        assert_eq!(snapshot["note"], "【已隐藏:uuid-secret】");
+        assert_eq!(
+            snapshot["items"][0]["text"],
+            "rotate 【已隐藏:uuid-secret】"
+        );
+        assert!(
+            !snapshot.to_string().contains(UUID_SECRET),
+            "UUID 形态的秘密文本不得因形状被跳过"
+        );
+    }
+
+    /// 按会话快照：同样脱敏，且只含请求会话的数据（不跨会话合并）。
+    #[test]
+    fn snapshot_for_session_redacts_and_keeps_sessions_isolated() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(StatefulTool));
+        let redactor = Arc::new(TestRedactor::new());
+        redactor.register_secret(SNAPSHOT_SECRET, "api_key:test");
+        registry.set_redactor(Some(redactor));
+
+        let a = registry
+            .snapshot_for_session("stateful", "session-a")
+            .expect("session-a snapshot");
+        assert_no_secret_in_values(&a);
+        assert_eq!(a["session"], "session-a");
+        assert_eq!(a["items"][0]["text"], "session-a:【已隐藏:api_key:test】");
+        assert_eq!(a["items"][0]["done"], Value::Bool(false));
+
+        let b = registry
+            .snapshot_for_session("stateful", "session-b")
+            .expect("session-b snapshot");
+        assert_no_secret_in_values(&b);
+        assert_eq!(b["session"], "session-b");
+        let b_text = b["items"][0]["text"].as_str().expect("text");
+        assert!(b_text.starts_with("session-b:"));
+        assert!(!b_text.contains("session-a"), "不得混入其他会话的数据");
+        assert!(
+            registry.snapshot_for_session("stateful", "nope").is_none(),
+            "无该会话状态时保持 None（不发空事件）"
+        );
+    }
+
+    /// 未注入脱敏器：快照原样透传（含秘密与全部键；旧行为）。
+    #[test]
+    fn snapshot_passes_through_without_redactor() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(StatefulTool));
+        registry.set_redactor(None);
+
+        let snapshot = registry.snapshot("stateful").expect("snapshot");
+        assert_eq!(
+            snapshot["text"],
+            Value::String(format!("before {SNAPSHOT_SECRET} after"))
+        );
+        assert_eq!(snapshot["nested"]["count"], Value::from(3));
+        assert_eq!(
+            snapshot[SNAPSHOT_SECRET], "value-kept",
+            "未注入：键与值都原样"
+        );
+        let a = registry
+            .snapshot_for_session("stateful", "session-a")
+            .expect("session snapshot");
+        assert_eq!(
+            a["items"][0]["text"],
+            format!("session-a:{SNAPSHOT_SECRET}")
+        );
+    }
+
+    /// 脱敏器锁竞争不得被静默当成"没有脱敏器"：std 读锁会等写锁释放，
+    /// 拿到后照常脱敏。
+    #[test]
+    fn snapshot_redacts_when_redactor_lock_is_contended() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(StatefulTool));
+        let redactor = Arc::new(TestRedactor::new());
+        redactor.register_secret(SNAPSHOT_SECRET, "api_key:test");
+        registry.set_redactor(Some(redactor));
+
+        // 主线程占住脱敏器写锁 → 工作线程的读必然阻塞。
+        let guard = registry.redactor.write().expect("redactor lock");
+        let worker = {
+            let registry = Arc::clone(&registry);
+            std::thread::spawn(move || registry.snapshot("stateful"))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(guard);
+
+        let snapshot = worker.join().expect("worker panicked").expect("snapshot");
+        assert_no_secret_in_values(&snapshot);
+        assert_eq!(
+            snapshot["text"],
+            Value::String("before 【已隐藏:api_key:test】 after".into())
+        );
+    }
+
+    /// current_thread runtime 上的真实锁竞争回归。
+    ///
+    /// 旧实现 `try_read` 失败后调用 tokio 的 `blocking_read`，在
+    /// current_thread runtime 上直接 panic（阻塞了驱动任务的线程）。std
+    /// 锁的读只阻塞 OS 线程，写锁释放后照常返回快照。
+    #[test]
+    fn snapshot_redacts_under_current_thread_runtime_contention() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(StatefulTool));
+        let redactor = Arc::new(TestRedactor::new());
+        redactor.register_secret(SNAPSHOT_SECRET, "api_key:test");
+        registry.set_redactor(Some(redactor));
+
+        let guard = registry.redactor.write().expect("redactor lock");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = {
+            let registry = Arc::clone(&registry);
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("current_thread runtime");
+                let snapshot = runtime.block_on(async move { registry.snapshot("stateful") });
+                let _ = sender.send(snapshot);
+            })
+        };
+        // 写锁仍被占着：工作线程只可能阻塞在 std 读锁上。
+        // - Timeout = 正常竞争；
+        // - Disconnected = 工作线程 panic（旧 blocking_read 回归）；
+        // - Ok = 不应发生（写锁未释放，读不可能成功）。
+        match receiver.recv_timeout(std::time::Duration::from_millis(150)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(snapshot) => panic!("写锁持有期间读锁不应成功: {snapshot:?}"),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("current_thread 快照线程在锁竞争下 panic（blocking_read 回归）")
+            }
+        }
+        drop(guard);
+
+        let snapshot = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("释放写锁后应拿到快照")
+            .expect("snapshot");
+        worker.join().expect("worker panicked");
+        assert_no_secret_in_values(&snapshot);
+        assert_eq!(
+            snapshot["text"],
+            Value::String("before 【已隐藏:api_key:test】 after".into())
+        );
+    }
+
+    /// 脱敏器锁中毒不得被当成"没有脱敏器"而透传：取回最后注入的
+    /// redactor，快照照常脱敏；中毒后重新注入也必须生效。
+    #[test]
+    fn snapshot_recovers_poisoned_redactor_slot_without_leaking() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(StatefulTool));
+        let redactor = Arc::new(TestRedactor::new());
+        redactor.register_secret(SNAPSHOT_SECRET, "api_key:test");
+        registry.set_redactor(Some(redactor));
+
+        let poisoner = {
+            let registry = Arc::clone(&registry);
+            std::thread::spawn(move || {
+                let _guard = registry.redactor.write().expect("redactor lock");
+                panic!("poison the redactor slot");
+            })
+        };
+        assert!(poisoner.join().is_err(), "测试前提：持锁线程必须 panic");
+        assert!(registry.redactor.is_poisoned(), "测试前提：锁已中毒");
+
+        let snapshot = registry.snapshot("stateful").expect("snapshot");
+        assert_no_secret_in_values(&snapshot);
+        assert_eq!(
+            snapshot["text"],
+            Value::String("before 【已隐藏:api_key:test】 after".into()),
+            "中毒不能退化成透传"
+        );
+
+        // 中毒后重新注入：新 redactor 必须生效（不能被 poison 挡住）。
+        let fresh = Arc::new(TestRedactor::new());
+        fresh.register_secret(SNAPSHOT_SECRET, "fresh");
+        registry.set_redactor(Some(fresh));
+        let snapshot = registry
+            .snapshot("stateful")
+            .expect("snapshot after re-inject");
+        let text = snapshot["text"].as_str().expect("text");
+        assert!(!text.contains(SNAPSHOT_SECRET), "重新注入后仍泄漏: {text}");
+        assert!(
+            text.contains("【已隐藏:fresh】"),
+            "新 redactor 未生效: {text}"
+        );
+    }
+
+    /// 工具表锁竞争同样走 blocking 读路径，快照仍照常脱敏。
+    #[test]
+    fn snapshot_redacts_when_tools_lock_is_contended() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(StatefulTool));
+        let redactor = Arc::new(TestRedactor::new());
+        redactor.register_secret(SNAPSHOT_SECRET, "api_key:test");
+        registry.set_redactor(Some(redactor));
+
+        let guard = registry.tools.blocking_write();
+        let worker = {
+            let registry = Arc::clone(&registry);
+            std::thread::spawn(move || registry.snapshot_for_session("stateful", "session-a"))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(guard);
+
+        let snapshot = worker.join().expect("worker panicked").expect("snapshot");
+        assert_no_secret_in_values(&snapshot);
+        assert_eq!(
+            snapshot["items"][0]["text"],
+            "session-a:【已隐藏:api_key:test】"
+        );
     }
 
     /// 反向注册的 Disposer 按**名**注销——同名重注册必须先删旧再插新

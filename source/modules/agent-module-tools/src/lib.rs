@@ -9,7 +9,6 @@
 //! | 家族 | 工具 | 归属说明 |
 //! |---|---|---|
 //! | 计算 / 检索 | `calculator` · `web_search` | 纯函数，无外部状态 |
-//! | 清单 | `checklist` | 按会话隔离（`Tool::execute` 的会话键） |
 //! | 模块实例管理 | `instance_*` | 依赖 `echo-defs` 的 `InstanceRegistry`（平台中立） |
 //! | 编码 | `read_file` / `write_file` / `edit_file` / `list_files` / `search_code` / `run_command` | 工作区根内沙箱；`node://` 前缀经注入的 [`RemoteInvoker`] 转发 |
 //! | Shell | `shell_*` | 依赖 `agent-module-shell` 的会话管理器（进程组 + 哨兵分帧） |
@@ -34,7 +33,6 @@
 use std::sync::Arc;
 
 pub mod calculator;
-pub mod checklist;
 pub mod coding;
 pub use echo_defs::execute;
 pub mod host_keys;
@@ -50,7 +48,6 @@ pub mod tool_commands;
 pub mod websearch;
 
 pub use calculator::CalculatorTool;
-pub use checklist::ChecklistTool;
 pub use coding::{register_coding_tools, RemoteAwareTool};
 pub use instance::register_instance_tools;
 pub use instance_commands::{
@@ -89,7 +86,10 @@ pub use echo_defs::remote_tool::RemoteInvoker;
 /// 两边各构造一份——一份实现，零跨模块边。
 pub type CommandGuard = std::sync::Arc<dyn Fn(&str) -> Result<(), ToolError> + Send + Sync>;
 
-/// 注册「核心」工具家族：计算 / 检索 / 清单。
+/// 注册「核心」工具家族：计算 / 检索。
+///
+/// **清单不在这里**（2026-11 拆出 `agent-module-checklist`）：它有自己的
+/// 持久化真值与包标签，宿主经 `ChecklistToolProvider` 单独并入。
 ///
 /// 与 [`register_instance_tools`] / [`register_coding_tools`] /
 /// [`register_shell_tools`] 分开，是为了让组合根按可用性选择（例如沙箱环境
@@ -101,7 +101,6 @@ pub fn register_core_tools(registry: &mut ToolRegistry) {
     registry.register(Arc::new(
         WebSearchTool::new(WebSearchTool::default_client()),
     ));
-    registry.register(Arc::new(ChecklistTool::new()));
 }
 
 #[cfg(test)]
@@ -131,7 +130,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         register_core_tools(&mut registry);
         let names = registry.names();
-        for expected in ["calculator", "web_search", "checklist"] {
+        for expected in ["calculator", "web_search"] {
             assert!(
                 names.iter().any(|n| n == expected),
                 "缺少工具 {expected}（实际: {names:?}）"

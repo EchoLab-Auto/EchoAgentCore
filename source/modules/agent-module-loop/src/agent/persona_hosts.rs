@@ -85,6 +85,13 @@ pub(crate) fn provide(ctx: &Arc<Ctx>, agent: &Arc<Agent>) -> Vec<echo_context::D
     put(
         keep.as_mut(),
         ctx,
+        &agent_module_checklist::command_host_key(),
+        Arc::new(AgentToolsCommandHost::new(agent.clone()))
+            as Arc<dyn agent_module_checklist::ChecklistCommandHost>,
+    );
+    put(
+        keep.as_mut(),
+        ctx,
         &agent_module_skills::host_keys::PROMPT_STORE,
         agent.prompt.clone() as echo_defs::prompt::SharedPromptStore,
     );

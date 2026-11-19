@@ -24,14 +24,36 @@ use agent_module_transcript::session_view::{
 
 use crate::agent::Agent;
 
+/// 全量状态快照的**追加贡献者**（组合根注入）。
+///
+/// 会话视图模块只知道"重连时要发一批事件"；哪些领域状态（清单 / 未来的
+/// 其他面板）需要随快照补全，由拥有该领域的组合根决定。这里刻意用通用
+/// 闭包而不是具体类型：loop 不认识任何工具名/领域类型。
+pub type StateExtras = Arc<dyn Fn() -> Vec<BackendEvent> + Send + Sync>;
+
 /// 宿主适配器：以"某个 persona"为缺省视角的会话视图。
 pub struct AgentSessionViewHost {
     agent: Arc<Agent>,
+    /// `RequestState` 时追加的事件（空 = 不追加）。
+    state_extras: Option<StateExtras>,
 }
 
 impl AgentSessionViewHost {
     pub fn new(agent: Arc<Agent>) -> Self {
-        Self { agent }
+        Self {
+            agent,
+            state_extras: None,
+        }
+    }
+
+    /// 注入全量快照的追加事件来源（组合根装配期一次）。
+    ///
+    /// 用途（2026-11 清单可靠化）：`RequestState` 要补全所有运行人格的清单
+    /// 权威快照，而"谁运行中、清单在哪"只有组合根知道；loop 只需在快照末尾
+    /// 调用这个闭包。
+    pub fn with_state_extras(mut self, extras: StateExtras) -> Self {
+        self.state_extras = Some(extras);
+        self
     }
 
     /// 解析目标 persona（`None` / 解析不到 = 本 agent）。
@@ -65,6 +87,7 @@ impl SessionViewHost for AgentSessionViewHost {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<BackendEvent>> + Send + '_>> {
         let agent = Arc::clone(&self.agent);
+        let state_extras = self.state_extras.clone();
         Box::pin(async move {
             // 会话列表只需要**身份**（谁有哪些会话），不需要事件日志与
             // 显示时间线：走元信息档，20 MB 文件用 `IgnoredAny` 跳过 body。
@@ -137,6 +160,11 @@ impl SessionViewHost for AgentSessionViewHost {
                         });
                     }
                 }
+            }
+            // 领域状态追加（清单等）：组合根注入的贡献者决定内容；没有接线
+            // 就是空（老宿主行为不变）。
+            if let Some(extras) = &state_extras {
+                events.extend(extras());
             }
             events
         })
@@ -250,9 +278,11 @@ impl SessionViewHost for AgentSessionViewHost {
             let sid = session_id.clone();
             let history = if depth.is_some() {
                 // 展开要解析 20+ MB JSON（阻塞 I/O + CPU）：别占 tokio worker。
-                tokio::task::spawn_blocking(move || trunk.display_history_extended(&sid, limit, depth))
-                    .await
-                    .unwrap_or_default()
+                tokio::task::spawn_blocking(move || {
+                    trunk.display_history_extended(&sid, limit, depth)
+                })
+                .await
+                .unwrap_or_default()
             } else {
                 trunk.display_history_extended(&sid, limit, None)
             };

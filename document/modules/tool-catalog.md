@@ -2,8 +2,6 @@
 id: tool-catalog
 title: "内置工具目录"
 group: Core
-x: 368
-y: 424
 ---
 
 <!-- 自动生成，请勿手改：`echo-agent::tool::builtin::build_registry`） -->
@@ -25,7 +23,7 @@ y: 424
 | `bash-start` | builtin | Start a persistent background bash session. Commands run in the same shell keep state (cwd, exports, background jobs). R…｜包：`echo-agent.shell` |
 | `bash-stop` | builtin | Stop and destroy a persistent bash session (kills the whole process group, including background jobs). Also available on…｜包：`echo-agent.shell` |
 | `calculator` | builtin | 计算一个算术表达式，支持 + - * / ( ) 和数字。参数: expression(例如 "(2+3)*4")。｜包：`echo-agent.tools.builtin` |
-| `checklist` | builtin | 管理任务检查清单。操作: create 创建清单, add 添加项(需要 item), list 查看, check 勾选完成(需要 index), uncheck 取消勾选(需要 index), remove 删除项(需要 index),…｜包：`echo-agent.tools.builtin` |
+| `checklist` | builtin | 管理任务检查清单（按会话隔离、可持久化、带 epoch/revision 版本检查）。操作: list 枚举所有清单(带 name/list_id 时返回该清单完整内容), get 取清单完整数据, create 创建清单(可带 items…｜包：`echo-agent.checklist` |
 | `edit_file` | builtin | Replace lines in an existing file. Specify start_line and end_line (inclusive) to replace with new_content. Use this to …｜包：`echo-agent.tools.builtin` |
 | `instance_restart` | builtin | Restart a platform instance module (stop then start). Useful when it is not responding.｜包：`echo-agent.tools.builtin` |
 | `instance_start` | builtin | Start a platform instance module. Use 'all' to start all configured instances.｜包：`echo-agent.tools.builtin` |

@@ -115,6 +115,7 @@ export type JsonValue = unknown;\n\n";
         out.push_str(&decl::<super::BrowseRoot>());
         out.push_str(&decl::<super::SkillInfo>());
         out.push_str(&decl::<super::ToolInfo>());
+        out.push_str(&decl::<super::ChecklistSnapshotEntry>());
         out.push_str(&decl::<super::TeamInfo>());
         out.push_str(&decl::<super::ModuleInfo>());
         out.push_str(&decl::<super::WorkspaceConversationInfo>());
@@ -249,4 +250,3 @@ mod ts_optional_ratchet {
         assert!(source.contains("pub enum BackendCommand"));
     }
 }
-

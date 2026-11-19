@@ -29,6 +29,14 @@ pub const COMMANDS: [&str; 2] = ["RequestToolsList", "ToggleTool"];
 pub trait ToolsCommandHost: Send + Sync {
     /// 本 persona 的工具注册表。
     fn registry(&self) -> Arc<ToolRegistry>;
+    /// 解析**指定人格**的工具注册表（清单补拉等按 team 查询的命令用）。
+    ///
+    /// 默认实现 = 明确拒绝：没有证据证明该人格存在时，查询绝不能回落到
+    /// "当前/默认注册表"——那会把 A 人格的清单显示成 B 人格的。
+    /// 宿主实现按精确 id 查运行中人格；查不到就 Err，文案直接给面板。
+    fn resolve_registry(&self, team: &str) -> Result<Arc<ToolRegistry>, String> {
+        Err(format!("智能体 {team} 不存在或未运行"))
+    }
     /// 启停一个工具（改注册表 + 持久化 + 全局策略 + 逐人格重算）。
     /// 返回 `false` = 工具不存在。
     fn set_enabled(

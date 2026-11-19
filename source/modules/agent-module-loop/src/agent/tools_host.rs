@@ -31,6 +31,21 @@ impl ToolsCommandHost for AgentToolsCommandHost {
         Arc::clone(&self.origin.tools)
     }
 
+    /// 精确解析目标人格的注册表：命令里写谁就查谁，查不到即拒绝。
+    ///
+    /// **动态**读 `origin.registry()`（而不是构造时快照）：`core_agent` 的
+    /// manager 绑定发生在宿主能力注册之后（`main` 尾部），构造时快照会是
+    /// `None`——那样所有按 team 的查询都会误报“不存在”。
+    fn resolve_registry(&self, team: &str) -> Result<Arc<ToolRegistry>, String> {
+        let Some(registry) = self.origin.registry() else {
+            return Err(format!("智能体 {team} 不存在或未运行（人格注册表未接线）"));
+        };
+        match registry.resolve(team) {
+            Some(agent) => Ok(Arc::clone(&agent.tools)),
+            None => Err(format!("智能体 {team} 不存在或未运行")),
+        }
+    }
+
     fn set_enabled(
         &self,
         name: &str,
@@ -73,6 +88,20 @@ impl ToolsCommandHost for AgentToolsCommandHost {
     }
 }
 
+/// 清单命令域的第二重身份（同一个宿主适配器，两套 trait）。
+///
+/// 为什么复用：清单命令要的正是这两件事——"按 id 精确解析人格注册表"与
+/// "发面板事件"。为它再写一个结构体只会让两处实现漂移。
+impl agent_module_checklist::ChecklistCommandHost for AgentToolsCommandHost {
+    fn resolve_registry(&self, team: &str) -> Result<Arc<ToolRegistry>, String> {
+        <Self as ToolsCommandHost>::resolve_registry(self, team)
+    }
+
+    fn emit(&self, event: BackendEvent) {
+        <Self as ToolsCommandHost>::emit(self, event)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +138,24 @@ mod tests {
         ));
         let host = AgentToolsCommandHost::new(agent);
         assert!(!host.set_enabled("ghost", true).await);
+    }
+
+    /// 未绑定人格注册表时按 team 查询必须**明确拒绝**，不得回落到自己的表。
+    #[tokio::test]
+    async fn resolve_registry_without_manager_is_an_explicit_error() {
+        let agent = Arc::new(crate::agent::Agent::new(
+            Arc::new(crate::agent::tests::MockProvider {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                reply: String::new(),
+            }),
+            crate::config::AgentConfig::default(),
+            crate::SkillRegistry::new(),
+            crate::tool::ToolRegistry::new(),
+            Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
+        ));
+        let host = AgentToolsCommandHost::new(agent);
+        let error = host.resolve_registry("alix").unwrap_err();
+        assert!(error.contains("alix"));
+        assert!(error.contains("未接线"));
     }
 }

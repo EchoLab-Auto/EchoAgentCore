@@ -287,17 +287,25 @@ impl Agent {
                     // 工具开始执行时刻（中断补记 elapsed_ms 用；语义 = 开始到中断判定）。
                     let tool_started = std::time::Instant::now();
                     let guard = this.tool_guard_timeout(&call).await;
+                    // 每次调用一个 child token：超时不取消整个 turn，但必须让
+                    // 已把取消信号接进内部任务的工具（如 checklist）停止排队写。
+                    let invocation_cancel = cancel.child_token();
                     tokio::select! {
-                        result = tokio::time::timeout(guard, this.run_tool(&sid, &branch, &call)) => {
+                        result = tokio::time::timeout(
+                            guard,
+                            this.run_tool_with_cancel(
+                                &sid,
+                                &branch,
+                                &call,
+                                Some(invocation_cancel.clone()),
+                            ),
+                        ) => {
                             match result {
                                 Ok(tool_result) => {
                                     // 成功的 send_* 即该分支的可见回复：抑制
                                     // 并行的临时等待回复。
                                     let failed =
                                         tool_result.text.trim_start().starts_with("error:");
-                                    // 「这一调用就是给用户的可见回复」由**工具自己
-                                    // 声明**（`Tool::produces_visible_output`），
-                                    // 不在循环里列平台工具名。
                                     if !failed
                                         && this.tools_produce_visible_output(&call.name).await
                                     {
@@ -311,6 +319,7 @@ impl Agent {
                                     )
                                 }
                                 Err(_) => {
+                                    invocation_cancel.cancel();
                                     let text = tool_timeout_notice(&call.name, guard.as_secs());
                                     this.record_interrupted_tool_result(
                                         &sid,

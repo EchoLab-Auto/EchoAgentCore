@@ -121,9 +121,7 @@ impl ToolExecutionHost for AgentToolHost<'_> {
 }
 
 impl Agent {
-    /// 工具统一入口（注册表工具 + 编排工具）。
-    ///
-    /// pub：集成测试经此直接驱动分派（不绕 LLM）。签名保持不变——执行链搬家
+    /// 工具统一入口（注册表工具 + 编排工具）。签名保持不变——执行链搬家
     /// 不改变调用方的任何一行。
     pub async fn run_tool(
         &self,
@@ -131,12 +129,25 @@ impl Agent {
         branch_id: &str,
         call: &ToolCall,
     ) -> crate::tool::ToolResult {
-        // 取消信号：本分支（若有）的令牌包一层定义层能力递进去——工具要
-        // 「主 turn 取消时我也停」时自己等它，宿主不必知道谁需要。
-        let cancel = self.cancel_signal_of(branch_id).map(|token| {
-            std::sync::Arc::new(TurnCancellation(token))
-                as std::sync::Arc<dyn echo_defs::tool::Cancellation>
-        });
+        self.run_tool_with_cancel(session_id, branch_id, call, None)
+            .await
+    }
+
+    /// 带单次调用取消令牌的入口。turn 超时守卫传 child token：只取消本次
+    /// 工具，不取消整个 turn；缺省仍从活动 turn 查，直接调用行为不变。
+    pub(crate) async fn run_tool_with_cancel(
+        &self,
+        session_id: &str,
+        branch_id: &str,
+        call: &ToolCall,
+        cancel_override: Option<tokio_util::sync::CancellationToken>,
+    ) -> crate::tool::ToolResult {
+        let cancel = cancel_override
+            .or_else(|| self.cancel_signal_of(branch_id))
+            .map(|token| {
+                std::sync::Arc::new(TurnCancellation(token))
+                    as std::sync::Arc<dyn echo_defs::tool::Cancellation>
+            });
         let cx = ToolCallContext {
             session_id: session_id.to_string(),
             branch_id: branch_id.to_string(),

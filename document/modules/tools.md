@@ -160,6 +160,56 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 - 异步编排工具（`spawn_subagent`）与普通工具同口径：先写 `ToolCall`（参数脱敏）+ 受理/拒绝后写 `ToolResult`（回执文本），带 `tool_call_id` 与耗时（`agent/turn.rs` 的 `execute_async_subagent`）——委派事件在日志里可查、时延可算
 - 协议事件携带 `tool_call_id` + `timed_out`：前端精确配对（同名并行调用不再配错对），超时渲染为失败；显示时间线就地更新会重新投递完成态（见 [协议与数据流](../protocol/protocol.md)）
 
+## 任务清单（checklist）：持久化、补拉与重置边界
+
+2026-11 起清单不再是“进程内、随 Agent 一起消失”的状态；同年它从内置工具集
+**拆成独立模块 `echo-agent.checklist`**（先拆出 Core 内 crate，随后迁出为独立仓 `agent-module-checklist`）——
+清单有自己的持久化真值、自己的包标签与自己的一条命令域，"关掉清单"不再等于
+"关掉整个内置工具集"：
+
+- **归属**：`agent-module-checklist` 的 `ChecklistRuntime` 持有 per-persona
+  `ChecklistStore`；组合根在启动时构造**一个明确实例**（不是 global 槽），
+  人格重建复用同一个 `Arc`，Agent 退场不销毁 store。
+- **落盘位置**：`<core.toml 所在目录>/checklists/p-<persona UTF-8 字节 hex>.json`
+  （每人格一份；统一可逆编码，`"a"` / `"a "` / 含路径分隔符的 id 不会别名）。
+  写入是“临时文件 + fsync + rename”的原子提交；版本是文件级
+  `epoch`（UUID）+ 每次成功修改 +1 的 `revision`，条目/清单有稳定 UUID
+  （`list_id` / `item_id`），修改不依赖位置。
+- **并发与取消**：同路径协作写者使用 `<状态文件>.save-lock` + 文件指纹
+  （长度、纳秒 mtime、Unix inode）防止跨 Store / 跨 Core 进程的旧快照覆盖；
+  指纹变化会明确拒绝写入，不能当成功。turn 取消或工具超时都会取消该次调用的
+  child token（超时不取消整个 turn）；等待写门的旧写不会越过 `reset_session`
+  复活，已进入原子提交的任务会完成磁盘与内存的一致发布。
+- **加载失败**：损坏 / 未知版本 / 超限文件**只报错，不覆盖**；该人格的
+  `checklist` 工具变为“同名失败工具”（每次调用返回可排查错误），
+  补拉与摘要都跳过，不会用空清单掩盖故障。
+- **补拉**：`RequestChecklists { team_id, session_id? }`。缺省 `session_id`
+  回 `ChecklistsSnapshot { team_id, epoch, revision, states }`（整人格权威
+  快照：`states` 是完整集合，不在其中的会话视为无清单；空表也发，且**空表
+  同样带版本**）；指定会话回 `ChecklistUpdated`。`RequestState` 全量快照会
+  补全所有运行中人格的清单。
+  顶层 `epoch` / `revision` 是**文件级**版本，与 `states` 来自**同一次**
+  store 全量快照（`ChecklistStore::full_snapshot`，单次一致读）——绝不先读
+  meta 再读 states 拼两个时刻。`revision` 跨 `reset` / 重载单调递增（reset
+  同时换 `epoch`，两者不比大小），因此**低 revision 的 full 永不覆盖更高
+  revision 的 live 投影，即使 epoch 不同**；前端按顶层 `revision` + 每条
+  state 的 `epoch`/`revision` 拒绝旧快照。存储加载失败或快照形状异常时
+  补拉发**显式错误事件**（`RequestState` 补全路径）或**命令错误**（
+  `RequestChecklists` 路径），不会用空快照冒充“没有清单”。
+- **装配**：宿主给端口、模块造工具。`ChecklistToolProvider`（服务键
+  `echo-agent.checklist.tools`）产出带 `echo-agent.checklist` 包标签的
+  `checklist` 工具；宿主侧只剩三段薄接线——注入 per-persona 端口
+  （`ChecklistPort`）、注册状态绑定（`all_state_event_bindings`）、实现命令域
+  接缝（`ChecklistCommandHost`：`resolve_registry` + `emit`）。模块未挂载时
+  宿主回退 `standalone_provider`（内存 store），与内置工具集、shell 同款降级。
+- **模型摘要**：模块通过 `ModuleTextBlock` 把当前会话的限额摘要注入系统
+  提示词；摘要只在 `checklist` 工具对该人格**可用**时出现，工具关闭后不会
+  要求模型调用不可用工具（面板仍可只读观察既有清单）。
+- **历史清理边界**：`ClearHistory` / `ArchiveHistory` **保留**任务清单；
+  清空某会话清单只能显式调用工具 `reset_session`（它推进 epoch，旧请求的
+  预期版本随即失效，不会“复活”）。没有“整会话历史和清单一起原子重置”的
+  面板操作——两者不是同一个事务。
+
 ## 后台 Shell 会话（持久 bash）
 
 进程级 `ShellManager`（机制 crate `agent-module-shell`；`modules/echo-agent/src/shell.rs` 只是兼容 re-export）管理**持久 bash 会话**：

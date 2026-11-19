@@ -998,6 +998,9 @@ impl Tool for RemoteAwareTool {
     fn snapshot_for_session(&self, session_id: &str) -> Option<Value> {
         self.inner.snapshot_for_session(session_id)
     }
+    fn snapshot_machine_fields(&self) -> &'static [&'static str] {
+        self.inner.snapshot_machine_fields()
+    }
     fn state_key(&self) -> Option<&'static str> {
         self.inner.state_key()
     }
@@ -2095,9 +2098,64 @@ mod tests {
                 tool.produces_visible_output()
             );
             assert_eq!(wrapped.state_key(), tool.state_key());
+            assert_eq!(
+                wrapped.snapshot_machine_fields(),
+                tool.snapshot_machine_fields(),
+                "{}: 包装后丢了快照机器字段声明（UUID / epoch 会被当秘密洗掉）",
+                tool.name()
+            );
         }
     }
 
+    /// 包装器必须**真的**转发非空声明（上一条测试里的工具默认都为空，
+    /// 只断言相等无法区分"转发"和"硬编码空"）。同时兜住 `state_key` /
+    /// `remote_capable`：漏转发会让面板不刷新、联邦看不见工具。
+    #[test]
+    fn remote_aware_forwards_nonempty_declarations() {
+        struct MachineFieldTool;
+        #[async_trait::async_trait]
+        impl Tool for MachineFieldTool {
+            fn name(&self) -> &str {
+                "machine-field-stub"
+            }
+            fn description(&self) -> &str {
+                "stub"
+            }
+            async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
+                Ok("ok".into())
+            }
+            fn produces_visible_output(&self) -> bool {
+                true
+            }
+            fn snapshot(&self) -> Option<Value> {
+                Some(json!({"id": "stable-id", "text": "user text"}))
+            }
+            fn snapshot_machine_fields(&self) -> &'static [&'static str] {
+                &["id"]
+            }
+            fn state_key(&self) -> Option<&'static str> {
+                Some("machine-state")
+            }
+            fn remote_capable(&self) -> bool {
+                true
+            }
+            fn path_arguments(&self) -> &'static [&'static str] {
+                &["path"]
+            }
+        }
+        let inner: Arc<dyn Tool> = Arc::new(MachineFieldTool);
+        let wrapped = RemoteAwareTool::wrap(inner.clone(), None);
+        assert_eq!(
+            wrapped.snapshot_machine_fields(),
+            &["id"],
+            "包装后丢了非空机器字段声明"
+        );
+        assert_eq!(wrapped.snapshot(), inner.snapshot());
+        assert_eq!(wrapped.state_key(), Some("machine-state"));
+        assert!(wrapped.remote_capable());
+        assert_eq!(wrapped.path_arguments(), &["path"]);
+        assert!(wrapped.produces_visible_output());
+    }
     /// 工具族自身的远程面声明（S8）：6 个编码工具可远程，文件类带 `path`。
     ///
     /// 这些声明取代了组合根与联邦模块里两份写死的名字表——名字改了、工具
@@ -2111,8 +2169,6 @@ mod tests {
         registry.register_shared(Arc::new(WriteFileTool::new(PathBuf::from("/tmp"))));
         registry.register_shared(Arc::new(EditFileTool::new(PathBuf::from("/tmp"))));
         registry.register_shared(Arc::new(RunCommandTool::new(PathBuf::from("/tmp"))));
-        // 清单类工具按会话隔离，不能跨机调用（没有"对端的会话"这种东西）。
-        registry.register_shared(Arc::new(crate::checklist::ChecklistTool::new()));
 
         assert_eq!(
             registry.remote_capable_names(),
@@ -2124,7 +2180,7 @@ mod tests {
                 "search_code",
                 "write_file"
             ],
-            "远程面 = 6 个编码工具；checklist 是会话内的，不许宣告"
+            "远程面 = 6 个编码工具（清单类工具按会话隔离，不在本模块，也不许宣告）"
         );
         for file_tool in ["read_file", "list_files", "write_file", "edit_file"] {
             assert_eq!(

@@ -59,6 +59,12 @@ pub use crate::SINGLE_MODULE_ID as SINGLE_LOOP_MODULE_ID;
 /// （`agent-module-shell` 的进程组生命周期）、自己的面板页面、独立的启停需求。
 /// 声明与实现都在 [`agent_module_shell`]，这里是兼容别名。
 pub use agent_module_shell::MODULE_ID as SHELL_MODULE_ID;
+/// 任务清单模块 id（`checklist` 工具 + per-persona 持久 store + `RequestChecklists`）。
+///
+/// 2026-11 从 `echo-agent.tools.builtin` 拆出：清单有独立的持久化真值、独立的
+/// 提示词文本块与独立的查询命令域，"想关清单"不该等于"关掉整个工具集"。
+/// 声明与实现都在 [`agent_module_checklist`]，这里是兼容别名。
+pub use agent_module_checklist::MODULE_ID as CHECKLIST_MODULE_ID;
 
 /// persona 门控**已经不再是一张模块 id 清单**——判据是 manifest 的 `kind`。
 ///
@@ -97,8 +103,9 @@ pub use agent_module_federation::MODULE_ID as FEDERATION_MODULE_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_MODULE_IDS: [&str; 17] = [
+pub const BUILTIN_MODULE_IDS: [&str; 18] = [
     TOOLS_BUILTIN_MODULE_ID,
+    CHECKLIST_MODULE_ID,
     SHELL_MODULE_ID,
     SKILLS_DIR_MODULE_ID,
     SUBAGENT_MODULE_ID,
