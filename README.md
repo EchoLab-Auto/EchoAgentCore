@@ -23,6 +23,14 @@
 
 ## 快速部署
 
+三种方式，按"机器上有什么"选：
+
+| 方式 | 需要什么 | 适合 |
+|---|---|---|
+| [源码安装](#一键安装systemd-用户服务推荐) | rust / cargo / git（脚本会自动装）+ systemd | 想跟代码走、要自更新 |
+| [二进制安装](#二进制安装不装编译链) | 只要 systemd | 新机器、不想装编译链 |
+| [Docker 镜像编排](#docker官方镜像编排) | 只要 docker | 隔离部署、多实例 |
+
 ### 一键安装（systemd 用户服务，推荐）
 
 ```bash
@@ -57,26 +65,137 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 
 默认全直连，每个环节失败自动回退官方端点。
 
+### 二进制安装（不装编译链）
+
+新机器上不想为了跑服务装一整套 Rust 工具链时，直接下载预构建产物：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install-binary.sh | bash
+```
+
+不需要 rust / cargo / git / cc，只要 `curl` `tar` `sha256sum` `systemd`。产物由
+[`.github/workflows/release.yml`](.github/workflows/release.yml) 在 tag `v*` 上构建，
+每个架构一个 tarball 加 `.sha256` 侧车。
+
+```bash
+# 指定版本 / 本地 tarball / 先看它要做什么
+curl -fsSL .../install-binary.sh | bash -s -- --version v0.2.0
+./scripts/install-binary.sh --artifact ./echo-agent-core-0.2.0-linux-x86_64.tar.gz
+./scripts/install-binary.sh --dry-run
+```
+
+**装完即带 Web Panel。** Panel 的模块代码编译在 Core 二进制里，安装器只额外落一个
+前端目录（`~/.local/libexec/echo-agent-core/web`），内嵌模块自动发现它。浏览器开
+`http://127.0.0.1:8080` 就是面板，无需额外配置。
+
+**与源码安装的差异**：没有源码检出，所以不装 updater 单元，`modules.toml` 里
+`echo-agent.selfupdate` 被关掉，更新方式是重跑安装器（幂等，配置保留）。两种装法
+布局一致，`uninstall.sh` 通用，也可以原地互换。
+
+**网络受限**（直连 GitHub 慢或不通）：
+
+```bash
+curl -fsSL .../install-binary.sh \
+    | bash -s -- --mirror https://ghfast.top/https://github.com
+```
+
+**系统要求**：x86_64 需 glibc ≥ 2.34，aarch64 需 ≥ 2.39。安装器读产物
+`manifest.json` 里的基线做预检，不匹配直接拒绝（比启动时报 `GLIBC_2.xx not found`
+清楚）；`--allow-glibc-mismatch` 可强行尝试。
+
+### 在 Docker 里二进制安装
+
+要点只有一条：**容器必须跑 systemd**。普通 `docker run ubuntu:24.04` 没有 init，
+脚本会在 `systemctl` 检查处拒绝（服务管不起来，装了也用不了）。
+
+```bash
+docker run -d --name echo-agent \
+  --privileged --cgroupns=host \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+  --tmpfs /run --tmpfs /run/lock \
+  -p 8080:8080 \
+  ubuntu:24.04 /sbin/init
+```
+
+然后用 `--scope system` 安装（容器里没有 user manager，用户作用域起不来）：
+
+```bash
+docker exec echo-agent bash -c '
+  apt-get update -qq && apt-get install -y -qq curl ca-certificates &&
+  curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install-binary.sh \
+  | bash -s -- --scope system'
+```
+
+国内网络末尾再加 `--mirror https://ghfast.top/https://github.com`。
+
+**要从容器外访问面板，还得改配置**：内嵌 Panel 默认只监听 `127.0.0.1:8080`，而
+docker 的端口映射是往容器 IP 转发、不会落到容器的回环上。非回环地址必须**显式放行
+并配令牌**，否则模块拒绝启动（安全边界，不会静默裸奔）：
+
+```bash
+docker exec echo-agent sh -c '
+  openssl rand -hex 32 > /root/.config/echo-agent-core/panel-token
+  chmod 600 /root/.config/echo-agent-core/panel-token
+  cat >> /root/.config/echo-agent-core/modules.toml <<EOF
+
+[module.config]
+bind = "0.0.0.0:8080"
+allow_remote = true
+access_token_secret_file = "/root/.config/echo-agent-core/panel-token"
+EOF
+  systemctl restart echo-agent-core'
+```
+
+令牌文件内容即浏览器要输入的访问令牌（至少 16 位，短于此会被拒绝）。
+
+漏配 `allow_remote` 时 Core 起不来，且因为 `Restart=always` 会一直重启（`systemctl
+is-active` 显示 `activating`）——原因在日志里：
+
+```bash
+journalctl -u echo-agent-core -n 20 | grep "内嵌 Panel"
+# 内嵌 Panel 的 bind "0.0.0.0:8080" 不是回环地址；要对外暴露请同时配置
+# access_token_secret_file 与 allow_remote=true
+```
+
+验证（默认回环、未配令牌时）：
+
+```bash
+docker exec echo-agent systemctl is-active echo-agent-core
+docker exec echo-agent curl -s http://127.0.0.1:8080/api/panel-identity
+# {"panel_key_set":false,"discover":false,"embedded":true}
+```
+
+配了令牌之后同一路径要带 Bearer，否则是 401：
+
+```bash
+TOKEN=$(docker exec echo-agent cat /root/.config/echo-agent-core/panel-token)
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/panel-identity
+```
+
+> 这条路径适合"在容器里跑一个完整的、带 systemd 的 Core"，与上面的
+> `npx @echolab-auto/echo-agent`（编排官方镜像、无 systemd 依赖）是两种不同的用法。
+
 ### 安装后
 
 | 路径 | 用途 |
 |---|---|
 | `~/.local/bin/echo-agent-core` | Core 启动器 |
-| `~/.local/libexec/echo-agent-core/` | 运行二进制与 updater |
+| `~/.local/libexec/echo-agent-core/` | 运行二进制；**二进制安装**额外含 `web/`（内嵌面板前端） |
 | `~/.config/echo-agent-core/core.toml` | 持久化配置 |
-| `~/.local/share/echo-agent-core/source` | 受管 Git 检出（自更新源） |
+| `~/.local/share/echo-agent-core/source` | 受管 Git 检出（自更新源，**仅源码安装**） |
 | `~/.local/state/echo-agent-core/` | 更新锁、版本与状态 |
 | `echo-agent-core.service` | 常驻 Core 服务 |
-| `echo-agent-core-update.service` | 一次性更新器 |
+| `echo-agent-core-update.service` | 一次性更新器（**仅源码安装**） |
 
 首装自动生成 `management_access_token`（32 字节随机 hex）——把 management WS 暴露到
 局域网开箱即有认证。服务单元设 `NoNewPrivileges=true`，agent 无提权能力。
 
 ```bash
-systemctl --user status echo-agent-core     # 看状态
+systemctl --user status echo-agent-core     # 看状态（system 作用域去掉 --user）
 journalctl --user -u echo-agent-core -f     # 看日志
 echo-agent-core port                        # 查看/修改监听端口
 echo-agent-core token [--rotate]            # 查看/轮换管理令牌
+echo-agent-core --version                   # 版本（与 release tag 一致）
 ```
 
 ### 卸载与重装
@@ -92,11 +211,14 @@ curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scr
     | bash -s -- --overwrite-config
 ```
 
-### Docker
+### Docker（官方镜像编排）
 
 ```bash
 npx @echolab-auto/echo-agent up      # core + panel + napcat 三容器，面板在 :8080
 ```
+
+这条路径不依赖 systemd（容器只跑 Core 进程）。若你想在容器里跑一个带完整
+systemd 的实例、并自己管服务，见上面的[在 Docker 里二进制安装](#在-docker-里二进制安装)。
 
 包源码见 [`npm/echo-agent/`](npm/echo-agent/)；镜像发布见 `.github/workflows/docker.yml`。
 
