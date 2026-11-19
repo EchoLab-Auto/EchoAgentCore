@@ -300,6 +300,12 @@ fn release_artifact_layout_matches_the_installer() {
         workflow.contains("sha256sum"),
         "release.yml 应生成 .sha256 侧车文件（install-binary.sh 默认要求）"
     );
+    // glibc 下限必须从产物符号表读，而不是直接抄构建机版本：虚报会拦掉本来能跑
+    // 的老系统，漏报会在启动时炸 `GLIBC_2.xx not found`。
+    assert!(
+        workflow.contains("objdump -T stage/bin/echo-agent-core-bin"),
+        "release.yml 应从产物符号表读 glibc 下限"
+    );
 }
 
 /// aarch64 必须由原生 arm runner 构建（ring 含 C 代码，交叉编译要额外工具链）。
@@ -313,6 +319,12 @@ fn aarch64_is_built_on_a_native_arm_runner() {
     assert!(
         workflow.contains("arch: aarch64"),
         "release.yml 的 matrix 应包含 aarch64"
+    );
+    // x86_64 必须用 22.04：构建机 glibc 就是产物下限。实测在 24.04 上构建的
+    // Core 需要 `pidfd_spawnp`（GLIBC_2.39），Ubuntu 22.04 的生产节点直接跑不起来。
+    assert!(
+        workflow.contains("runner: ubuntu-22.04"),
+        "x86_64 应在 ubuntu-22.04（glibc 2.35）上构建，否则 22.04 机器装不上"
     );
     assert!(
         workflow.contains("arch: x86_64"),

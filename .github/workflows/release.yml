@@ -22,12 +22,23 @@
 # sysroot；GitHub 的 `ubuntu-24.04-arm` 是原生 arm64 机器，直接 `cargo build`
 # 即可，比维护一套交叉工具链便宜得多。
 #
+# ## glibc 基线：构建机决定下限，所以 x86_64 用 22.04
+#
+# 二进制跑不起来的真正约束是**构建机的 glibc**（符号版本向上绑定）。2026-11
+# 实测：在 Ubuntu 24.04（glibc 2.39）上构建的 Core 需要
+# `pidfd_spawnp`/`pidfd_getpid`（GLIBC_2.39）与 `__isoc23_sscanf`（GLIBC_2.38），
+# 于是**在 Ubuntu 22.04（2.35）上直接跑不起来**——而那正是生产节点 ai-station
+# 的版本。所以 x86_64 改在 `ubuntu-22.04` 上构建（2.35），覆盖面最广。
+#
+# aarch64 没有 22.04 的托管 runner（arm64 只有 24.04），因此那两个产物确实是
+# 2.39 下限。这件事不靠猜：`manifest.json` 里的 `glibc_min` 用 `objdump` 从
+# **产物本身**读最高 `GLIBC_x.y` 符号版本，安装器据此在装之前拦截。
+#
 # ## 可复现性
 #
 # `--locked` + Cargo.lock 里 pin 住的 git 依赖 commit：同一个 tag 必须构建出
 # 相同内容，否则"v0.1.0 的二进制"就不是一个确定的东西。web 侧同理——panel
 # 仓的 commit 从 Cargo.lock 里解析，不用 `branch = main` 的浮动引用。
-name: release
 
 on:
   push:
@@ -104,8 +115,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
+          # x86_64 刻意用 22.04：构建机 glibc 就是产物下限（见文件头「glibc 基线」）。
+          - runner: ubuntu-22.04
             arch: x86_64
+          # arm64 只有 24.04 的托管 runner；该产物下限 2.39，由 manifest 如实申报。
           - runner: ubuntu-24.04-arm
             arch: aarch64
     runs-on: ${{ matrix.runner }}
@@ -153,9 +166,17 @@ jobs:
           install -m 644 packaging/systemd/echo-agent-core.service.in \
             stage/systemd/echo-agent-core.service.in
 
-          # glibc 基线：二进制的实际下限由构建机决定。写进 manifest 让安装器
-          # 能在装之前拦住老系统（否则报错是 `GLIBC_2.xx not found`，没有指向性）。
-          glibc_min=$(getconf GNU_LIBC_VERSION | awk '{print $2}')
+          # glibc 基线：从**产物本身**读最高 `GLIBC_x.y` 符号版本，而不是直接抄
+          # 构建机的 glibc。两者通常相等，但真值只有符号表知道——虚报会让本来能跑
+          # 的老系统被安装器拦掉，漏报会让它在启动时炸出 `GLIBC_2.xx not found`。
+          # 读不到（静态链接 / 无 objdump）时退回构建机版本，宁可保守。
+          glibc_min=$(objdump -T stage/bin/echo-agent-core-bin 2>/dev/null \
+            | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' \
+            | sed 's/^GLIBC_//' \
+            | sort -V -u | tail -1)
+          if [[ -z "$glibc_min" ]]; then
+            glibc_min=$(getconf GNU_LIBC_VERSION | awk '{print $2}')
+          fi
           rustc_version=$(rustc --version | awk '{print $2}')
 
           cat >stage/manifest.json <<EOF

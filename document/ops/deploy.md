@@ -174,10 +174,15 @@ bind = "127.0.0.1:18081"     # 可选；默认 127.0.0.1:8080
 
 ### 产物矩阵与可复现性
 
-- 架构：`x86_64`（`ubuntu-24.04`）与 `aarch64`（`ubuntu-24.04-arm` 原生 runner）。
+- 架构：`x86_64`（**`ubuntu-22.04`**）与 `aarch64`（`ubuntu-24.04-arm` 原生 runner）。
   aarch64 用原生机器而不是交叉编译：`ring` 含 C 代码，交叉编译要额外准备
   aarch64 的 `cc` 与 sysroot，维护成本高于直接换 runner。
-- glibc 基线由构建机决定（Ubuntu 24.04 → 2.39），写进 `manifest.json` 供安装器预检。
+- **glibc 基线 = 构建机的 glibc**（符号版本向上绑定），所以 x86_64 刻意用 22.04：
+  实测在 24.04 上构建的 Core 需要 `pidfd_spawnp`/`pidfd_getpid`（GLIBC_2.39）与
+  `__isoc23_sscanf`（2.38），在 Ubuntu 22.04（2.35）上直接跑不起来。aarch64 没有
+  22.04 的托管 runner，那两个产物下限确实是 2.39。
+- 下限不靠"构建机版本"抄：`manifest.json` 的 `glibc_min` 用 `objdump -T` 从**产物
+  符号表**取最高 `GLIBC_x.y`，读不到才退回构建机版本。安装器据此在装之前拦截。
 - 面板前端从 `Cargo.lock` 里 pin 住的 panel commit 构建，不用 `branch = main`
   现取——同一个 tag 必须构建出相同内容。
 
