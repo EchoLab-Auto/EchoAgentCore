@@ -47,7 +47,10 @@ fn builder_stage(dockerfile: &str) -> String {
             stage.push('\n');
         }
     }
-    assert!(!stage.is_empty(), "Dockerfile 里应有一个名为 builder 的阶段");
+    assert!(
+        !stage.is_empty(),
+        "Dockerfile 里应有一个名为 builder 的阶段"
+    );
     stage
 }
 
