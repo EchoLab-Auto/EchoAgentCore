@@ -48,7 +48,7 @@ dependencies = [
 [[package]]
 name = "agent-module-checklist"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-checklist?branch=main#0491c0d9b25f277710d1f0fb1ba5fcecab2bcc8e"
+source = "git+https://github.com/EchoLab-Auto/agent-module-checklist?branch=main#90eb0ebd0d225aa9567e3c2149332aaaac159e83"
 dependencies = [
  "agent-module-management",
  "async-trait",
@@ -156,7 +156,7 @@ dependencies = [
 [[package]]
 name = "agent-module-panel"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#6c106d2963a27a2277c41fe031d73f7ad85dd883"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#13a4e4b7ff874e78f12b70f4a114f8426d549a52"
 dependencies = [
  "anyhow",
  "echo-context",
@@ -171,7 +171,7 @@ dependencies = [
 [[package]]
 name = "agent-module-prodoc"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#941fae659ebecb3ec95f1169a0c4ddd1c1a0d373"
+source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#036917f5b7d3c4a74a76a812f41dccf2809a814c"
 dependencies = [
  "echo-module",
  "serde",
@@ -347,7 +347,7 @@ dependencies = [
 [[package]]
 name = "agent-module-workspace"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#ff75556308f600ee1048615c3880352591ab97dc"
+source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#d003442f65818e95051520b0bf6732b1655193b4"
 dependencies = [
  "echo-context",
  "echo-module",
@@ -1137,8 +1137,8 @@ dependencies = [
 
 [[package]]
 name = "echo-context"
-version = "0.19.1"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.1#52b855319c424f0422221c5323eb6019f7936563"
+version = "0.19.2"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
 dependencies = [
  "dashmap",
  "thiserror 2.0.21",
@@ -1164,8 +1164,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module"
-version = "0.19.1"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.1#52b855319c424f0422221c5323eb6019f7936563"
+version = "0.19.2"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
 dependencies = [
  "echo-context",
  "serde",
@@ -1177,8 +1177,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module-api"
-version = "0.19.1"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.1#52b855319c424f0422221c5323eb6019f7936563"
+version = "0.19.2"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1186,8 +1186,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module-host"
-version = "0.19.1"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.1#52b855319c424f0422221c5323eb6019f7936563"
+version = "0.19.2"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1203,8 +1203,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module-loader"
-version = "0.19.1"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.1#52b855319c424f0422221c5323eb6019f7936563"
+version = "0.19.2"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1214,8 +1214,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module-sdk"
-version = "0.19.1"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.1#52b855319c424f0422221c5323eb6019f7936563"
+version = "0.19.2"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
 dependencies = [
  "async-trait",
  "echo-module-api",
@@ -1261,7 +1261,7 @@ dependencies = [
 [[package]]
 name = "echo-web-server"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#6c106d2963a27a2277c41fe031d73f7ad85dd883"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#13a4e4b7ff874e78f12b70f4a114f8426d549a52"
 dependencies = [
  "anyhow",
  "axum",
