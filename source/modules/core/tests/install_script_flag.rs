@@ -89,18 +89,6 @@ fn module_binaries(script: &str) -> Vec<String> {
     rest[..end].split_whitespace().map(str::to_string).collect()
 }
 
-/// 从脚本里抠出 `EXTERNAL_MODULE_BINARIES=(...)` 的条目。
-fn external_module_binaries(script: &str) -> Vec<String> {
-    let start = script
-        .find("EXTERNAL_MODULE_BINARIES=(")
-        .unwrap_or_else(|| panic!("script should declare EXTERNAL_MODULE_BINARIES"));
-    let rest = &script[start + "EXTERNAL_MODULE_BINARIES=(".len()..];
-    let end = rest
-        .find(')')
-        .unwrap_or_else(|| panic!("unterminated EXTERNAL_MODULE_BINARIES"));
-    rest[..end].split_whitespace().map(str::to_string).collect()
-}
-
 /// 仓库里**可安装**的进程外模块 crate：`source/modules/*/Cargo.toml` 中声明了
 /// `[[bin]] path = "src/main.rs"` 的包；`core` 是宿主二进制，显式排除。
 ///
@@ -171,38 +159,71 @@ fn module_binary_lists_match_the_workspace() {
     );
 }
 
-/// 外部仓模块二进制（`EXTERNAL_MODULE_BINARIES`）：**必须是真的 git 依赖**。
+/// **源码安装只带 Core 本体**：外部仓模块二进制不在这条链路上。
 ///
-/// 与上面那条的分工：`MODULE_BINARIES` 是"本仓目录里的 crate"（判据是扫描
-/// 目录），外部模块的源码根本不在本仓，无法用同一条判据。这里的判据改成
-/// "写进 `Cargo.toml` 的 workspace 依赖里，名字对得上"——它保证表里不会有
-/// 幽灵条目（拼错名 / 已删的仓），那种错在装机时才暴露，报错还是
-/// "package not found"。
+/// 决定与理由（2026-11-21，用户明确要求）：源码安装装出来的东西应当只有
+/// "从这份源码构建的产物"。外部仓模块装成独立产物后，必须在 `modules.toml`
+/// 里写启用行才会真的跑；而 `modules.toml` 是用户手写的计划文件，`install.sh`
+/// / `update.sh` 从不创建或改写它。装了不写行 = 落一个永远不执行的二进制，
+/// 白占几 MB，还让人误以为清单已经进程外运行。
+///
+/// 清单功能不受影响：它作为 Core 的 git 依赖编进二进制，走内置形态
+/// （`main.rs` 的 `declares_external` 读不到启用行就返回 false）。
+/// 想要独立产物请用二进制安装（`install-binary.sh` 会写启用行）。
+///
+/// 这条测试是**反向**的：断言两个脚本都不再有这张表、也不再把外部模块放进
+/// `cargo build -p`。将来若有人（包括我）顺手把表加回来，这里会立刻红。
 #[test]
-fn external_module_binaries_are_real_git_dependencies() {
-    let install = read_script("install.sh");
-    let update = read_script("update.sh");
-    let mut from_install = external_module_binaries(&install);
-    let mut from_update = external_module_binaries(&update);
-    from_install.sort();
-    from_update.sort();
-
-    assert_eq!(
-        from_install, from_update,
-        "install.sh 与 update.sh 的 EXTERNAL_MODULE_BINARIES 必须一致（同一套二进制）"
-    );
-
-    let manifest_path = repo_root().join("Cargo.toml");
-    let manifest = std::fs::read_to_string(&manifest_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
-    for package in &from_install {
-        let pattern = format!("{package} = {{ git = ");
+fn source_install_ships_only_the_core_binary() {
+    for name in ["install.sh", "update.sh"] {
+        let script = read_script(name);
         assert!(
-            manifest.contains(&pattern),
-            "EXTERNAL_MODULE_BINARIES 里的 `{package}` 不是根 Cargo.toml 的 git 依赖；\
-             外部模块必须由 Core 以 git 依赖引入（否则 `cargo build -p {package}` 找不到）"
+            !script.contains("EXTERNAL_MODULE_BINARIES"),
+            "{name} 不应再有 EXTERNAL_MODULE_BINARIES：源码安装只带 Core 本体。\
+             外部模块二进制只随二进制安装（release.yml + install-binary.sh）落地。\
+             清单在源码安装下走内置形态，功能不受影响。"
+        );
+        assert!(
+            !script.contains("-p agent-module-checklist"),
+            "{name} 不应把外部模块放进 `cargo build -p`：那会额外产出一个\
+             永远不执行的独立二进制。Core 仍会把它作为 git 依赖编成库链进来，\
+             内置清单照常工作。"
         );
     }
+}
+
+/// 外部仓模块二进制只属于**二进制安装**链路：release.yml 打包 +
+/// `install-binary.sh` 解包 + 写 `modules.toml` 启用行，三者缺一不可。
+///
+/// 与上一条的分工：源码安装刻意不带它，所以"谁真的会用它"必须在这里钉死；
+/// 否则哪天二进制链路也把它去掉，清单就彻底没有独立产物形态了。
+#[test]
+fn binary_install_chain_ships_external_modules() {
+    let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
+        .expect("read release.yml");
+    let binary = read_script("install-binary.sh");
+
+    assert!(
+        workflow.contains("-p agent-module-checklist"),
+        "release.yml 应构建外部模块二进制（二进制安装的产物来源）"
+    );
+    assert!(
+        workflow.contains("stage/modules/agent-module-checklist/agent-module-checklist"),
+        "release.yml 应把模块二进制放到 stage/modules/<包名>/<包名>"
+    );
+    assert!(
+        binary.contains(
+            r#"command = \"$MODULES_DIR/agent-module-checklist/agent-module-checklist\""#
+        ),
+        "install-binary.sh 应写 modules.toml 的启用行（否则装了也不跑）"
+    );
+
+    let manifest =
+        std::fs::read_to_string(repo_root().join("Cargo.toml")).expect("read Cargo.toml");
+    assert!(
+        manifest.contains("agent-module-checklist = { git = "),
+        "agent-module-checklist 必须仍是 Core 的 git 依赖：内置形态与 `-p` 构建都靠它"
+    );
 }
 
 /// 模块目录约定接线：install.sh 建目录并把二进制装到 `modules/<包>/<包>`；

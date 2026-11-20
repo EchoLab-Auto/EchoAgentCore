@@ -541,16 +541,18 @@ fn downloads_have_a_total_timeout() {
     );
 }
 
-/// release 产物必须带**外部模块二进制**，且安装器把两者装到同一个落点。
+/// 二进制安装链路必须带**外部模块二进制**，且打包路径与解包路径一致。
 ///
 /// 三方必须一致：`release.yml` 打包路径、`install-binary.sh` 解包路径、
-/// 源码安装的 `modules/<包名>/<包名>`。任何一处不同，得到的都是"装完少了
+/// `modules.toml` 启用行指向的路径。任何一处不同，得到的都是"装完少了
 /// 一个模块"，而那时离发布已经很远。
+///
+/// 焦点只在二进制链路：**源码安装刻意不带外部模块**（只带 Core 本体），
+/// 那条决定与理由见 `install_script_flag.rs::source_install_ships_only_the_core_binary`。
 #[test]
 fn external_module_artifact_paths_agree() {
     let workflow = read_file(&repo_root().join(".github/workflows/release.yml"));
     let binary = read_script("install-binary.sh");
-    let install = read_script("install.sh");
 
     // 1) release.yml：构建 + 放进 stage/modules/<包名>/<包名> + 打进 tar
     assert!(
@@ -576,14 +578,16 @@ fn external_module_artifact_paths_agree() {
         "install-binary.sh 应把 modules/ 列为产物必需项（缺了要报错，不能装完少功能）"
     );
 
-    // 3) 源码安装同一落点（`modules/<包名>/<包名>`，由 apply_paths 保证）
+    // 3) 落点约定与源码安装的 `modules/<包名>/<包名>` 相同——源码安装虽然
+    //    不装外部模块，但它的本仓模块循环仍用同一套目录约定，两处路径一致
+    //    才能让用户手工往 `modules/` 放二进制时不必区分安装方式。
+    let install = read_script("install.sh");
     assert!(
         install.contains(r#"module_dir="$MODULES_DIR/$_module""#),
         "install.sh 与 install-binary.sh 的模块落点必须一致"
     );
 
-    // 4) 两张脚本表名单一致（install.sh 的守护在 install_script_flag.rs，
-    //    这里只确认二进制安装器知道自己该启用哪一个）
+    // 4) 二进制安装器必须知道该启用哪一个（写 modules.toml 的行）
     assert!(
         binary.contains("\"agent-module-checklist\""),
         "install-binary.sh 应知道模块名，才能写 modules.toml 的启用行"

@@ -11,14 +11,15 @@ PREFIX=${ECHO_PREFIX:-"$HOME/.local"}
 # checkout when it has a Cargo.toml (covers dev worktrees with uncommitted
 # changes), falling back to the managed source checkout.
 DEFAULT_BINARY="$PREFIX/libexec/echo-agent-core/echo-agent-core-bin"
-# 随框架安装的进程外模块二进制（`modules/<包名>/<二进制>`）。
+# 随安装落地的进程外模块二进制（`modules/<包名>/<二进制>`）。
 # **必须与 install.sh 的同名表一致**（守护测试：
 # source/modules/core/tests/install_script_flag.rs）；自更新与首装装同一套。
 #
-# 两张表的分工见 install.sh 的注释：本仓成员 vs 外部仓（git 依赖）。
+# 只列**本仓** `source/modules/*` 里的可安装模块 crate。外部仓模块
+# （`agent-module-checklist`）刻意不在这里 —— 源码安装只带 Core 本体，
+# 理由见 install.sh 顶部 MODULE_BINARIES 的注释。
 MODULES_DIR="$PREFIX/libexec/echo-agent-core/modules"
 MODULE_BINARIES=()
-EXTERNAL_MODULE_BINARIES=(agent-module-checklist)
 DEFAULT_STATUS_FILE="$STATE_HOME/echo-agent-core/update-status"
 DEFAULT_SOURCE_DIR="$DATA_HOME/echo-agent-core/source"
 
@@ -173,7 +174,7 @@ ROLLBACK_BINARY=""
 ROLLBACK_UPDATER=""
 # 每个模块二进制本次的回滚副本路径（assoc array；失败时逐个还原）。
 declare -A MODULE_ROLLBACKS=()
-SELECTED_MODULES=("${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}")
+SELECTED_MODULES=("${MODULE_BINARIES[@]}")
 HOT_SWAPPED=()
 temporary=""
 FINALIZED=0
@@ -408,16 +409,16 @@ else
 
     # ── 自交棒：本次合并可能改到本脚本自身 ──────────────────────────────
     # bash 在启动时就把整份脚本读进内存了；`git merge` 之后磁盘上的是新脚本，
-    # 但**继续往下执行的是旧逻辑**。凡是"新版本要装新东西 / 新增一张表"的升级，
-    # 旧逻辑都不知道该做什么，于是整整晚一个版本才生效——实测 0.1.0 → 0.3.0：
-    # 新旧脚本的 EXTERNAL_MODULE_BINARIES 从 0 条变 3 处，而升级当场一行模块
-    # 安装代码都没跑，`libexec/modules` 连目录都没建。
+    # 但**继续往下执行的是旧逻辑**。凡是"新版本要装新东西 / 新增一步安装"的
+    # 升级，旧逻辑都不知道该做什么，于是整整晚一个版本才生效——实测
+    # 0.1.0 → 0.3.0：新版本要在 `libexec/modules` 下装模块二进制，而升级当场
+    # 一行安装代码都没跑，目录都没建，全程无报错、看起来成功。
     #
     # 所以合并后先看本脚本是否在本轮变更；是就用新脚本重新跑一遍（同一批参数）。
     # `exec` 而不是子进程：fd 9 的锁随之交给新进程（同一个 PID，systemd 的
     # TimeoutStartSec 也继续算在这一个进程上），新脚本重开 fd 9 时旧锁自然释放，
     # 中间不存在"父进程攥着锁、子进程 flock -n 报 busy 直接退出"的坑。
-    # 守卫变量保证只交棒一次：万一两版脚本对同一差异判读不一致，也不会无限循环。
+    # 守卫变量保证只交棒一次：万一两版对同一差异判读不一致，也不会无限循环。
     if [[ "${ECHO_UPDATER_REEXEC:-0}" != 1 ]] \
         && ! git -C "$SOURCE_DIR" diff --quiet "$current" "$TARGET" -- scripts/update.sh 2>/dev/null; then
         export ECHO_UPDATER_REEXEC=1
@@ -495,7 +496,7 @@ select_update_scope() {
                 return 1
             fi
             UPDATE_SCOPE=full
-            SELECTED_MODULES=("${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}")
+            SELECTED_MODULES=("${MODULE_BINARIES[@]}")
             return
         fi
     done

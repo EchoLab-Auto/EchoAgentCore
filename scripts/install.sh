@@ -196,21 +196,26 @@ derive_paths() {
 }
 derive_paths "$HOME" 1
 
-# 随框架一起安装的**进程外模块二进制**，分两类：
+# 随**源码安装**一起落地的进程外模块二进制（`modules/<包名>/<包名>`）：
 #
-#   MODULE_BINARIES            本仓 `source/modules/*` 里带
-#                              `[[bin]] path = "src/main.rs"` 的 crate
-#                              （`src/bin/*` 是测试夹具，不装）。
-#   EXTERNAL_MODULE_BINARIES   外部仓里、被 Core 以 git 依赖引入的模块
-#                              （`Cargo.lock` 已 pin commit，`--locked` 保证
-#                              可复现）。它们的源码不在本仓，但二进制随框架
-#                              一起发——否则"独立产物"只在开发机上成立。
+#   MODULE_BINARIES   本仓 `source/modules/*` 里带 `[[bin]] path = "src/main.rs"`
+#                     的 crate（`src/bin/*` 是测试夹具，不装）。它们是源码树
+#                     的一部分——从这份源码构建出来的东西就该跟着装。
 #
-# 两张表都装到同一处：`modules/<包名>/<包名>`。
-# 守护测试 source/modules/core/tests/install_script_flag.rs 分别比对两个来源；
-# 新增/删除时，本表与 update.sh 的同名表同改。
+# 外部仓的模块（当前只有 `agent-module-checklist`）**刻意不在这张表里**：
+# 源码安装只带 Core 本体。理由是形态而非省事——外部模块一旦装成独立产物，
+# 就得在 `modules.toml` 里写启用行才会真的跑起来，而 `modules.toml` 是用户
+# 手写的计划文件（本脚本从不创建或改写它）。装了不写行 = 落一个永远不执行
+# 的二进制，白占几 MB，还让人误以为清单已经进程外运行。
+#
+# 清单功能在源码安装下**完整可用**：它作为 Core 的 git 依赖编进二进制，
+# 走内置形态（`main.rs` 的 `declares_external` 读不到启用行就返回 false）。
+# 想把清单切成独立产物，请用二进制安装（`install-binary.sh` 会写启用行），
+# 或自己往 `modules.toml` 加一行并放一个二进制到 `modules/` 下。
+#
+# 守护测试 source/modules/core/tests/install_script_flag.rs 盯住"这里必须是
+# 空的"；新增/删除本仓模块时改本表即可。
 MODULE_BINARIES=()
-EXTERNAL_MODULE_BINARIES=(agent-module-checklist)
 
 # 服务作用域（2026-10）：`user`（默认，`systemctl --user`）或 `system`
 # （`/etc/systemd/system`，`systemctl` 无 --user）。
@@ -684,10 +689,11 @@ if "${SYSTEMCTL[@]}" is-enabled --quiet echo-agent-core.service 2>/dev/null; the
     core_was_enabled=1
 fi
 build_args=(build --release --locked -p echo-agent-core)
-# 进程外模块二进制与 Core 同一次 cargo 调用构建（同一个 target 目录、
+# 本仓的进程外模块二进制与 Core 同一次 cargo 调用构建（同一个 target 目录、
 # 同一套 --locked / 镜像参数），避免第二轮解析依赖。
-# 外部模块也在同一个调用里：它是 Cargo.lock 的依赖，`-p` 直接可构建。
-for _module in "${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}"; do
+# 外部仓模块不在 `-p` 里 —— 见文件顶部 MODULE_BINARIES 的注释（源码安装
+# 只带 Core 本体；`-p` 一个模块会额外产出独立二进制，那是二进制安装的事）。
+for _module in "${MODULE_BINARIES[@]}"; do
     build_args+=(-p "$_module")
 done
 build_args+=(--manifest-path "$SOURCE_DIR/Cargo.toml")
@@ -745,7 +751,7 @@ snapshot_file "$BIN_DIR/echo-agent-core" "$ROLLBACK_DIR/launcher"
 snapshot_file "$SYSTEMD_DIR/echo-agent-core.service" "$ROLLBACK_DIR/core_unit"
 snapshot_file "$SYSTEMD_DIR/echo-agent-core-update.service" "$ROLLBACK_DIR/update_unit"
 snapshot_file "$CORE_CONFIG" "$ROLLBACK_DIR/core_config"
-for _module in "${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}"; do
+for _module in "${MODULE_BINARIES[@]}"; do
     snapshot_file "$MODULES_DIR/$_module/$_module" "$ROLLBACK_DIR/module-$_module"
 done
 snapshot_file "$STATE_DIR/installed-revision" "$ROLLBACK_DIR/revision"
@@ -760,7 +766,7 @@ install_rollback() {
     if [[ "${INSTALL_TRANSACTION:-0}" == 1 ]]; then
         restore_file "$LIBEXEC_DIR/echo-agent-core-bin" "$ROLLBACK_DIR/binary"
         restore_file "$LIBEXEC_DIR/update.sh" "$ROLLBACK_DIR/updater"
-        for _module in "${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}"; do
+        for _module in "${MODULE_BINARIES[@]}"; do
             restore_file "$MODULES_DIR/$_module/$_module" "$ROLLBACK_DIR/module-$_module"
         done
         restore_file "$BIN_DIR/echo-agent-core" "$ROLLBACK_DIR/launcher"
@@ -794,9 +800,10 @@ trap install_rollback ERR
 binary_temporary=$(mktemp "$LIBEXEC_DIR/echo-agent-core-bin.new.XXXXXX")
 install -m 755 "$SOURCE_DIR/target/release/echo-agent-core" "$binary_temporary"
 mv -f "$binary_temporary" "$LIBEXEC_DIR/echo-agent-core-bin"
-# 进程外模块二进制：`modules/<包名>/<二进制>`——modules.toml 的 command
-# 直接指这里。目录一次建好，便于用户往同一处放自己的模块。
-for _module in "${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}"; do
+# 本仓模块二进制：`modules/<包名>/<二进制>`——modules.toml 的 command 直接
+# 指这里。目录一次建好，便于用户往同一处放自己的模块（外部模块走这条手工
+# 路径，或改用二进制安装；见文件顶部 MODULE_BINARIES 的注释）。
+for _module in "${MODULE_BINARIES[@]}"; do
     module_dir="$MODULES_DIR/$_module"
     install -d -m 755 "$module_dir"
     module_temporary=$(mktemp "$module_dir/$_module.new.XXXXXX")
