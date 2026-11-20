@@ -54,9 +54,18 @@ impl Agent {
         //    门控同语义；重新允许的恢复由上面的逐名双向步骤完成。全局状态
         //    （注册表）优先：运行期卸载不会被本步骤反向覆盖。
         for module_id in self.gated_module_ids() {
-            let allowed = crate::modules::profile_allows_module(profile, &module_id)
-                && self.module_globally_enabled(&module_id);
-            if !allowed {
+            let persona_allows = crate::modules::profile_allows_module(profile, &module_id);
+            let globally_enabled = self.module_globally_enabled(&module_id);
+            if !(persona_allows && globally_enabled) {
+                // 两个条件分开记：排查"这个人格为什么看不见某模块"时，
+                // 是"配置不允许"还是"模块没挂上"是完全不同的动作，而
+                // 最终结果（都表现为工具不可见）看不出区别。
+                tracing::debug!(
+                    module = %module_id,
+                    persona_allows,
+                    globally_enabled,
+                    "module gated off for this persona"
+                );
                 self.apply_module_gating(&module_id, false);
             }
         }
