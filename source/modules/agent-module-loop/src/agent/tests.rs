@@ -220,11 +220,40 @@ fn test_agent(provider: Arc<dyn LlmProvider>) -> Agent {
 /// 状态广播的**绑定**（2026-11 S7）：工具声明 `state_key`，装它的模块声明
 /// 线上形状，执行链只做一次查表。
 ///
-/// 这条锁住三件事：① 绑定生效时面板**真的**收到 `ChecklistUpdated`；
+/// 这条锁住三件事：① 绑定生效时宿主**真的**发出该 key 对应的事件；
 /// ② 会话归属来自上下文（不是参数魔术键）；③ **没绑定就不发**——不许猜。
+///
+/// 用宿主侧的最小桩工具（而不是某个具体模块的工具）：这条测的是**机制**，
+/// 绑一份真实业务实现只会让"哪天该业务模块搬出本仓"变成一次测试重写
+/// （`echo-agent.checklist` 2026-11-21 正是这么搬走的）。
 #[tokio::test]
 async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
-    use agent_module_checklist::ChecklistTool;
+    use echo_defs::tool::{Tool, ToolError};
+    use serde_json::Value;
+
+    /// 声明了 `state_key` 的桩工具：执行时回显参数，不碰任何存储。
+    struct StatefulStub;
+
+    #[async_trait::async_trait]
+    impl Tool for StatefulStub {
+        fn name(&self) -> &str {
+            "stateful-stub"
+        }
+        fn description(&self) -> &str {
+            "测试用：声明状态键的桩工具"
+        }
+        async fn execute(&self, arguments: Value) -> Result<String, ToolError> {
+            Ok(arguments.to_string())
+        }
+        fn state_key(&self) -> Option<&'static str> {
+            Some("stub.state")
+        }
+        /// 状态快照：执行链只在**同时**有 `state_key` 与快照时才发事件，
+        /// 缺一不可（前者说"我有状态"，后者说"状态长什么样"）。
+        fn snapshot_for_session(&self, session_id: &str) -> Option<Value> {
+            Some(serde_json::json!({ "session": session_id, "items": ["hello"] }))
+        }
+    }
 
     let agent = Arc::new(test_agent(Arc::new(MockProvider {
         calls: Arc::new(AtomicUsize::new(0)),
@@ -233,7 +262,7 @@ async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
     // 工具必须在注册表里（执行链查的是注册表）。
     // `register_shared`：注册到注册表寿命——用 `register_reversible` 却不保存
     // 返回值会让工具当场注销（那正是本文件要防的坑）。
-    agent.tools.register_shared(Arc::new(ChecklistTool::new()));
+    agent.tools.register_shared(Arc::new(StatefulStub));
 
     let received = Arc::new(std::sync::Mutex::new(Vec::<BackendEvent>::new()));
     let sink = received.clone();
@@ -243,52 +272,67 @@ async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
 
     let call = ToolCall {
         id: "c1".into(),
-        name: "checklist".into(),
-        arguments: r#"{"operation":"create","name":"smoke"}"#.into(),
+        name: "stateful-stub".into(),
+        arguments: r#"{"op":"probe"}"#.into(),
     };
     agent
         .run_tool("local:tui::local_user", "branch-1", &call)
         .await;
 
     // ① 没有绑定 → 不发（工具声明了状态，但没人认领线上形状）。
+    //
+    // 只查"有没有这个绑定产出的事件"：一次工具调用本身还会发
+    // ToolCall/ToolResult 之类，那些与本条无关。
     assert!(
         !received
             .lock()
             .unwrap()
             .iter()
             .any(|e| matches!(e, BackendEvent::ChecklistUpdated { .. })),
-        "没有绑定时不该发事件"
+        "没有绑定时不该发绑定产出的事件"
     );
 
     // ② 注册绑定（由拥有该工具的模块给出声明）→ 发，且会话来自上下文。
-    for (key, build) in agent_module_checklist::all_state_event_bindings() {
-        agent.register_tool_state_event(key, build);
-    }
-    received.lock().unwrap().clear();
+    let bound = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let recorder = bound.clone();
+    agent.register_tool_state_event(
+        "stub.state",
+        Arc::new(move |session_id: &str, state: &serde_json::Value| {
+            recorder
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), state.to_string()));
+            BackendEvent::ChecklistUpdated {
+                session_id: session_id.to_string(),
+                team_id: None,
+                state: state.clone(),
+            }
+        }),
+    );
     let call = ToolCall {
         id: "c2".into(),
-        name: "checklist".into(),
-        arguments: r#"{"operation":"add","name":"smoke","item":"hello"}"#.into(),
+        name: "stateful-stub".into(),
+        arguments: r#"{"op":"again","item":"hello"}"#.into(),
     };
     agent
         .run_tool("local:tui::local_user", "branch-1", &call)
         .await;
 
-    let events = received.lock().unwrap();
-    let found = events
-        .iter()
-        .find_map(|event| match event {
-            BackendEvent::ChecklistUpdated {
-                session_id, state, ..
-            } => Some((session_id.clone(), state.clone())),
-            _ => None,
-        })
-        .expect("注册绑定后必须发 ChecklistUpdated");
-    assert_eq!(found.0, "local:tui::local_user", "会话来自调用上下文");
+    let calls = bound.lock().unwrap();
+    let (session_id, state) = calls.first().expect("注册绑定后必须调用它构造事件").clone();
+    assert_eq!(session_id, "local:tui::local_user", "会话来自调用上下文");
     assert!(
-        serde_json::to_string(&found.1).unwrap().contains("hello"),
-        "状态快照应含刚添加的条目：{}",
-        found.1
+        state.contains("hello"),
+        "状态快照应含本次调用的参数：{state}"
+    );
+    drop(calls);
+    assert!(
+        received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, BackendEvent::ChecklistUpdated { .. })),
+        "绑定产出的事件必须到达事件出口"
     );
 }
 

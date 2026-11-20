@@ -17,7 +17,6 @@ echo-config.workspace = true
 echo-context.workspace = true
 echo-session.workspace = true
 agent-module-tools = { workspace = true }
-agent-module-checklist = { workspace = true }
 agent-module-shell = { workspace = true }
 agent-module-loop = { workspace = true }
 echo-module = { workspace = true }

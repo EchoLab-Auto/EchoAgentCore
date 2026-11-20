@@ -176,6 +176,7 @@ mod tests {
                                 .await;
                             let _ = io
                                 .send(ModuleToHost::Register(Register {
+                                    manifest: None,
                                     contributions: vec![ToolContribution {
                                         name: "add".into(),
                                         description: "两数之和".into(),

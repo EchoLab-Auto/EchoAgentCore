@@ -163,13 +163,38 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 ## 任务清单（checklist）：持久化、补拉与重置边界
 
 2026-11 起清单不再是“进程内、随 Agent 一起消失”的状态；同年它从内置工具集
-**拆成独立模块 `echo-agent.checklist`**（先拆出 Core 内 crate，随后迁出为独立仓 `agent-module-checklist`）——
+**拆成独立模块 `echo-agent.checklist`**（先拆出 Core 内 crate，随后迁出为独立仓
+`agent-module-checklist`，最后 **11-21 彻底外置**：Core 连 git 依赖都不再有它）——
 清单有自己的持久化真值、自己的包标签与自己的一条命令域，"关掉清单"不再等于
-"关掉整个内置工具集"：
+"关掉整个内置工具集"。
+
+### 现在的形态：宿主不认识的独立产物
+
+| | |
+| --- | --- |
+| 在 Core 的依赖图里吗 | **不在**（根 `Cargo.toml` 刻意没有它；`cargo tree` 搜不到） |
+| 有内置目录项吗 | **没有**（`BUILTIN_MODULE_IDS` 17 项，不含它） |
+| 怎么启用 | `modules.toml` 写一行 `kind = "stdio"` + `command`，**默认不启用** |
+| 宿主怎么知道它是什么 | 握手时模块自述身份（`Register.manifest` → `ModuleHandle::manifest_claim()`），宿主据此生成描述符（`kind` / `package` / 依赖） |
+| 没配置时 | **没有 `checklist` 工具**，面板没有清单入口——不是"降级"，是"这个能力不存在" |
+
+启用示例（路径按安装方式不同；二进制安装的产物里二进制已经就位）：
+
+```toml
+[[module]]
+id = "echo-agent.checklist"
+kind = "stdio"
+enabled = true
+command = "/home/me/.local/libexec/echo-agent-core/modules/agent-module-checklist/agent-module-checklist"
+
+[module.config]
+data_dir = "/home/me/.local/share/echo-agent-core/checklists"
+```
 
 - **归属**：`agent-module-checklist` 的 `ChecklistRuntime` 持有 per-persona
-  `ChecklistStore`；组合根在启动时构造**一个明确实例**（不是 global 槽），
-  人格重建复用同一个 `Arc`，Agent 退场不销毁 store。
+  `ChecklistStore`；独立形态下实例由**模块自己**在 `serve.rs` 里构造（进程外没有
+  `Ctx` 服务表可查），进程内形态已不存在。人格重建复用同一个 `Arc`，
+  Agent 退场不销毁 store。
 - **落盘位置**：`<core.toml 所在目录>/checklists/p-<persona UTF-8 字节 hex>.json`
   （每人格一份；统一可逆编码，`"a"` / `"a "` / 含路径分隔符的 id 不会别名）。
   写入是“临时文件 + fsync + rename”的原子提交；版本是文件级

@@ -61,7 +61,10 @@ impl std::fmt::Debug for SessionApiStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionApiStore")
             .field("path", &self.path.read().ok().and_then(|p| p.clone()))
-            .field("entries", &self.entries.read().map(|e| e.len()).unwrap_or(0))
+            .field(
+                "entries",
+                &self.entries.read().map(|e| e.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -128,8 +131,7 @@ impl SessionApiStore {
             if self.lock_read().contains_key(&entry.session_id) {
                 continue;
             }
-            self.lock_write()
-                .insert(entry.session_id, entry.profile);
+            self.lock_write().insert(entry.session_id, entry.profile);
         }
         self.flush();
     }
@@ -417,7 +419,10 @@ mod tests {
         assert_eq!(merged.len(), 2, "两个人格的条目都要在：{merged:?}");
         // 名称排序（BTreeMap）：输出稳定，便于 diff 与人工核对。
         assert_eq!(merged[0].session_id, "local:tui::local_user");
-        assert_eq!(merged[1].session_id, "local:workspace:echo-agent/v:local_user");
+        assert_eq!(
+            merged[1].session_id,
+            "local:workspace:echo-agent/v:local_user"
+        );
     }
 
     /// 同一会话被两个人格各设一次：保留第一个，不丢整张表。
@@ -442,7 +447,6 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].profile, "one");
     }
-
 
     /// `attach`（真实启动路径）必须读回盘上已有条目。
     ///
@@ -488,5 +492,4 @@ mod tests {
         assert_eq!(store.get("only-on-disk").as_deref(), Some("kimi"));
         let _ = std::fs::remove_file(&path);
     }
-
 }

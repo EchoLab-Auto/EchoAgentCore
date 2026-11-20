@@ -36,7 +36,7 @@ pub static SKILLS_RUNTIME: ServiceKey<Arc<crate::runtime::SkillsRuntime>> =
 /// 反转成」技能模块自己去扫 `StartedModules` 不行：模块 crate 不能依赖
 /// 组合根，而 `ModuleHost`（本 crate 的宿主）也不认识 core 的模块运行时。
 pub trait SkillContributionSource: Send + Sync {
-/// 反转成「技能模块自己去扫 `StartedModules`」不行：模块 crate 不能依赖
+    /// 反转成「技能模块自己去扫 `StartedModules`」不行：模块 crate 不能依赖
     ///
     /// 每次调用返回**当前完整集合**（不要复用旧快照）：模块启停、热替换、
     /// 包门控都会改变它，而 `SkillsRuntime::reload` 用「哪些 owner 这次没

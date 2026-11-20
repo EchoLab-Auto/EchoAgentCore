@@ -88,20 +88,6 @@ impl ToolsCommandHost for AgentToolsCommandHost {
     }
 }
 
-/// 清单命令域的第二重身份（同一个宿主适配器，两套 trait）。
-///
-/// 为什么复用：清单命令要的正是这两件事——"按 id 精确解析人格注册表"与
-/// "发面板事件"。为它再写一个结构体只会让两处实现漂移。
-impl agent_module_checklist::ChecklistCommandHost for AgentToolsCommandHost {
-    fn resolve_registry(&self, team: &str) -> Result<Arc<ToolRegistry>, String> {
-        <Self as ToolsCommandHost>::resolve_registry(self, team)
-    }
-
-    fn emit(&self, event: BackendEvent) {
-        <Self as ToolsCommandHost>::emit(self, event)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

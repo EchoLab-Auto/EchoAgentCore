@@ -41,8 +41,7 @@ pub const KIND: &str = "kernel";
 pub const MANIFEST_TOML: &str = include_str!("../module.toml");
 
 pub fn manifest(version: &str) -> ModuleManifest {
-    ModuleManifest::from_toml(MANIFEST_TOML, version)
-        .expect("事件溯源模块的 module.toml 解析失败")
+    ModuleManifest::from_toml(MANIFEST_TOML, version).expect("事件溯源模块的 module.toml 解析失败")
 }
 
 /// 构造模块：**纯身份声明**（`mount` 返回空 disposer）。

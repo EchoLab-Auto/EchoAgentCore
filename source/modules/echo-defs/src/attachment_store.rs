@@ -71,11 +71,7 @@ fn attachment_dir_with_home(
 /// 空结果（原名全是非法字符）回退 `file`——落盘失败比名字难看糟糕得多。
 pub fn sanitize_file_name(raw: &str) -> String {
     // 先取 basename：`../../etc/passwd` 与 `C:\x\y.txt` 都只剩最后一段。
-    let base = raw
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(raw)
-        .trim();
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw).trim();
 
     let cleaned: String = base
         .chars()
@@ -171,7 +167,8 @@ fn unique_path(dir: &Path, name: &str) -> PathBuf {
 /// 原子上写：临时文件 + rename，避免 agent 读到半截文件。
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create attachment dir failed: {e}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create attachment dir failed: {e}"))?;
     }
     let temporary = path.with_extension(format!(
         "{}.part{}",
@@ -257,7 +254,10 @@ mod tests {
     #[test]
     fn sanitize_blocks_traversal() {
         assert_eq!(sanitize_file_name("../../etc/passwd"), "passwd");
-        assert_eq!(sanitize_file_name("..\\..\\windows\\system32\\x.dll"), "x.dll");
+        assert_eq!(
+            sanitize_file_name("..\\..\\windows\\system32\\x.dll"),
+            "x.dll"
+        );
         assert_eq!(sanitize_file_name(".."), "file");
         assert_eq!(sanitize_file_name(""), "file");
         assert_eq!(sanitize_file_name("   "), "file");
@@ -289,7 +289,8 @@ mod tests {
     #[test]
     fn save_creates_nested_session_dir() {
         let root = temp_root("save");
-        let path = save_attachment_in(&root, "local:workspace:ws/a:user", "a.txt", b"hello").unwrap();
+        let path =
+            save_attachment_in(&root, "local:workspace:ws/a:user", "a.txt", b"hello").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"hello");
         assert!(path.starts_with(root.join("local_workspace_ws_a_user")));
         assert!(path.is_absolute());

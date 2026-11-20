@@ -7,9 +7,9 @@
 use dashmap::DashMap;
 use serde_json::Value;
 
-use echo_defs::session_query::{SessionQuery, SessionQueryView};
 use agent_module_session::store::query;
 use agent_module_session::TrunkStore;
+use echo_defs::session_query::{SessionQuery, SessionQueryView};
 
 #[derive(Default)]
 pub struct SessionQueryRegistry {

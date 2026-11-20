@@ -46,6 +46,7 @@ impl InprocModule for ProbeModule {
                             .await;
                         let _ = io
                             .send(ModuleToHost::Register(Register {
+                                manifest: None,
                                 contributions: vec![
                                     Contribution::Command(
                                         echo_module_host::api::CommandContribution {

@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use echo_context::ServiceKey;
 use agent_module_management::protocol::BackendEvent;
+use echo_context::ServiceKey;
 
 /// 进程级事件出口。
 pub static EVENTS: ServiceKey<Arc<dyn Fn(BackendEvent) + Send + Sync>> =

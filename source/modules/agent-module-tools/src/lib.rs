@@ -51,6 +51,13 @@ pub mod websearch;
 pub use calculator::CalculatorTool;
 pub use coding::{register_coding_tools, RemoteAwareTool};
 pub use deepseek_search::{DeepSeekClient, ReadUrlTool, SearchEngine};
+/// 远程工具调用出口（`node://<peer>/…` 前缀的分流目标）。
+///
+/// **类型定义在定义层**（`echo_defs::remote_tool::RemoteInvoker`，2026-11 S12）：
+/// 声明方是本 crate（`node://` 的消费方），实现方是联邦子系统。此前类型住在
+/// 这里，于是联邦模块不得不 `use crate::RemoteInvoker`——两个互不
+/// 相干的模块因此结了 Cargo 依赖。
+pub use echo_defs::remote_tool::RemoteInvoker;
 pub use instance::register_instance_tools;
 pub use instance_commands::{
     InstanceCommandHandler, InstanceCommandHost, COMMANDS as INSTANCE_COMMANDS,
@@ -62,13 +69,6 @@ pub use list_api_profiles::ListApiProfilesTool;
 pub use module::{BuiltinToolProvider, BuiltinTools, ToolsHostCtx, MODULE_ID, SERVICE_KEY};
 pub use tool_commands::{ToolsCommandHandler, ToolsCommandHost, COMMANDS as TOOL_COMMANDS};
 pub use websearch::WebSearchTool;
-/// 远程工具调用出口（`node://<peer>/…` 前缀的分流目标）。
-///
-/// **类型定义在定义层**（`echo_defs::remote_tool::RemoteInvoker`，2026-11 S12）：
-/// 声明方是本 crate（`node://` 的消费方），实现方是联邦子系统。此前类型住在
-/// 这里，于是联邦模块不得不 `use crate::RemoteInvoker`——两个互不
-/// 相干的模块因此结了 Cargo 依赖。
-pub use echo_defs::remote_tool::RemoteInvoker;
 
 /// 注入口：`RemoteInvoker` 由组合根在**注册工具时**传入
 /// （[`register_coding_tools`] 的 `invoker` 参数）。

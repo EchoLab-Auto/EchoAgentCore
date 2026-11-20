@@ -142,9 +142,9 @@ impl DeepSeekClient {
         count: usize,
         need_content: bool,
     ) -> Result<Vec<SearchHit>, String> {
-        let key = self
-            .api_key()
-            .ok_or_else(|| "没有可用的 DeepSeek 密钥（[agent].api_key 或某个 deepseek profile）".to_string())?;
+        let key = self.api_key().ok_or_else(|| {
+            "没有可用的 DeepSeek 密钥（[agent].api_key 或某个 deepseek profile）".to_string()
+        })?;
         let body = json!({
             "query": query,
             "count": count.clamp(1, 50),
@@ -156,9 +156,9 @@ impl DeepSeekClient {
 
     /// `POST /v1/tools/fetch`。
     pub async fn fetch(&self, url: &str) -> Result<FetchedPage, String> {
-        let key = self
-            .api_key()
-            .ok_or_else(|| "没有可用的 DeepSeek 密钥（[agent].api_key 或某个 deepseek profile）".to_string())?;
+        let key = self.api_key().ok_or_else(|| {
+            "没有可用的 DeepSeek 密钥（[agent].api_key 或某个 deepseek profile）".to_string()
+        })?;
         let body = json!({ "url": url });
         let text = self.post(FETCH_PATH, &key, &body).await?;
         parse_fetch_response(&text)
@@ -167,12 +167,7 @@ impl DeepSeekClient {
     /// 两个端点共用的 POST（超时 / 状态码 / 错误体翻译）。
     async fn post(&self, path: &str, key: &str, body: &Value) -> Result<String, String> {
         let url = format!("{API_BASE}{path}");
-        let request = self
-            .client
-            .post(&url)
-            .bearer_auth(key)
-            .json(body)
-            .send();
+        let request = self.client.post(&url).bearer_auth(key).json(body).send();
         let response = tokio::time::timeout(REQUEST_TIMEOUT, request)
             .await
             .map_err(|_| format!("请求超时（>{}s）", REQUEST_TIMEOUT.as_secs()))?
@@ -245,8 +240,8 @@ fn error_message(body: &str) -> String {
 
 /// 解析 `/v1/tools/search` 的响应。
 fn parse_search_response(text: &str) -> Result<Vec<SearchHit>, String> {
-    let root: Value =
-        serde_json::from_str(text).map_err(|e| format!("响应解析失败: {e} — {}", clip(text, 300)))?;
+    let root: Value = serde_json::from_str(text)
+        .map_err(|e| format!("响应解析失败: {e} — {}", clip(text, 300)))?;
     let Some(items) = root.get("results").and_then(|v| v.as_array()) else {
         return Ok(Vec::new());
     };
@@ -276,8 +271,8 @@ fn parse_search_response(text: &str) -> Result<Vec<SearchHit>, String> {
 
 /// 解析 `/v1/tools/fetch` 的响应。
 fn parse_fetch_response(text: &str) -> Result<FetchedPage, String> {
-    let root: Value =
-        serde_json::from_str(text).map_err(|e| format!("响应解析失败: {e} — {}", clip(text, 300)))?;
+    let root: Value = serde_json::from_str(text)
+        .map_err(|e| format!("响应解析失败: {e} — {}", clip(text, 300)))?;
     Ok(FetchedPage {
         title: str_field(&root, "title"),
         content: clip(&str_field(&root, "content"), FETCH_CLIP_CHARS),
@@ -527,7 +522,10 @@ mod tests {
         assert!(text.contains("https://example.com/deepseek-v4"), "{text}");
         assert!(text.contains("Example News · 2026-06-01"), "{text}");
         // summary 优先于 snippet/content。
-        assert!(text.contains("DeepSeek has released the V4 model."), "{text}");
+        assert!(
+            text.contains("DeepSeek has released the V4 model."),
+            "{text}"
+        );
         // 有 summary 时 content 以「正文节选」追加。
         assert!(text.contains("正文节选"), "{text}");
     }
@@ -543,7 +541,8 @@ mod tests {
     fn fetch_response_parses_title_and_content() {
         // 正文是 Markdown（以 `# ` 开头）：用 json! 构造，避免原始字符串
         // 被 `"#` 提前截断。
-        let body = json!({"title": "Example article", "content": "# Example article\n\nbody"}).to_string();
+        let body =
+            json!({"title": "Example article", "content": "# Example article\n\nbody"}).to_string();
         let page = parse_fetch_response(&body).unwrap();
         assert_eq!(page.title, "Example article");
         assert!(page.content.starts_with("# Example article"));
@@ -553,7 +552,11 @@ mod tests {
     fn long_content_is_clipped_by_chars() {
         let long = "测".repeat(FETCH_CLIP_CHARS + 100);
         let page = parse_fetch_response(&json!({"title":"t","content":long}).to_string()).unwrap();
-        assert_eq!(page.content.chars().count(), FETCH_CLIP_CHARS + 1, "末尾一个省略号");
+        assert_eq!(
+            page.content.chars().count(),
+            FETCH_CLIP_CHARS + 1,
+            "末尾一个省略号"
+        );
         assert!(page.content.ends_with('…'));
     }
 

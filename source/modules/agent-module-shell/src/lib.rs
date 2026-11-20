@@ -34,8 +34,8 @@ use std::sync::Arc;
 
 pub use crate::session::{CommandGuard, ShellHandle};
 
-use echo_module::{BuiltinModule, Module, ModuleManifest, MountContext, ServiceSlot};
 use agent_module_tools::ToolRegistry;
+use echo_module::{BuiltinModule, Module, ModuleManifest, MountContext, ServiceSlot};
 #[allow(ambiguous_glob_reexports)]
 pub use session::*;
 
@@ -89,7 +89,8 @@ pub const MANIFEST_TOML: &str = include_str!("../module.toml");
 
 /// 模块清单：从 [`MANIFEST_TOML`] 解析，只把版本号留给宿主注入。
 pub fn manifest(version: &str) -> ModuleManifest {
-    ModuleManifest::from_toml(MANIFEST_TOML, version).expect("Shell 会话模块的 module.toml 解析失败")
+    ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("Shell 会话模块的 module.toml 解析失败")
 }
 
 /// 构造模块：`mount` 把 provider 挂到 [`SERVICE_KEY`]，并绑定命令域接缝。
@@ -248,7 +249,8 @@ mod manifest_tests {
             "代码里的注入声明盖过了清单"
         );
         assert!(
-            m.requires.contains(&agent_module_tools::SERVICE_KEY.to_string()),
+            m.requires
+                .contains(&agent_module_tools::SERVICE_KEY.to_string()),
             "shell 的工具挂在工具集注册表上，这条依赖必须在清单里可见"
         );
     }

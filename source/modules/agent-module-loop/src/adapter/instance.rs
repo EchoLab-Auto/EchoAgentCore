@@ -866,6 +866,7 @@ mod tests {
                                 .await;
                             let _ = io
                                 .send(ModuleToHost::Register(Register {
+                                    manifest: None,
                                     contributions: vec![contribution().into_custom()],
                                 }))
                                 .await;
@@ -1279,6 +1280,7 @@ mod tests {
                                 .await;
                             let _ = io
                                 .send(ModuleToHost::Register(Register {
+                                    manifest: None,
                                     contributions: vec![contribution().into_custom()],
                                 }))
                                 .await;

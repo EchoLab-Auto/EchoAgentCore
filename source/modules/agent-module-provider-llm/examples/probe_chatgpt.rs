@@ -9,7 +9,10 @@ fn main() {
 }
 
 async fn run() {
-    println!("ECHO_CHATGPT_PROXY = {:?}", std::env::var("ECHO_CHATGPT_PROXY").ok());
+    println!(
+        "ECHO_CHATGPT_PROXY = {:?}",
+        std::env::var("ECHO_CHATGPT_PROXY").ok()
+    );
     let auth = match agent_module_provider_llm::chatgpt::auth::load() {
         Ok(Some(a)) => a,
         Ok(None) => {
@@ -24,7 +27,10 @@ async fn run() {
     println!("email = {} expired = {}", auth.email, auth.is_expired());
 
     use echo_defs::{ChatMessage, ChatRequest, LlmProvider};
-    let provider = match agent_module_provider_llm::chatgpt::ChatGptProvider::new(auth, &std::env::var("PROBE_MODEL").unwrap_or_else(|_| "gpt-5".into())) {
+    let provider = match agent_module_provider_llm::chatgpt::ChatGptProvider::new(
+        auth,
+        &std::env::var("PROBE_MODEL").unwrap_or_else(|_| "gpt-5".into()),
+    ) {
         Ok(provider) => provider,
         Err(error) => {
             println!("建 provider 失败（这一步就该报出来）：{error}");

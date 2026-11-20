@@ -505,22 +505,19 @@ fn transaction_file_from(
             reason: "未设置（已设置 ECHO_AGENT_STATE_DIR，但无法定位事务文件）",
         });
     };
-    let instance =
-        raw_instance
-            .to_str()
-            .ok_or_else(|| StatusSourceError::InvalidEnv {
-                name: AGENT_INSTANCE_ENV,
-                value: raw_instance.to_string_lossy().into_owned(),
-                reason: "不是 UTF-8 字符串",
-            })?;
+    let instance = raw_instance
+        .to_str()
+        .ok_or_else(|| StatusSourceError::InvalidEnv {
+            name: AGENT_INSTANCE_ENV,
+            value: raw_instance.to_string_lossy().into_owned(),
+            reason: "不是 UTF-8 字符串",
+        })?;
     validate_instance_id(instance).map_err(|reason| StatusSourceError::InvalidEnv {
         name: AGENT_INSTANCE_ENV,
         value: instance.to_owned(),
         reason,
     })?;
-    Ok(Some(
-        state_dir.join(format!("transaction-{instance}.json")),
-    ))
+    Ok(Some(state_dir.join(format!("transaction-{instance}.json"))))
 }
 
 /// 纯解析状态来源（测试可并行调用，不读进程环境）。
@@ -532,7 +529,8 @@ fn status_source_from(
     xdg_state_home: Option<&OsStr>,
     home: Option<&OsStr>,
 ) -> Result<StatusSource, StatusSourceError> {
-    if let Some(path) = transaction_file_from(transaction_override, agent_state_dir, agent_instance)?
+    if let Some(path) =
+        transaction_file_from(transaction_override, agent_state_dir, agent_instance)?
     {
         return Ok(StatusSource::Transaction(path));
     }
@@ -780,8 +778,7 @@ fn optional_safe_token(
     match object.get(field) {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::String(value)) => {
-            validate_instance_id(value)
-                .map_err(|_| TransactionParseError::InvalidField(field))?;
+            validate_instance_id(value).map_err(|_| TransactionParseError::InvalidField(field))?;
             Ok(Some(value.clone()))
         }
         Some(_) => Err(TransactionParseError::InvalidField(field)),
@@ -804,11 +801,7 @@ fn rfc3339_utc_from_unix_ms(millis: u64) -> Option<String> {
     let seconds = i64::try_from(millis / 1000).ok()?;
     let days = seconds.div_euclid(86_400);
     let remainder = seconds.rem_euclid(86_400);
-    let (hour, minute, second) = (
-        remainder / 3_600,
-        (remainder % 3_600) / 60,
-        remainder % 60,
-    );
+    let (hour, minute, second) = (remainder / 3_600, (remainder % 3_600) / 60, remainder % 60);
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let day_of_era = z - era * 146_097;
@@ -838,7 +831,11 @@ fn parse_transaction(text: &str) -> Result<TransactionStatus, TransactionParseEr
     let value: serde_json::Value = serde_json::from_str(text)
         .map_err(|error| TransactionParseError::InvalidJson(error.to_string()))?;
     let object = value.as_object().ok_or(TransactionParseError::NotObject)?;
-    if object.get("schema_version").and_then(serde_json::Value::as_u64) != Some(1) {
+    if object
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+    {
         return Err(TransactionParseError::UnsupportedSchema);
     }
     let phase = object
@@ -870,10 +867,7 @@ fn parse_transaction(text: &str) -> Result<TransactionStatus, TransactionParseEr
         None => return Err(TransactionParseError::InvalidField("error")),
         Some(_) => return Err(TransactionParseError::InvalidField("error")),
     };
-    let needs_error = matches!(
-        phase,
-        "rolling_back" | "rolled_back" | "recovery_required"
-    );
+    let needs_error = matches!(phase, "rolling_back" | "rolled_back" | "recovery_required");
     let forbids_error = matches!(
         phase,
         "prepared" | "maintenance" | "drained" | "switching" | "verifying" | "committed"
@@ -1595,11 +1589,7 @@ mod tests {
             })
         ));
         assert!(matches!(
-            transaction_file_from(
-                None,
-                Some(OsStr::new("state")),
-                Some(OsStr::new("demo"))
-            ),
+            transaction_file_from(None, Some(OsStr::new("state")), Some(OsStr::new("demo"))),
             Err(StatusSourceError::InvalidEnv {
                 name: AGENT_STATE_DIR_ENV,
                 ..
@@ -1716,8 +1706,7 @@ mod tests {
     #[test]
     fn transaction_committed_maps_to_updated() {
         let fields =
-            parse_transaction(&transaction_doc("committed", "null", "rel-2", "\"rel-1\""))
-                .unwrap();
+            parse_transaction(&transaction_doc("committed", "null", "rel-2", "\"rel-1\"")).unwrap();
         match transaction_status_event(fields) {
             BackendEvent::SelfUpdateStatus {
                 state,
@@ -1744,13 +1733,9 @@ mod tests {
             r#""message":"probe failed\nTOKEN=secret-value","#,
             r#""step":"verify_readiness"}"#
         );
-        let fields = parse_transaction(&transaction_doc(
-            "rolled_back",
-            error,
-            "rel-2",
-            "\"rel-1\"",
-        ))
-        .unwrap();
+        let fields =
+            parse_transaction(&transaction_doc("rolled_back", error, "rel-2", "\"rel-1\""))
+                .unwrap();
         match transaction_status_event(fields) {
             BackendEvent::SelfUpdateStatus { state, message, .. } => {
                 let message = message.unwrap();
@@ -1770,9 +1755,13 @@ mod tests {
     #[test]
     fn transaction_recovery_required_maps_to_failed() {
         let error = r#"{"code":"interrupted","message":"process crashed","step":null}"#;
-        let fields =
-            parse_transaction(&transaction_doc("recovery_required", error, "rel-2", "null"))
-                .unwrap();
+        let fields = parse_transaction(&transaction_doc(
+            "recovery_required",
+            error,
+            "rel-2",
+            "null",
+        ))
+        .unwrap();
         match transaction_status_event(fields) {
             BackendEvent::SelfUpdateStatus { state, message, .. } => {
                 assert_eq!(state, "failed");
@@ -1793,10 +1782,10 @@ mod tests {
             Err(TransactionParseError::NotObject)
         ));
         assert!(matches!(
-            parse_transaction(&transaction_doc("switching", "null", "rel-2", "null").replace(
-                "\"schema_version\":1",
-                "\"schema_version\":2"
-            )),
+            parse_transaction(
+                &transaction_doc("switching", "null", "rel-2", "null")
+                    .replace("\"schema_version\":1", "\"schema_version\":2")
+            ),
             Err(TransactionParseError::UnsupportedSchema)
         ));
         assert!(matches!(
@@ -1838,7 +1827,10 @@ mod tests {
             rfc3339_utc_from_unix_ms(1760000000000).as_deref(),
             Some("2025-10-09T08:53:20Z")
         );
-        assert_eq!(rfc3339_utc_from_unix_ms(999).as_deref(), Some("1970-01-01T00:00:00Z"));
+        assert_eq!(
+            rfc3339_utc_from_unix_ms(999).as_deref(),
+            Some("1970-01-01T00:00:00Z")
+        );
     }
     #[tokio::test]
     async fn foreign_commands_are_not_claimed() {
@@ -1969,7 +1961,10 @@ mod tests {
             resolve_service_scope(None, Some("system")),
             ServiceScope::System
         );
-        assert_eq!(resolve_service_scope(None, Some("user")), ServiceScope::User);
+        assert_eq!(
+            resolve_service_scope(None, Some("user")),
+            ServiceScope::User
+        );
         assert_eq!(resolve_service_scope(None, None), ServiceScope::User);
         assert_eq!(
             resolve_service_scope(Some("bogus"), Some("system")),
@@ -2482,7 +2477,16 @@ esac"#,
     async fn handler_reads_explicit_transaction_file() {
         let dir = TempDir::new("tx-handler");
         let path = dir.join("transaction-demo.json");
-        std::fs::write(&path, transaction_doc("rolled_back", r#"{"code":"switch_failed","message":"x","step":"switch"}"#, "rel-2", "\"rel-1\"")).unwrap();
+        std::fs::write(
+            &path,
+            transaction_doc(
+                "rolled_back",
+                r#"{"code":"switch_failed","message":"x","step":"switch"}"#,
+                "rel-2",
+                "\"rel-1\"",
+            ),
+        )
+        .unwrap();
         let host = Arc::new(FakeHost::default());
         let h = SelfUpdateHandler::new(host.clone()).with_transaction_path(&path);
         h.handle("RequestSelfUpdateStatus", serde_json::Value::Null)

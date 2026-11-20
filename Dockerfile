@@ -46,15 +46,13 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY source ./source
-# 进程外模块二进制与 Core 同一次调用构建：最终镜像要把
-# `target/release/agent-module-checklist` 装到 `libexec/modules/<包>/<包>`，
-# 而**只有把包名放进 `-p`，它的 `[[bin]]` 才会被编出来**（只作为依赖需要时，
-# cargo 给的是 `lib*.rlib`）。名单与 install.sh / update.sh 的
-# `EXTERNAL_MODULE_BINARIES`、release.yml 的构建列表同源，三处必须一致
-# （守护测试：source/modules/core/tests/dockerfile_module_binaries.rs）。
-RUN cargo build --release --locked \
-    -p echo-agent-core \
-    -p agent-module-checklist
+# 只编 Core 本体。
+#
+# 任务清单（`echo-agent.checklist`）不在 Core 的依赖图里（根 `Cargo.toml`
+# 刻意没有它），所以 `-p` 不可用——它的二进制由后面独立的 checklist 阶段
+# 构建（同样是外部仓、独立 workspace）。镜像里装它但不启用：容器不写
+# `modules.toml`，要用就在配置里加一行。
+RUN cargo build --release --locked -p echo-agent-core
 
 # ── QQ 适配器（进程外模块，独立仓）──────────────────────────────────────
 #
@@ -91,6 +89,41 @@ RUN git clone --depth 1 --branch "${ADAPTER_REF}" "${ADAPTER_REPO}" . \
 # （镜像构建不该因为上游 lock 漂移而整体失败）。
 RUN cargo build --release --locked -p agent-module-adapter-qq \
     || cargo build --release -p agent-module-adapter-qq
+
+# ── 任务清单（外部模块，独立仓）────────────────────────────────────────
+#
+# 与适配器同一个形状：外部仓、独立 workspace、独立 Cargo.lock。**Core 的
+# 编译期不认识它**（根 Cargo.toml 刻意没有这条依赖），所以只能在这里单独
+# 克隆构建。
+#
+# 镜像里装了二进制但**不启用**：容器模板不写 modules.toml，所以默认没有
+# `checklist` 工具。要用就在配置里加：
+#
+#   [[module]]
+#   id = "echo-agent.checklist"
+#   kind = "stdio"
+#   command = "/usr/local/libexec/echo-agent-core/modules/agent-module-checklist/agent-module-checklist"
+#
+# 需要可复现构建时用 ARG 固定到某个 commit / tag：
+#   docker build --build-arg CHECKLIST_REF=<sha> -t echo-agent-core:local .
+FROM rust:1.98-bookworm AS checklist-builder
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    ALL_PROXY=${ALL_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true
+ARG CHECKLIST_REPO=https://github.com/EchoLab-Auto/agent-module-checklist
+ARG CHECKLIST_REF=main
+WORKDIR /checklist
+RUN git clone --depth 1 --branch "${CHECKLIST_REF}" "${CHECKLIST_REPO}" . \
+    || { git clone "${CHECKLIST_REPO}" . && git checkout "${CHECKLIST_REF}"; }
+# 同适配器：--locked 依赖对方自带的 Cargo.lock，缺失 / 过期时退化为不加锁。
+RUN cargo build --release --locked -p agent-module-checklist \
+    || cargo build --release -p agent-module-checklist
 
 FROM debian:bookworm-slim
 
@@ -149,7 +182,7 @@ RUN ln -sf /usr/local/bin/echo-adapter-qq /usr/local/bin/agent-module-adapter-qq
 # 任务清单模块：**独立产物**（不是编进 echo-agent-core 的那份）。
 # 落点与源码/二进制安装一致：`<libexec>/modules/<包名>/<包名>`。
 # 容器里 libexec 用 /usr/local/libexec（见 entrypoint 的 ECHO_PREFIX 约定）。
-COPY --from=builder /app/target/release/agent-module-checklist \
+COPY --from=checklist-builder /checklist/target/release/agent-module-checklist \
      /usr/local/libexec/echo-agent-core/modules/agent-module-checklist/agent-module-checklist
 COPY config/echo-agent-core.toml /app/config/echo-agent-core.toml
 COPY skills /app/skills

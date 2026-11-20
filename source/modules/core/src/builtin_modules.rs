@@ -197,12 +197,17 @@ pub(crate) fn catalog_with(
         agent_module_loop::tool::builtin::builtin_module::module(version),
     )?;
 
-    // ── 任务清单（`checklist` 工具 + 持久 store + `RequestChecklists`）──
+    // ── 任务清单：**不在这里**（2026-11-21）──
     //
-    // 2026-11 从工具集拆出：清单的状态真值是 per-persona 文件，装配面是
-    // 「宿主给端口、模块造工具」。顺序紧跟工具集——它不依赖工具集，但两者
-    // 在面板里应当相邻（同属「模型能力」）。
-    push_module(&mut catalog, agent_module_checklist::module(version))?;
+    // `echo-agent.checklist` 是第一个"宿主完全不认识"的模块：实现与身份都在
+    // agent-module-checklist 仓，Core 不再以 git 依赖编入它，也不注册它的
+    // 模块目录。启用方式是在 `modules.toml` 里写一行 `kind = "stdio"`（或
+    // `dylib`）指向它的二进制，默认不启用；身份由它握手中
+    // `Register.manifest` 上报（见 `ModuleHandle::manifest_claim`）。
+    //
+    // 由此带来的两个可见变化（都是刻意的）：
+    // - 没配置时**没有 `checklist` 工具**，面板上也没有清单入口；
+    // - 模块崩溃与宿主隔离，且可以在不重编 Core 的前提下换实现。
 
     // ── Shell 会话（`bash-start` / `bash-exec` / `bash-stop` + 命令域）──
     //
@@ -291,21 +296,15 @@ pub(crate) fn instance_module(version: &str, platform: &str) -> Arc<dyn Module> 
     let description = format!("{platform} 平台实例模块（独立进程）");
     let module_id_for_mount = module_id.clone();
     Arc::new(BuiltinModule::new(
-        ModuleManifest::builtin(
-            &module_id,
-            &name,
-            version,
-            "instance",
-            description,
-        )
-        // 实例模块化收尾（P1.9，2026-10）：实现由独立进程提供，这里只是
-        // 门控壳。必须显式声明，否则面板按 builtin=true 把它显示成
-        // 「内部模块」。
-        .with_runtime(ModuleRuntime::Subprocess)
-        // 分类标签：实现不在本进程里，归「外部」——面板据此分组。
-        // 与 `builtin`（来源）和 `runtime`（实现在哪跑）是三个正交维度，
-        // 这里三者恰好都指向"外部"，但改一个不该影响另一个。
-        .with_tag(crate::module_tag::OUTSIDE),
+        ModuleManifest::builtin(&module_id, &name, version, "instance", description)
+            // 实例模块化收尾（P1.9，2026-10）：实现由独立进程提供，这里只是
+            // 门控壳。必须显式声明，否则面板按 builtin=true 把它显示成
+            // 「内部模块」。
+            .with_runtime(ModuleRuntime::Subprocess)
+            // 分类标签：实现不在本进程里，归「外部」——面板据此分组。
+            // 与 `builtin`（来源）和 `runtime`（实现在哪跑）是三个正交维度，
+            // 这里三者恰好都指向"外部"，但改一个不该影响另一个。
+            .with_tag(crate::module_tag::OUTSIDE),
         move |mctx| {
             // 启停控制是可选的：没有实例句柄的部署（不跑平台）照样能挂上。
             let control = mctx.service(&crate::host_services::INSTANCE_CONTROL);

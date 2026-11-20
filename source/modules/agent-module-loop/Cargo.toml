@@ -19,7 +19,6 @@ base64 = { workspace = true }
 agent-module-provider-llm = { workspace = true }
 agent-module-self-update = { workspace = true }
 agent-module-shell = { workspace = true }
-agent-module-checklist = { workspace = true }
 agent-module-federation = { workspace = true }
 agent-module-session = { workspace = true }
 agent-module-prodoc = { workspace = true }

@@ -44,10 +44,6 @@ pub const MANAGEMENT_PANEL_MODULE_ID: &str = "echo-agent.management.panel";
 /// `document/modules/workspace.md` 早已声称这里是别名（文档与代码不一致）。
 pub use agent_module_workspace::MODULE_ID as WORKSPACE_MODULE_ID;
 
-/// Subagent 委派模块 id（包 id 同名：`spawn_subagent` 工具 + subagent 技能随包门控）。
-///
-/// 同 [`WORKSPACE_MODULE_ID`]：别名，词表归模块。
-pub use agent_module_subagent::MODULE_ID as SUBAGENT_MODULE_ID;
 /// 循环模块（声明已外迁到 [`agent_module_loop`]，解耦计划 Phase 3 ⑦）。
 ///
 /// 这里留**兼容别名**，配置与门控读的是同一批字面量，不另存一份。
@@ -59,12 +55,10 @@ pub use crate::SINGLE_MODULE_ID as SINGLE_LOOP_MODULE_ID;
 /// （`agent-module-shell` 的进程组生命周期）、自己的面板页面、独立的启停需求。
 /// 声明与实现都在 [`agent_module_shell`]，这里是兼容别名。
 pub use agent_module_shell::MODULE_ID as SHELL_MODULE_ID;
-/// 任务清单模块 id（`checklist` 工具 + per-persona 持久 store + `RequestChecklists`）。
+/// Subagent 委派模块 id（包 id 同名：`spawn_subagent` 工具 + subagent 技能随包门控）。
 ///
-/// 2026-11 从 `echo-agent.tools.builtin` 拆出：清单有独立的持久化真值、独立的
-/// 提示词文本块与独立的查询命令域，"想关清单"不该等于"关掉整个工具集"。
-/// 声明与实现都在 [`agent_module_checklist`]，这里是兼容别名。
-pub use agent_module_checklist::MODULE_ID as CHECKLIST_MODULE_ID;
+/// 同 [`WORKSPACE_MODULE_ID`]：别名，词表归模块。
+pub use agent_module_subagent::MODULE_ID as SUBAGENT_MODULE_ID;
 
 /// persona 门控**已经不再是一张模块 id 清单**——判据是 manifest 的 `kind`。
 ///
@@ -99,13 +93,17 @@ pub use agent_module_federation::MODULE_ID as FEDERATION_MODULE_ID;
 /// 外部仓模块的实现、文档与身份归所属仓库；其目录装配在组合根单独追加，
 /// 不让本清单反向要求 Core 持有它们的领域文档。
 ///
+/// **任务清单（`echo-agent.checklist`）不在这里**（2026-11-21）：它已经彻底
+/// 变成"宿主不认识的产物"——Core 不再以 git 依赖编入它，也不注册它的模块
+/// 目录。启用方式是在 `modules.toml` 里写一行 `kind = "stdio"`（或 `dylib`）
+/// 指向它的二进制，默认不启用。身份由它自己的 `Register.manifest` 上报。
+///
 /// 实例模块 id 由组合根声明（`core::instance_manifests`，按前缀
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_MODULE_IDS: [&str; 18] = [
+pub const BUILTIN_MODULE_IDS: [&str; 17] = [
     TOOLS_BUILTIN_MODULE_ID,
-    CHECKLIST_MODULE_ID,
     SHELL_MODULE_ID,
     SKILLS_DIR_MODULE_ID,
     SUBAGENT_MODULE_ID,
@@ -299,7 +297,8 @@ pub fn order_by_service_dependencies(
     let mut diagnostics = Vec::new();
     // 键 → 提供它的模块（同键多提供者只认第一个，其余记诊断：静默取一个会让人
     // 以为"改了顺序就换了实现"）。
-    let mut provider_of: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut provider_of: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for (index, step) in order.iter().enumerate() {
         for key in provides_of(&step.id) {
             if let Some(previous) = provider_of.insert(key.clone(), index) {
@@ -1048,7 +1047,11 @@ impl ModuleHost {
         name: &str,
         payload: serde_json::Value,
     ) -> Option<Result<serde_json::Value, String>> {
-        if let Some(outcome) = self.registry.dispatch_command_async(name, payload.clone()).await {
+        if let Some(outcome) = self
+            .registry
+            .dispatch_command_async(name, payload.clone())
+            .await
+        {
             return Some(outcome);
         }
         self.dispatch_raw_to_external(name, payload).await
@@ -1066,7 +1069,10 @@ impl ModuleHost {
         const COMMAND_TIMEOUT_MS: u64 = 30_000;
         let handles = self.external.read().clone();
         for handle in handles {
-            if !Self::external_commands(&handle).iter().any(|cmd| cmd == name) {
+            if !Self::external_commands(&handle)
+                .iter()
+                .any(|cmd| cmd == name)
+            {
                 continue;
             }
             let ctx = Self::external_invoke_ctx(&serde_json::Value::Null, COMMAND_TIMEOUT_MS);
@@ -1089,7 +1095,11 @@ impl ModuleHost {
         self.external
             .read()
             .iter()
-            .find(|handle| Self::external_commands(handle).iter().any(|cmd| cmd == name))
+            .find(|handle| {
+                Self::external_commands(handle)
+                    .iter()
+                    .any(|cmd| cmd == name)
+            })
             .map(|handle| handle.module_id().to_string())
     }
 
@@ -1184,7 +1194,6 @@ impl ModuleHost {
         blocks
     }
 
-
     /// 事件投递计数（成功条数, 失败条数）——诊断用。
     pub fn event_counters(&self) -> (u64, u64) {
         self.registry.event_counters()
@@ -1213,13 +1222,39 @@ impl ModuleHost {
     /// 不需要启动期的错误清单（那份归组合根记日志）。
     ///
     /// 重复调用会整体替换——外部模块的生命周期归组合根，这里只读。
+    ///
+    /// **顺带把自述身份装进注册表**：外部模块在目录里的身份是"合成"的
+    /// （构造目录时还没握手，只能填 id + 命令 + 运输形态）。握手完成之后
+    /// 模块自己会说它是什么（`Register.manifest`：`kind` / `package` /
+    /// `requires` / `provides`），这里把它转成宿主的清单并覆盖描述符——
+    /// 否则面板只能显示一行 `kind = "tool"` 的占位，作用域门控也永远按
+    /// 那个占位算。没自述身份的模块（旧模块）保持合成身份，行为不变。
     pub fn set_external_modules(&self, handles: Vec<echo_module_host::ModuleHandle>) {
         if handles.is_empty() {
             *self.external.write() = Vec::new();
             return;
         }
+        for handle in &handles {
+            let Some(claim) = handle.manifest_claim() else {
+                continue;
+            };
+            let id = handle.module_id().to_string();
+            // `runtime` / `builtin` 由**宿主**填：模块不知道也不该知道自己是
+            // 被 stdio 还是 dylib 装进来的、算不算随宿主发布。
+            let manifest = echo_module::ModuleManifest::from_claim(
+                claim,
+                echo_module::ModuleRuntime::Subprocess,
+                false,
+            );
+            self.registry.set_identity_claim(id, manifest);
+        }
         tracing::info!(
             modules = ?handles.iter().map(|h| h.module_id().to_string()).collect::<Vec<_>>(),
+            declared = ?handles
+                .iter()
+                .filter(|h| h.manifest_claim().is_some())
+                .map(|h| h.module_id().to_string())
+                .collect::<Vec<_>>(),
             "external module handles attached to the module host"
         );
         *self.external.write() = handles;
@@ -1326,7 +1361,6 @@ impl ModuleHost {
             })
             .collect()
     }
-
 
     /// 某个模块是不是**外部条目**（`modules.toml` 的 stdio 条目）。
     ///
@@ -1738,10 +1772,7 @@ mod tests {
             let captured = captured.clone();
             vec![config_probe("test.tool.cfg", captured)]
         }));
-        host.set_configs([(
-            "test.tool.cfg",
-            serde_json::json!({"roots": ["/srv/docs"]}),
-        )]);
+        host.set_configs([("test.tool.cfg", serde_json::json!({"roots": ["/srv/docs"]}))]);
 
         let agent = scope_agent("a");
         host.persona_scope(&agent).expect("persona scope");
@@ -2364,8 +2395,8 @@ mod tests {
             "没订阅的名字不该通过"
         );
 
-        let delivered =
-            host.deliver_backend_event(&agent_module_management::protocol::BackendEvent::ToolCall {
+        let delivered = host.deliver_backend_event(
+            &agent_module_management::protocol::BackendEvent::ToolCall {
                 session_id: "s1".into(),
                 team_id: None,
                 tool_name: "bash".into(),
@@ -2373,7 +2404,8 @@ mod tests {
                 tool_call_id: "call-1".into(),
                 branch_id: String::new(),
                 started_at_ms: None,
-            });
+            },
+        );
         assert_eq!(delivered, 1);
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
@@ -2555,7 +2587,10 @@ mod dependency_order_tests {
             },
         );
         assert_eq!(ids(&ordered), vec!["tools", "shell"], "提供者应当前移");
-        assert!(diagnostics.is_empty(), "正常排序不该有诊断：{diagnostics:?}");
+        assert!(
+            diagnostics.is_empty(),
+            "正常排序不该有诊断：{diagnostics:?}"
+        );
     }
 
     /// 无依赖关系的模块保持传入顺序（人工行序仍然有效）。

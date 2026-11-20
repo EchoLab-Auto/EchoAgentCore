@@ -12,6 +12,7 @@
 //! 公开路径与函数签名保持原样（`echo_agent::llm::create_provider` 等），
 //! 既有调用点零改动。
 
+pub use agent_module_provider_llm::{kimi_base_url, ProviderConfig, UsageRecorder};
 pub use echo_defs::llm::{LlmError, LlmProvider};
 pub use echo_defs::message::{
     ChatChunk, ChatMessage, ChatRequest, ChatResponse, ChatRole, ToolCall, ToolCallDelta, Usage,
@@ -21,7 +22,6 @@ pub use echo_defs::token::{
     truncate_message_to_tokens, truncate_text_to_tokens,
 };
 pub use echo_defs::tool::ToolDefinition;
-pub use agent_module_provider_llm::{kimi_base_url, ProviderConfig, UsageRecorder};
 
 use std::sync::Arc;
 

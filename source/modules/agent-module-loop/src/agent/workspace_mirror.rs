@@ -64,8 +64,7 @@ impl WorkspaceSnapshot {
         // 补位规则**归模块**：`conversations_view` 是那条规则的唯一实现
         // （空列表 → 存量主对话 `main` / `legacy: true`）。此前这里抄了一份，
         // 两份一致全靠注释提醒——模块改补位逻辑时宿主不会跟上，也不会报错。
-        let conversations =
-            agent_module_workspace::store::conversations_view(session);
+        let conversations = agent_module_workspace::store::conversations_view(session);
         let conversation = self
             .active_conversation
             .as_deref()

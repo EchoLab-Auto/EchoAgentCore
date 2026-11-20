@@ -25,10 +25,10 @@
 
 use std::sync::Arc;
 
-use echo_defs::module_instance::{InstanceConnectionState, InstanceRegistry};
 use agent_module_management::protocol::{
     BackendCommand, BackendEvent, InstanceMetadataEntry, InstanceStatus,
 };
+use echo_defs::module_instance::{InstanceConnectionState, InstanceRegistry};
 
 /// 本模块处理的命令名。
 pub const COMMANDS: [&str; 7] = [

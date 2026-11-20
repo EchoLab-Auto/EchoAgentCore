@@ -83,7 +83,6 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 | [`echo-agent.kernel.protocol`](./kernel.md) | Kernel | 进程内 | 线契约：`BackendCommand` / `BackendEvent` / bridge |
 | [`echo-agent.kernel.session`](./kernel.md) | Kernel | 进程内 | 事件溯源：`SessionEvent` / `EventLog` / 投影 / compaction |
 | [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话与任务清单** |
-| [`echo-agent.checklist`](./tools.md) | Tool | 进程内（独立仓） | 任务清单：`checklist` 工具 + per-persona 持久 store + `RequestChecklists`（2026-11 从工具集拆出，随后外置为 `agent-module-checklist` 仓） |
 | [`echo-agent.shell`](./shell.md) | Tool | 进程内 | 后台 bash 会话 + Shell 面板命令域 |
 | [`echo-agent.workspace`](./workspace.md) | Tool | 进程内（**独立仓**） | 工作区会话（多目录管理 + git 状态 + 只读文件浏览）。2026-11 迁出 Core 至 `EchoLab-Auto/agent-module-workspace`：store 与命令域归模块，宿主只留只读镜像 + 工具代理 |
 | [`echo-agent.prodoc`](./prodoc.md) | Tool | 进程内（**独立仓**） | ProDoc 文档群：把 Markdown 目录读成文档图 + 单文件读写（带 `base` 冲突检测）+ 文档图检查；渲染在浏览器（`DocGraphViewer`）。实现位于 `EchoLab-Auto/agent-module-prodoc` |
@@ -99,9 +98,15 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 | [`echo-agent.selfupdate`](./selfupdate.md) | Orchestration | 进程内 | 自更新触发与状态查询（部署形状归模块） |
 | [`echo-agent.instance.qq`](./qq-gating.md) | Instance | **进程外** | QQ 模块实例（OneBot v11 反向 WS，独立进程） |
 
+**`echo-agent.checklist` 不在这张表里**（2026-11-21 起）：它是第一个"宿主完全不
+认识"的模块——不在 Core 的依赖图里、没有内置目录项，启用方式只有 `modules.toml`
+的一行 `kind = "stdio"`（默认不启用）。身份（`kind` / `package` / 依赖）由它在
+握手中经 `Register.manifest` 自述，宿主据此生成描述符。搬家的来龙去脉见
+[工具系统](./tools.md)§任务清单。
+
 > **`Kernel` 是什么**：2026-11 取消「中间层 / 模块」二分之后新增的类别——提供其它模块的**运行地基**（词汇 / 线契约 / 注册表 / 事件日志 / 配置存储 / 循环驱动）。它们与其它模块同形（有 manifest、进 catalog、出现在本表），但**不可禁用**：`modules.toml` 写 `enabled = false` 会让启动失败并点名。逐条理由见 [运行地基](./kernel.md)。
 
-表的来源分两类，别混算：**框架内置 18 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 18]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 17 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 17]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 > **Panel 进程内模块的实现完全在 Panel 仓**（`source/agent-module-panel`）。Core 的组合根只引用其公开工厂，不持有 Panel 代码；挂载语义与本文相同，默认不启用。详见 Panel 仓文档。
 
@@ -138,7 +143,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
 - 每个条目可带 `[module.limits]`（子进程资源限额：CPU / 地址空间 / 单文件 / fd / 进程数，缺省不限制）——见 [模块开发指南](./module-authoring.md)「资源限额」
 - 排查"最终这一行来自哪一层、值是什么"用 `echo-agent-core dump-config`（只合成不启动）
 
-> 以上 id 也是更新器（`scripts/update.sh`）模块感知校验的核对清单——`expected_ids` 由**框架 23 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id；清单真值在 `scripts/update.sh` 的 `expected_ids` 一行，与 `BUILTIN_MODULE_IDS` 由单测守护）；选单（present_menu）已废弃移除；任务清单（checklist）2026-11 从内置工具集拆出为独立模块 `echo-agent.checklist`（见 [工具系统](./tools.md)§任务清单）。
+> 以上 id 也是更新器（`scripts/update.sh`）模块感知校验的核对清单——`expected_ids` 由**框架 23 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id；清单真值在 `scripts/update.sh` 的 `expected_ids` 一行，与 `BUILTIN_MODULE_IDS` 由单测守护）；选单（present_menu）已废弃移除；任务清单（checklist）2026-11 从内置工具集拆出为独立模块 `echo-agent.checklist`，随后（11-21）彻底外置：Core 不再以 git 依赖编入它，它不在这份 `expected_ids` 里（见 [工具系统](./tools.md)§任务清单）。
 
 ## 能力开关（per-persona）
 

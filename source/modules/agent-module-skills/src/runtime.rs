@@ -61,8 +61,10 @@ impl SkillsRuntime {
         reloaded.inherit_enabled_from(&current);
         // 本轮没再出现的 owner = 来源已经没了（模块卸载 / 被禁 / 启动失败），
         // 其技能一并撤销。这是「模块不在了技能就该消失」的唯一落地点。
-        let reported: std::collections::BTreeSet<&str> =
-            contributions.iter().map(|(owner, _)| owner.as_str()).collect();
+        let reported: std::collections::BTreeSet<&str> = contributions
+            .iter()
+            .map(|(owner, _)| owner.as_str())
+            .collect();
         for owner in current.contributed_owners() {
             if !reported.contains(owner.as_str()) {
                 reloaded.remove_contributed(&owner);
@@ -230,11 +232,17 @@ mod contribution_tests {
 
     #[tokio::test]
     async fn reload_registers_module_contributions() {
-        let host = Host::new(vec![("echo-agent.adapter.qq".into(), vec![skill("qq-transport")])]);
+        let host = Host::new(vec![(
+            "echo-agent.adapter.qq".into(),
+            vec![skill("qq-transport")],
+        )]);
         let rt = runtime(host);
         assert!(rt.reload().await.unwrap());
         let registry = rt.registry.lock().await;
-        assert!(registry.get("qq-transport").is_some(), "模块贡献的技能必须进表");
+        assert!(
+            registry.get("qq-transport").is_some(),
+            "模块贡献的技能必须进表"
+        );
         assert_eq!(registry.contributed_owners(), vec!["echo-agent.adapter.qq"]);
     }
 
@@ -264,7 +272,10 @@ mod contribution_tests {
         rt.reload().await.unwrap();
         let registry = rt.registry.lock().await;
         assert!(registry.get("a").is_some());
-        assert!(registry.get("b").is_none(), "set_contributed 是替换而不是追加");
+        assert!(
+            registry.get("b").is_none(),
+            "set_contributed 是替换而不是追加"
+        );
     }
 
     #[tokio::test]

@@ -235,12 +235,7 @@ impl SessionViewHandler {
             } => {
                 let view = self
                     .host
-                    .session_history(
-                        team_id.clone(),
-                        session_id.clone(),
-                        limit,
-                        expand_depth,
-                    )
+                    .session_history(team_id.clone(), session_id.clone(), limit, expand_depth)
                     .await;
                 self.host.emit(BackendEvent::SessionHistory {
                     team_id,

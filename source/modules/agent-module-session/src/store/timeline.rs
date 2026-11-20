@@ -145,7 +145,10 @@ impl TrunkStore {
     pub fn timeline_window_tail(
         &self,
         limit: usize,
-    ) -> (Vec<agent_module_management::protocol::TimelineMessage>, bool) {
+    ) -> (
+        Vec<agent_module_management::protocol::TimelineMessage>,
+        bool,
+    ) {
         let timeline = self.timeline.lock();
         if limit == 0 || timeline.len() <= limit {
             return (timeline.clone(), false);
@@ -168,7 +171,10 @@ impl TrunkStore {
         &self,
         before_ord: u64,
         limit: usize,
-    ) -> (Vec<agent_module_management::protocol::TimelineMessage>, bool) {
+    ) -> (
+        Vec<agent_module_management::protocol::TimelineMessage>,
+        bool,
+    ) {
         let timeline = self.timeline.lock();
         let total = timeline.len();
         if total == 0 || limit == 0 {

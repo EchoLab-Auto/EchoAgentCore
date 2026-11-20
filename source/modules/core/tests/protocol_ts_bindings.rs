@@ -46,8 +46,14 @@ fn ws_envelope_uses_tag_and_content() {
 #[test]
 fn commands_and_events_are_internally_tagged() {
     let ts = agent_module_management::protocol::ts_bindings::declarations();
-    assert!(ts.contains(r#"{ "SendMessage":"#), "BackendCommand 的构造器变了");
-    assert!(ts.contains(r#"{ "MessageReceived":"#), "BackendEvent 的构造器变了");
+    assert!(
+        ts.contains(r#"{ "SendMessage":"#),
+        "BackendCommand 的构造器变了"
+    );
+    assert!(
+        ts.contains(r#"{ "MessageReceived":"#),
+        "BackendEvent 的构造器变了"
+    );
     // 单元变体必须是字符串字面量，不能变成 `{ "RequestSkillsList": null }`
     assert!(
         ts.contains(r#""RequestSkillsList""#),
@@ -78,7 +84,10 @@ fn untagged_enum_stays_a_plain_union() {
 #[test]
 fn large_ints_map_to_number_because_wire_is_json() {
     let ts = agent_module_management::protocol::ts_bindings::declarations();
-    assert!(!ts.contains("bigint"), "生成结果里出现了 bigint（应为 number）");
+    assert!(
+        !ts.contains("bigint"),
+        "生成结果里出现了 bigint（应为 number）"
+    );
 }
 
 /// 根类型必须都在导出清单里。
@@ -112,5 +121,8 @@ fn every_root_type_is_exported() {
 #[test]
 fn header_marks_the_file_as_generated() {
     let ts = agent_module_management::protocol::ts_bindings::declarations();
-    assert!(ts.starts_with("// @generated"), "缺少 @generated 头：{ts:.80}");
+    assert!(
+        ts.starts_with("// @generated"),
+        "缺少 @generated 头：{ts:.80}"
+    );
 }

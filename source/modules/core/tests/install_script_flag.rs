@@ -168,7 +168,7 @@ fn module_binary_lists_match_the_workspace() {
 /// 白占几 MB，还让人误以为清单已经进程外运行。
 ///
 /// 清单功能不受影响：它作为 Core 的 git 依赖编进二进制，走内置形态
-/// （`main.rs` 的 `declares_external` 读不到启用行就返回 false）。
+/// （Core 不再认识这个模块：没有依赖、没有内置目录项，只有 modules.toml）。
 /// 想要独立产物请用二进制安装（`install-binary.sh` 会写启用行）。
 ///
 /// 这条测试是**反向**的：断言两个脚本都不再有这张表、也不再把外部模块放进
@@ -193,36 +193,68 @@ fn source_install_ships_only_the_core_binary() {
 }
 
 /// 外部仓模块二进制只属于**二进制安装**链路：release.yml 打包 +
-/// `install-binary.sh` 解包 + 写 `modules.toml` 启用行，三者缺一不可。
+/// `install-binary.sh` 解包。
 ///
-/// 与上一条的分工：源码安装刻意不带它，所以"谁真的会用它"必须在这里钉死；
-/// 否则哪天二进制链路也把它去掉，清单就彻底没有独立产物形态了。
+/// 与上一条的分工：源码安装刻意不带它，所以"谁真的会用它"必须在这里钉死。
+///
+/// **2026-11-21 起两件事变了**（任务清单彻底外置）：
+///
+/// 1. 它不再在 Core 的依赖图里 —— 所以 release.yml 不能再用 `-p`，必须
+///    单独克隆 + 构建。断言盯的是"独立构建"，不是某个 `-p` 字面量：
+///    把依赖加回来反而会让这条设计失效。
+/// 2. `install-binary.sh` 不再自动写启用行 —— 产物里带着二进制，但能力
+///    默认关。断言反向盯这一点：出现 `enabled = true` 的启用行就红。
 #[test]
-fn binary_install_chain_ships_external_modules() {
+fn binary_install_chain_ships_external_modules_without_enabling_them() {
     let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release.yml");
     let binary = read_script("install-binary.sh");
 
+    // 1) release.yml：独立克隆 + 独立 workspace 构建。
     assert!(
-        workflow.contains("-p agent-module-checklist"),
-        "release.yml 应构建外部模块二进制（二进制安装的产物来源）"
+        workflow.contains("Build external modules"),
+        "release.yml 应有独立的外部模块构建步骤（它不在 Core 的依赖图里）"
+    );
+    assert!(
+        workflow.contains("git clone --depth 1 \"${CHECKLIST_REPO}\"")
+            || workflow.contains("git clone --depth 1 \"${CHECKLIST_REPO}\" "),
+        "外部模块必须单独克隆：`-p` 对非 workspace 成员不可用"
+    );
+    assert!(
+        workflow.contains("--manifest-path \"${checkout}/Cargo.toml\""),
+        "外部模块用**它自己的** Cargo.toml / Cargo.lock 构建"
     );
     assert!(
         workflow.contains("stage/modules/agent-module-checklist/agent-module-checklist"),
         "release.yml 应把模块二进制放到 stage/modules/<包名>/<包名>"
     );
     assert!(
-        binary.contains(
-            r#"command = \"$MODULES_DIR/agent-module-checklist/agent-module-checklist\""#
-        ),
-        "install-binary.sh 应写 modules.toml 的启用行（否则装了也不跑）"
+        !workflow.contains("-p agent-module-checklist"),
+        "release.yml **不能**再 `-p` 它：那意味着它又回到了 Core 的依赖图里"
     );
 
+    // 2) install-binary.sh：装二进制，但**不**自动启用。
+    assert!(
+        binary.contains("agent-module-checklist"),
+        "install-binary.sh 仍应知道产物里的模块目录名（解包时校验）"
+    );
+    // 清单那一行必须是**注释掉的**（其他模块的启用行不受这条约束：
+    // 内嵌 Panel 仍默认启用）。
+    assert!(
+        !binary.contains(r#"'id = "echo-agent.checklist"'"#),
+        "install-binary.sh 不应再写未注释的清单启用行：默认不启用是这次的决定"
+    );
+    assert!(
+        binary.contains(r#"'# id = "echo-agent.checklist"'"#),
+        "移除自动启用后必须留下注释示例，否则用户不知道该怎么打开"
+    );
+
+    // 3) Core 的依赖表里刻意没有它。
     let manifest =
         std::fs::read_to_string(repo_root().join("Cargo.toml")).expect("read Cargo.toml");
     assert!(
-        manifest.contains("agent-module-checklist = { git = "),
-        "agent-module-checklist 必须仍是 Core 的 git 依赖：内置形态与 `-p` 构建都靠它"
+        !manifest.contains("agent-module-checklist = {"),
+        "agent-module-checklist 不该是 Core 的依赖：\"宿主完全不认识它\"是这次设计的目标"
     );
 }
 

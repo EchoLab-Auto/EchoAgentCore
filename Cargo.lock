@@ -46,26 +46,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent-module-checklist"
-version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-checklist?branch=main#90eb0ebd0d225aa9567e3c2149332aaaac159e83"
-dependencies = [
- "agent-module-management",
- "async-trait",
- "echo-context",
- "echo-defs",
- "echo-module",
- "echo-module-sdk",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "agent-module-federation"
 version = "0.3.1"
 dependencies = [
@@ -90,7 +70,6 @@ dependencies = [
 name = "agent-module-loop"
 version = "0.3.1"
 dependencies = [
- "agent-module-checklist",
  "agent-module-federation",
  "agent-module-management",
  "agent-module-prodoc",
@@ -156,7 +135,7 @@ dependencies = [
 [[package]]
 name = "agent-module-panel"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#13a4e4b7ff874e78f12b70f4a114f8426d549a52"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#d165a9e1a9d14a59e6d7c928d7d70239b564c282"
 dependencies = [
  "anyhow",
  "echo-context",
@@ -171,7 +150,7 @@ dependencies = [
 [[package]]
 name = "agent-module-prodoc"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#036917f5b7d3c4a74a76a812f41dccf2809a814c"
+source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#4ddc3cffad875967cf67936d0106b8dc5e2ded2e"
 dependencies = [
  "echo-module",
  "serde",
@@ -347,7 +326,7 @@ dependencies = [
 [[package]]
 name = "agent-module-workspace"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#d003442f65818e95051520b0bf6732b1655193b4"
+source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#3f9c7fd4e5ddf8c3bc08b99b6eba9b7607972aee"
 dependencies = [
  "echo-context",
  "echo-module",
@@ -678,9 +657,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.20.3"
+version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
 name = "byteorder"
@@ -1087,7 +1066,6 @@ dependencies = [
 name = "echo-agent-core"
 version = "0.3.1"
 dependencies = [
- "agent-module-checklist",
  "agent-module-federation",
  "agent-module-loop",
  "agent-module-management",
@@ -1137,8 +1115,8 @@ dependencies = [
 
 [[package]]
 name = "echo-context"
-version = "0.19.2"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
+version = "0.19.4"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.4#556a7206c6ab49ccd4b0ad28d0f42020aff2aec7"
 dependencies = [
  "dashmap",
  "thiserror 2.0.21",
@@ -1164,10 +1142,11 @@ dependencies = [
 
 [[package]]
 name = "echo-module"
-version = "0.19.2"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
+version = "0.19.4"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.4#556a7206c6ab49ccd4b0ad28d0f42020aff2aec7"
 dependencies = [
  "echo-context",
+ "echo-module-api",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1177,8 +1156,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module-api"
-version = "0.19.2"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
+version = "0.19.4"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.4#556a7206c6ab49ccd4b0ad28d0f42020aff2aec7"
 dependencies = [
  "serde",
  "serde_json",
@@ -1186,8 +1165,8 @@ dependencies = [
 
 [[package]]
 name = "echo-module-host"
-version = "0.19.2"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
+version = "0.19.4"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.4#556a7206c6ab49ccd4b0ad28d0f42020aff2aec7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1203,27 +1182,13 @@ dependencies = [
 
 [[package]]
 name = "echo-module-loader"
-version = "0.19.2"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
+version = "0.19.4"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.4#556a7206c6ab49ccd4b0ad28d0f42020aff2aec7"
 dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "toml",
-]
-
-[[package]]
-name = "echo-module-sdk"
-version = "0.19.2"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.19.2#c3bca91ba9eca1adcd73a9bcd20d804c964636e2"
-dependencies = [
- "async-trait",
- "echo-module-api",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -1261,7 +1226,7 @@ dependencies = [
 [[package]]
 name = "echo-web-server"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#13a4e4b7ff874e78f12b70f4a114f8426d549a52"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#d165a9e1a9d14a59e6d7c928d7d70239b564c282"
 dependencies = [
  "anyhow",
  "axum",
@@ -1351,7 +1316,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2507,7 +2472,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2867,7 +2832,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3345,7 +3310,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4001,7 +3966,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

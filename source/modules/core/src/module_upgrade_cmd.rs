@@ -7,9 +7,11 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use agent_module_management::protocol::bridge::{deserialize_message, serialize_command, WsMessage};
+use agent_module_management::protocol::bridge::{
+    deserialize_message, serialize_command, WsMessage,
+};
 use agent_module_management::protocol::{BackendCommand, BackendEvent};
+use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;

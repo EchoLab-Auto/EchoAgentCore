@@ -1899,55 +1899,51 @@ pub fn module(version: &str) -> std::sync::Arc<dyn echo_module::Module> {
 
     let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
         .expect("agent-module-management 的 module.toml 解析失败");
-    std::sync::Arc::new(
-        BuiltinModule::new(manifest, move |mctx| {
-            let keep_mgmt = bind_mgmt.bind(mctx, &host_keys::MANAGEMENT_HOST)?;
-            let host = bind_serve_mgmt.get().ok_or_else(|| {
-                echo_module::ModuleMountError::Mount("management host 未绑定".into())
-            })?;
+    std::sync::Arc::new(BuiltinModule::new(manifest, move |mctx| {
+        let keep_mgmt = bind_mgmt.bind(mctx, &host_keys::MANAGEMENT_HOST)?;
+        let host = bind_serve_mgmt
+            .get()
+            .ok_or_else(|| echo_module::ModuleMountError::Mount("management host 未绑定".into()))?;
 
-            // `modules.toml` 覆盖监听地址（唯一走这条路的一项）。
-            let default_addr = host.default_address();
-            let addr = mctx
-                .config_str("address")
-                .map(str::to_string)
-                .unwrap_or_else(|| default_addr.clone());
-            if addr != default_addr {
-                tracing::info!(
-                    configured = %default_addr,
-                    effective = %addr,
-                    "management address overridden by modules.toml"
+        // `modules.toml` 覆盖监听地址（唯一走这条路的一项）。
+        let default_addr = host.default_address();
+        let addr = mctx
+            .config_str("address")
+            .map(str::to_string)
+            .unwrap_or_else(|| default_addr.clone());
+        if addr != default_addr {
+            tracing::info!(
+                configured = %default_addr,
+                effective = %addr,
+                "management address overridden by modules.toml"
+            );
+        }
+
+        let bridge = host.bridge();
+        let token = host.token();
+        let federation = host.federation();
+        // 观测出处：独立监听时联邦不经过本端口，但**入站 Host 仍要从这里
+        // 学**（Panel 怎么连我，邀请串就宣告哪个地址）。
+        let observer = host.federation_observer();
+        let merged = federation.is_some();
+        let server = tokio::spawn(async move {
+            let result = match federation {
+                Some(federation) => serve_with_federation(&addr, bridge, token, federation).await,
+                None => serve_with_token_observing(&addr, bridge, token, observer).await,
+            };
+            if let Err(error) = result {
+                tracing::error!(
+                    error = %error,
+                    "management WS server stopped — Panel channel{} down; \
+                     check the bind address is free (ss -tlnp)",
+                    if merged { " and federation inbound" } else { "" }
                 );
             }
-
-            let bridge = host.bridge();
-            let token = host.token();
-            let federation = host.federation();
-            // 观测出处：独立监听时联邦不经过本端口，但**入站 Host 仍要从这里
-            // 学**（Panel 怎么连我，邀请串就宣告哪个地址）。
-            let observer = host.federation_observer();
-            let merged = federation.is_some();
-            let server = tokio::spawn(async move {
-                let result = match federation {
-                    Some(federation) => {
-                        serve_with_federation(&addr, bridge, token, federation).await
-                    }
-                    None => serve_with_token_observing(&addr, bridge, token, observer).await,
-                };
-                if let Err(error) = result {
-                    tracing::error!(
-                        error = %error,
-                        "management WS server stopped — Panel channel{} down; \
-                         check the bind address is free (ss -tlnp)",
-                        if merged { " and federation inbound" } else { "" }
-                    );
-                }
-            });
-            let abort = server.abort_handle();
-            Ok(vec![
-                keep_mgmt,
-                echo_context::Disposer::from_fn(move || abort.abort()),
-            ])
-        })
-    )
+        });
+        let abort = server.abort_handle();
+        Ok(vec![
+            keep_mgmt,
+            echo_context::Disposer::from_fn(move || abort.abort()),
+        ])
+    }))
 }

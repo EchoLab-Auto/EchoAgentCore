@@ -1227,33 +1227,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_outbound_policy =
         crate::security::OutboundPolicy::from_config(&cfg.security.sanitize.outbound);
     let factory_config_path = args.config_path();
-    // ── 清单持久化（2026-11 清单可靠化）──
-    //
-    // 存储根：**config 文件所在目录 / checklists**（不是 CWD，也不是
-    // 进程级 global 槽）。这个 `Arc` 是进程内唯一实例：`make_agent` 按
-    // persona 取 store，人格重建复用同一个 Arc；Agent 退场不销毁 store。
-    // 本部署是否把清单交给了**独立产物**（`modules.toml` 里 `echo-agent.checklist`
-    // 有启用的非 builtin 行）。是的话宿主不再造内置清单工具——否则它先占住
-    // `checklist` 这个名字，外部模块的工具注册时被当成重名跳过（实测 warn：
-    // "外部模块工具与已注册工具重名，已跳过该模块工具 tool=checklist"）。
-    //
-    // 这个判断必须在 **agent 工厂之前**：工厂闭包捕获它，而 `module_runtime`
-    // 在工厂之后才构建——所以这里提前读一次 `modules.toml`。
-    let checklist_external = modules_runtime::declares_external(
-        &args.config_path().with_file_name("modules.toml"),
-        agent_module_checklist::MODULE_ID,
-    );
-    let checklist_root = factory_config_path
-        .parent()
-        .map(|parent| parent.join("checklists"))
-        .unwrap_or_else(|| std::path::PathBuf::from("checklists"));
-    let checklist_runtime = std::sync::Arc::new(
-        agent_module_checklist::runtime::ChecklistRuntime::new(
-            checklist_root,
-            factory_redactor.clone(),
-        ),
-    );
-    let factory_checklist = checklist_runtime.clone();
     // 节点身份（NodeId + 区域名）：所有 persona 共用一份，装配期下发。
     let factory_node_identity = node_identity.clone();
     // 联邦出口集合：同上（全部 persona 看同一个聚合器与同一组链路出口）。
@@ -1293,7 +1266,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let pt = factory_module_tools.clone();
             let workspace_mirrors = factory_workspace_mirrors.clone();
             let tool_ctx = tool_ctx.clone();
-            let checklist_runtime = factory_checklist.clone();
             let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             {
                 let mut cfg = base_cfg.clone();
@@ -1310,25 +1282,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 }
                 // 每个 persona 独立的工具注册表（启动期一次性组装）。
                 //
-                // **清单在模块里**（`agent-module-tools` 的 `BuiltinToolProvider`），
-                // 这里只递端口。服务表里有 provider 就用它（模块已挂载），
-                // 否则直接构造同一实现（`core_agent` 早于模块挂载——S1b 前的
+                // 工具表：**实现全在模块里**（`agent-module-tools` 的
+                // `BuiltinToolProvider`）。服务表里有 provider 就用它（模块已
+                // 挂载），否则直接构造同一实现（`core_agent` 早于模块挂载——
                 // 唯一无服务表路径，见 `tools_builtin` 模块文档）。
+                //
+                // 清单工具**不在这里**（2026-11-21）：它已彻底外置，按
+                // `modules.toml` 配置由外部模块经协议注册。没配置 = 没有
+                // 这个工具，宿主不再有"内置回退"那一条路。
                 let persona_instances = factory_instances_by_persona
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| default_instances.clone());
-                // 本 persona 的清单端口：`__core` 是进程级服务代理（不是
-                // 人格），不落盘；其它人格从 runtime 取共享 store。加载失败
-                // 时端口是 Failed——模块注册失败工具，绝不以空 store 顶上。
-                let checklist_port = if id == "__core" {
-                    None
-                } else {
-                    Some(match checklist_runtime.store_for(&id) {
-                        Ok(store) => agent_module_checklist::ChecklistPort::Ready(store),
-                        Err(error) => agent_module_checklist::ChecklistPort::Failed(error),
-                    })
-                };
                 let mut t = agent_module_loop::tool::builtin::build_registry(
                     instances2.clone(),
                     workspace.clone(),
@@ -1336,17 +1301,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     factory_federation.invoker.clone(),
                     factory_shell_handle.clone(),
                     Some(factory_session_queries.clone()),
-                    checklist_port,
-                    // 清单工具由清单模块造（2026-11 拆出的独立模块）：
-                    // 未挂载 = 这个 persona 没有 `checklist` 工具。
-                    // `Some(None)` = 本部署把清单交给了独立产物（见下）。
-                    if checklist_external {
-                        Some(None)
-                    } else {
-                        Some(agent_module_loop::tool::builtin::resolve_checklist_provider(
-                            &tool_ctx,
-                        ))
-                    },
                     agent_module_loop::tool::builtin::resolve_provider(&tool_ctx),
                     // Shell 工具由 shell 模块造（2026-11 拆出的独立模块）：
                     // 未挂载 = 这个 persona 没有 `bash-*` 工具，正是想要的效果。
@@ -1387,9 +1341,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         t.set_package(name, package);
                     }
                 }
-                // 任务清单（checklist）为普通内置工具：随内置工具集包
-                // （模块装配时已打 echo-agent.tools.builtin 标签），
-                // 模块维度已于 2026-09 移除，只受工具级白/黑名单控制。
                 // 工作区会话（workspace 模块）：每 persona 独立存储 + 工具。
                 // 存储文件与配置 TOML 解耦（独立 JSON，绝不同路径互写）；
                 // 模块未列入该 persona 白名单时工具会被门控禁用（判据是模块 kind，见 `modules::scope`）。
@@ -1590,14 +1541,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .session_persist_path(file)
                     .session_api_path(session_api_file)
                     .build();
-                // 每个 persona 都要有“状态 → 线上事件”的绑定：此前只有
-                // `core_agent`（host_services 注册）拿到，人格内执行 checklist
-                // 永远不会发 `ChecklistUpdated`。绑定由模块声明，这里按列表
-                // 装配（不按工具名特判）。
-                for (key, build_event) in agent_module_checklist::all_state_event_bindings()
-                {
-                    built.register_tool_state_event(key, build_event);
-                }
                 factory_session_queries.register(id.clone(), &built.trunk);
                 // **新建人格补装远程工具**（2026-11 S13）。
                 //
@@ -1655,16 +1598,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     supervisor
         .manager()
         .set_node_identity(node_identity.clone());
-    // 清单摘要的门控直接问目标 Agent 的实际工具表：已注册（模块已挂载）
-    // 且当前未禁用才可注入。配置名单不是运行事实；锁竞争时本轮不注入。
-    {
-        let manager = supervisor.manager();
-        checklist_runtime.set_tool_gate(std::sync::Arc::new(move |team, tool| {
-            manager
-                .get(team)
-                .is_some_and(|running| running.agent.tools.is_enabled_now(tool))
-        }));
-    }
     // 去"主智能体"：不存在默认人格。全局/管理用途一律走进程级核心服务代理
     // （`core_agent`，team_id 为空、不在 TeamsList 中）；聊天与会话按 team_id
     // 显式路由到具体人格。
@@ -1745,7 +1678,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // ---- Module host: mount built-in modules as modules ----
     // 模块化组合根：每个内置模块（工具集/技能/模块实例/编排/管理面/LLM/Loop）
     // 以 ModuleManifest + mount 闭包挂入 ModuleHost。实化模块
-    //（tools.builtin / skills.dir / checklist / instance.qq / management.panel /
+    //（tools.builtin / skills.dir / instance.qq / management.panel /
     // loop.runner）的 mount 闭包执行真实副作用（禁用即卸载效果）；
     // provider.llm 仍为名义挂载（重启生效）。
     //
@@ -1865,8 +1798,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     ),
                 )
                     as std::sync::Arc<dyn agent_module_skills::host_keys::SkillContributionSource>),
-                // 清单运行时：进程内唯一实例（模块按服务键解析）。
-                checklist: Some(checklist_runtime.clone()),
                 // 运行中人格表：`RequestState` 补全所有 persona 清单。
                 manager: Some(supervisor.manager()),
             },
@@ -1888,7 +1819,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 判据：`kind != "builtin"`（内置行是"配置它"）**且** `enabled`
         // （`enabled = false` 是"关掉"，内置那份仍该留在目录里，面板随时能开）。
         //
-        // 实测的两条硬错误就是这个缺口的症状：
+        // 实测的两条硬错误就是这个缺口的症状（2026-11 清单模块外置时）：
         //     module id already registered: echo-agent.checklist
         //     service key `echo-agent.checklist.tools` is already provided
         let replaced_by_external: std::collections::HashSet<String> = module_runtime

@@ -105,7 +105,10 @@ mod tests {
             tool.description(),
             agent_module_workspace::tool::description()
         );
-        assert_eq!(tool.parameters(), agent_module_workspace::tool::parameters());
+        assert_eq!(
+            tool.parameters(),
+            agent_module_workspace::tool::parameters()
+        );
         assert_eq!(tool.category(), "module");
     }
 

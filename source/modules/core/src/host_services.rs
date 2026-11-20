@@ -58,9 +58,6 @@ use agent_module_loop::{Agent, EventSink};
 use agent_module_federation::host_keys::{EVENTS as FEDERATION_EVENTS, PORTS};
 use agent_module_shell::host_keys::SHELL_HOST;
 use agent_module_skills::host_keys::SKILLS_HOST;
-use agent_module_checklist::{
-    runtime_key as CHECKLIST_RUNTIME_KEY, ChecklistRuntime,
-};
 use agent_module_tools::host_keys::{INSTANCE_HOST, TOOLS_HOST};
 
 /// 组合根手里那些"配置表达不了、只有装配期知道"的句柄。
@@ -96,11 +93,6 @@ pub(crate) struct HostWiring {
     /// 组装的，所以这里是 `Option` 而不是"先塞空实现后回填"。
     pub skill_contributions:
         Option<Arc<dyn agent_module_skills::host_keys::SkillContributionSource>>,
-    /// 清单运行时（**进程级明确实例**，不是 global 槽）。
-    ///
-    /// 模块 `mount` 时按服务键解析它（摘要文本块 / `RequestChecklists`）；
-    /// `RequestState` 的全量快照也要按人格补拉清单。
-    pub checklist: Option<Arc<ChecklistRuntime>>,
     /// 运行中人格注册表（清单快照补全按它枚举；None = 无多 person）。
     pub manager: Option<Arc<AgentManager>>,
 }
@@ -205,25 +197,6 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         Arc::new(AgentToolsCommandHost::new(wiring.agent.clone()))
             as Arc<dyn agent_module_loop::tool::builtin::ToolsCommandHostAlias>,
     );
-    // 清单命令域：同一个适配器的第二重身份（`resolve_registry` + `emit`）。
-    put(
-        &mut keep,
-        ctx,
-        &agent_module_checklist::command_host_key(),
-        Arc::new(AgentToolsCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn agent_module_checklist::ChecklistCommandHost>,
-    );
-
-    // ── 工具状态 → 线上事件（**绑定方声明**，2026-11 S7）──
-    //
-    // 执行链不再有 `match state_key { "checklist" => … }` 表，这里也不该有
-    // 工具名：谁装了这个工具，谁声明"它的状态长什么线上事件"。绑定本体在
-    // `agent-module-tools`（见 `checklist::state_event_binding`），本层只把
-    // 声明装进 agent——新增一个有状态工具时这里一行都不用改。
-    for (key, build) in agent_module_checklist::all_state_event_bindings() {
-        wiring.agent.register_tool_state_event(key, build);
-    }
-
     // ── 通用提示词存储：skills 主动写入 ──
     put(
         &mut keep,
@@ -304,40 +277,11 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
             federation_observer: wiring.federation_observer.clone(),
         }) as Arc<dyn ManagementHost>,
     );
-    // ── 清单运行时：模块文本块 / 查询命令的服务键 ──
-    //
-    // 这是**实例注入**而不是 global 槽：同一个 `Arc` 由组合根尾部持有，
-    // Agent 重建只换 Agent，不换 store。
-    if let Some(runtime) = &wiring.checklist {
-        put(&mut keep, ctx, &CHECKLIST_RUNTIME_KEY(), runtime.clone());
-    }
-    // 清单权威快照（空 states 也发）。加载失败由 runtime 转为显式 Error
-    // 事件，绝不发空快照掩盖故障。
-    let state_extras: Option<agent_module_loop::agent::session_view_host::StateExtras> =
-        wiring.checklist.clone().map(|runtime| {
-            let manager = wiring.manager.clone();
-            let extras: agent_module_loop::agent::session_view_host::StateExtras =
-                Arc::new(move || {
-                    let Some(manager) = &manager else {
-                        return Vec::new();
-                    };
-                    manager
-                        .all()
-                        .into_iter()
-                        .filter_map(|running| runtime.snapshot_event(&running.id))
-                        .collect()
-                });
-            extras
-        });
-    let mut session_view_host = AgentSessionViewHost::new(wiring.agent.clone());
-    if let Some(extras) = state_extras {
-        session_view_host = session_view_host.with_state_extras(extras);
-    }
     put(
         &mut keep,
         ctx,
         &SESSION_VIEW_HOST_KEY,
-        Arc::new(session_view_host)
+        Arc::new(AgentSessionViewHost::new(wiring.agent.clone()))
             as Arc<dyn agent_module_transcript::session_view::SessionViewHost>,
     );
 
@@ -482,9 +426,6 @@ impl InstanceControl for ModuleInstanceControl {
 pub(crate) fn provided_keys() -> Vec<String> {
     let mut keys = vec![
         // ── 1. 本层注册 ──
-        // 清单（2026-11 独立模块：`echo-agent.checklist`）：运行时 + 命令域接缝。
-        CHECKLIST_RUNTIME_KEY().name().to_string(),
-        agent_module_checklist::COMMAND_HOST.to_string(),
         // Shell 会话（2026-11 独立模块：`echo-agent.shell`）。
         SHELL_HOST.name().to_string(),
         INSTANCE_HOST.name().to_string(),
@@ -515,7 +456,6 @@ pub(crate) fn provided_keys() -> Vec<String> {
         agent_module_loop::SERVICE_KEY.to_string(),
         agent_module_tools::module::SERVICE_KEY.to_string(),
         agent_module_shell::SERVICE_KEY.to_string(),
-        agent_module_checklist::TOOLS_PROVIDER.to_string(),
     ];
     keys.sort();
     keys.dedup();

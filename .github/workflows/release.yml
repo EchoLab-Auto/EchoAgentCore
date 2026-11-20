@@ -160,15 +160,35 @@ jobs:
       - name: Build Core
         run: |
           set -euo pipefail
-          # 外部仓模块与 Core 同一次调用构建（同一个 target 目录、同一套
-          # --locked）：它们已在 Cargo.lock 里 pin 了 commit，`-p` 直接可用。
+          # 只编 Core 本体。
           #
-          # 名单必须与 install.sh / update.sh 的 EXTERNAL_MODULE_BINARIES 一致
-          # （Core 侧守护测试盯的是那两个脚本；这里漏一个，二进制安装的产物
-          # 就会缺模块，而那要到装完才看得出来）。
-          cargo build --release --locked \
-            -p echo-agent-core \
-            -p agent-module-checklist
+          # 任务清单（`echo-agent.checklist`）已彻底外置：它**不在 Core 的
+          # 依赖图里**（根 `Cargo.toml` 刻意没有它），所以 `-p` 不可用——
+          # 它是"模块只有二进制、宿主不认识源码"的第一个实例。它的产物由
+          # 下一步单独克隆 + 构建，两边互不参与对方的编译期。
+          cargo build --release --locked -p echo-agent-core
+
+      # 外部模块：**独立 workspace** 构建。
+      #
+      # 这一步同时是那条设计的验收：Core 的编译期完全不需要这个仓存在。
+      # `--locked` 用的是该仓自己的 Cargo.lock（与 Core 的依赖图无关），
+      # 版本演进的耦合点只剩"它 pin 的 echo-fabric-arch tag 与 Core 一致"。
+      - name: Build external modules
+        env:
+          CHECKLIST_REPO: https://github.com/EchoLab-Auto/agent-module-checklist
+        run: |
+          set -euo pipefail
+          checkout="${RUNNER_TEMP}/agent-module-checklist"
+          git clone --depth 1 "${CHECKLIST_REPO}" "${checkout}"
+          cargo build --release --locked --manifest-path "${checkout}/Cargo.toml"
+          # 产物自检：二进制要真的存在，而且能自报版本（`--help` 会走
+          # `serve_stdio` 的初始化路径并打印用法）。少了这条，COPY 阶段的
+          # 失败会推到装配 tar 时才暴露。
+          test -x "${checkout}/target/release/agent-module-checklist"
+          "${checkout}/target/release/agent-module-checklist" --help >/dev/null
+          install -d -m 755 modules-out
+          install -m 755 "${checkout}/target/release/agent-module-checklist" \
+            modules-out/agent-module-checklist
 
       # 产物自检：二进制自报的版本必须与 tag 一致。上面的 Cargo.toml 检查是
       # "声明的版本对"，这一条是"编出来的东西真的是那一版"——防止 build.rs /
@@ -215,9 +235,13 @@ jobs:
             stage/systemd/echo-agent-core.service.in
 
           # 外部模块二进制：与源码安装同一个落点（`modules/<包名>/<包名>`），
-          # 安装器按这个相对路径解包。
+          # 安装器按这个相对路径解包。来源是**下一步独立构建**的产物
+          # （`modules-out/`），不是 Core 那棵 target 目录——Core 不认识它。
+          #
+          # 装进产物 ≠ 默认启用：`install-binary.sh` 不再自动写 modules.toml
+          # 的启用行。二进制在，能力默认关；要用就加一行。
           install -d -m 755 stage/modules/agent-module-checklist
-          install -m 755 target/release/agent-module-checklist \
+          install -m 755 modules-out/agent-module-checklist \
             stage/modules/agent-module-checklist/agent-module-checklist
 
           # glibc 基线：从**产物本身**读最高 `GLIBC_x.y` 符号版本，而不是直接抄

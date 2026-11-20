@@ -110,7 +110,8 @@ impl SummaryLimits {
         match window {
             Some(window) if window > 0 => Self {
                 transcript_budget: TRANSCRIPT_TOKEN_BUDGET.min(window / 2),
-                max_tokens: (window / 4).clamp(MIN_OUTPUT_TOKENS as usize, SUMMARY_MAX_TOKENS as usize)
+                max_tokens: (window / 4)
+                    .clamp(MIN_OUTPUT_TOKENS as usize, SUMMARY_MAX_TOKENS as usize)
                     as u32,
             },
             _ => Self {
@@ -305,9 +306,7 @@ impl std::fmt::Display for SummaryError {
                 MAX_SUMMARY_CONTINUES
             ),
             Self::Quota {
-                status,
-                resets_at,
-                ..
+                status, resets_at, ..
             } => {
                 let what = if *status == 402 {
                     "额度不足"
@@ -317,10 +316,9 @@ impl std::fmt::Display for SummaryError {
                 match resets_at {
                     // 已过期时不能拼成"额度已到期恢复"——那是病句，且会误导
                     // 用户继续等。单独给一句可执行的话。
-                    Some(at) if *at <= now_unix() => write!(
-                        f,
-                        "摘要请求{what}（HTTP {status}；额度已到期，可立即重试）"
-                    ),
+                    Some(at) if *at <= now_unix() => {
+                        write!(f, "摘要请求{what}（HTTP {status}；额度已到期，可立即重试）")
+                    }
                     Some(at) => write!(
                         f,
                         "摘要请求{what}（HTTP {status}；额度{}恢复）",
@@ -779,8 +777,14 @@ pub async fn summarize_preview_with_progress(
     _keep_recent: usize,
     progress: &(dyn Fn(usize, usize, Option<&str>) + Sync),
 ) -> (Vec<SummaryOrFallback>, usize, usize) {
-    summarize_preview_with_limits(provider, fallback, preview, SummaryLimits::default(), progress)
-        .await
+    summarize_preview_with_limits(
+        provider,
+        fallback,
+        preview,
+        SummaryLimits::default(),
+        progress,
+    )
+    .await
 }
 
 /// 同 [`summarize_preview_with_progress`]，但预算显式给出。
@@ -1794,17 +1798,17 @@ mod tests {
     /// 按调用序返回预设结果的 provider：用来表达"第一次截断、第二次正常"
     /// 这类**跨轮**形状——`CannedProvider` 每次返回同一个响应，做不到。
     struct SequenceProvider {
-        script: std::sync::Mutex<std::collections::VecDeque<
-            Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError>,
-        >>,
+        script: std::sync::Mutex<
+            std::collections::VecDeque<
+                Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError>,
+            >,
+        >,
         calls: Arc<AtomicUsize>,
     }
 
     impl SequenceProvider {
         fn new(
-            script: Vec<
-                Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError>,
-            >,
+            script: Vec<Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError>>,
         ) -> Self {
             Self {
                 script: std::sync::Mutex::new(script.into()),
@@ -1876,9 +1880,13 @@ mod tests {
             Ok(truncated("【当前目标】排查自更新")),
             Ok(canned("模块的部署形状")),
         ]));
-        let body = summarize_group_with(&provider, &group(vec![user("继续")]), SummaryLimits::default())
-            .await
-            .expect("第二轮写完即为成功");
+        let body = summarize_group_with(
+            &provider,
+            &group(vec![user("继续")]),
+            SummaryLimits::default(),
+        )
+        .await
+        .expect("第二轮写完即为成功");
         assert_eq!(
             body, "【当前目标】排查自更新模块的部署形状",
             "续写片段必须拼在残片之后，而不是丢掉前半截"
@@ -1892,9 +1900,13 @@ mod tests {
     async fn exhausted_continuations_report_truncated_with_partial() {
         let provider: Arc<dyn LlmProvider> =
             Arc::new(SequenceProvider::new(vec![Ok(truncated("半截摘要"))]));
-        let error = summarize_group_with(&provider, &group(vec![user("继续")]), SummaryLimits::default())
-            .await
-            .expect_err("每轮都截断必须按失败处理");
+        let error = summarize_group_with(
+            &provider,
+            &group(vec![user("继续")]),
+            SummaryLimits::default(),
+        )
+        .await
+        .expect_err("每轮都截断必须按失败处理");
         match error {
             SummaryError::Truncated { partial } => {
                 assert!(!partial.is_empty(), "残片要跟着错误一起报出来");
@@ -1967,7 +1979,10 @@ mod tests {
         let text = soon.to_string();
         assert!(text.contains("429"), "{text}");
         assert!(text.contains("约 2 小时后"), "要给出相对时间：{text}");
-        assert!(!text.contains("resets_at"), "原始 JSON 不该出现在文案里：{text}");
+        assert!(
+            !text.contains("resets_at"),
+            "原始 JSON 不该出现在文案里：{text}"
+        );
 
         let unknown = SummaryError::Quota {
             status: 402,
@@ -2100,11 +2115,14 @@ mod tests {
         let fallback = Arc::new(SequenceProvider::new(vec![Ok(canned("【当前目标】ok"))]));
         let provider: Arc<dyn LlmProvider> = primary;
         let alternative: Arc<dyn LlmProvider> = fallback;
-        let (summaries, llm, failed) =
-            summarize_preview(&provider, Some(&alternative), &preview_of(vec![user("a")]), 10)
-                .await;
+        let (summaries, llm, failed) = summarize_preview(
+            &provider,
+            Some(&alternative),
+            &preview_of(vec![user("a")]),
+            10,
+        )
+        .await;
         assert_eq!((llm, failed), (1, 0), "网络抖动必须允许换出口重试");
         assert!(summaries[0].summary.contains("ok"));
     }
-
 }

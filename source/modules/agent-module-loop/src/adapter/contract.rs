@@ -166,7 +166,6 @@ pub struct IncomingMessage {
     pub files: Vec<Value>,
 }
 
-
 /// 外部模块贡献的**技能**（SKILL.md 形态的能力包）。
 ///
 /// 与 [`ToolContribution`] 同构：模块在自己的 `Register` 里上报，宿主侧

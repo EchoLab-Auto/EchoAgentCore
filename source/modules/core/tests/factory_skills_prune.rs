@@ -65,21 +65,25 @@ fn write(path: &Path, body: &str) {
 
 /// 在临时目录里跑一段清理循环；返回保留下来的顶层目录名（排序后）。
 fn run_prune(snippet: &str, tag: &str) -> (Vec<String>, String) {
-    let root = std::env::temp_dir().join(format!(
-        "echo-factory-skills-{}-{tag}",
-        std::process::id()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("echo-factory-skills-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let source_skills = root.join("source").join("skills");
     let builtin = root.join("builtin");
 
     // 源里现存的技能：alpha（改名内容）= 该更新；beta = 保持
-    write(&source_skills.join("alpha").join("SKILL.md"), "# alpha v2\n");
+    write(
+        &source_skills.join("alpha").join("SKILL.md"),
+        "# alpha v2\n",
+    );
     write(&source_skills.join("beta").join("SKILL.md"), "# beta\n");
     // 只读层的历史状态：alpha 是旧版；另有三种残留
     write(&builtin.join("alpha").join("SKILL.md"), "# alpha v1\n");
     write(&builtin.join("beta").join("SKILL.md"), "# beta\n");
-    write(&builtin.join("stale-skill").join("SKILL.md"), "# 已从仓库移除\n");
+    write(
+        &builtin.join("stale-skill").join("SKILL.md"),
+        "# 已从仓库移除\n",
+    );
     write(
         &builtin.join("nested").join("inner").join("SKILL.md"),
         "# 嵌套的陈旧技能\n",

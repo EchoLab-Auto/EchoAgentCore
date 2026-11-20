@@ -115,8 +115,8 @@ impl Tool for ProDocCheckTool {
 /// 一个类型，改名会两侧一起编译失败。反序列化失败也给明确错误（而不是退化成
 /// 一份"零问题"的报告）。
 fn render_report(receipt: &Value) -> Result<String, ToolError> {
-    let receipt: agent_module_prodoc::check::CheckReceipt =
-        serde_json::from_value(receipt.clone()).map_err(|error| {
+    let receipt: agent_module_prodoc::check::CheckReceipt = serde_json::from_value(receipt.clone())
+        .map_err(|error| {
             // 这条错误信息是排查入口：它说明"模块与宿主的回执契约不一致"，
             // 而不是"检查没发现问题"。
             ToolError::Execution(format!(
@@ -140,11 +140,7 @@ fn render_report(receipt: &Value) -> Result<String, ToolError> {
         out.push_str("\n没有发现问题。\n");
         return Ok(out);
     }
-    for (level, title) in [
-        ("error", "错误"),
-        ("warning", "警告"),
-        ("info", "提示"),
-    ] {
+    for (level, title) in [("error", "错误"), ("warning", "警告"), ("info", "提示")] {
         let group: Vec<&agent_module_prodoc::check::ReceiptIssue> =
             issues.iter().filter(|issue| issue.level == level).collect();
         if group.is_empty() {

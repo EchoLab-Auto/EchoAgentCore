@@ -165,10 +165,7 @@ async fn fetch_one(
     .map_err(|e| format!("请求失败: {e}"))?;
 
     let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("读响应失败: {e}"))?;
+    let text = resp.text().await.map_err(|e| format!("读响应失败: {e}"))?;
     if !status.is_success() {
         return Err(format!(
             "HTTP {status}: {}",
@@ -201,7 +198,10 @@ fn parse_usage(body: &str) -> Result<ChatGptUsage, serde_json::Error> {
         ..Default::default()
     };
     if let Some(rate) = root.get("rate_limit") {
-        out.allowed = rate.get("allowed").and_then(|v| v.as_bool()).unwrap_or(true);
+        out.allowed = rate
+            .get("allowed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         out.limit_reached = rate
             .get("limit_reached")
             .and_then(|v| v.as_bool())
@@ -215,7 +215,10 @@ fn parse_usage(body: &str) -> Result<ChatGptUsage, serde_json::Error> {
                 .get("limit_window_seconds")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            out.reset_at = primary.get("reset_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            out.reset_at = primary
+                .get("reset_at")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             out.reset_after_seconds = primary
                 .get("reset_after_seconds")
                 .and_then(|v| v.as_u64())

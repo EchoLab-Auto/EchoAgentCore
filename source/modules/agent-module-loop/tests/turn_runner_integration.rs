@@ -2,15 +2,15 @@
 
 use std::sync::Arc;
 
+use agent_module_loop::{
+    AgentPreStep, AgentRequest, StepStart, ToolCallRequested, ToolResult, TurnEnd, TurnRunner,
+    TurnStart,
+};
 use async_trait::async_trait;
 use echo_context::{EventBus, WaterfallDecision};
 use echo_defs::llm::LlmError;
 use echo_defs::llm::LlmProvider;
 use echo_defs::message::{ChatChunk, ChatRequest, ChatResponse, ToolCall, Usage};
-use agent_module_loop::{
-    AgentPreStep, AgentRequest, StepStart, ToolCallRequested, ToolResult, TurnEnd, TurnRunner,
-    TurnStart,
-};
 
 /// A scripted provider: first call requests a tool, second returns the reply.
 struct ScriptedProvider {
@@ -106,7 +106,9 @@ async fn turn_emits_lifecycle_events_in_order() {
                 let text = format!("执行了 {}", call.name);
                 Box::pin(async move { agent_module_loop::ToolOutcome::text(text) })
                     as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = agent_module_loop::ToolOutcome> + Send>,
+                        Box<
+                            dyn std::future::Future<Output = agent_module_loop::ToolOutcome> + Send,
+                        >,
                     >
             },
             Default::default(),
@@ -160,7 +162,9 @@ async fn pre_step_rejection_closes_turn_without_request() {
             &|_: &str, _: &str, _: &ToolCall| {
                 Box::pin(async { agent_module_loop::ToolOutcome::text("") })
                     as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = agent_module_loop::ToolOutcome> + Send>,
+                        Box<
+                            dyn std::future::Future<Output = agent_module_loop::ToolOutcome> + Send,
+                        >,
                     >
             },
             Default::default(),
@@ -216,7 +220,9 @@ async fn truncated_output_continues_instead_of_empty_reply() {
                 seen.lock().unwrap().push(call.name.clone());
                 Box::pin(async { agent_module_loop::ToolOutcome::text("") })
                     as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = agent_module_loop::ToolOutcome> + Send>,
+                        Box<
+                            dyn std::future::Future<Output = agent_module_loop::ToolOutcome> + Send,
+                        >,
                     >
             },
             Default::default(),
@@ -257,7 +263,9 @@ async fn repeated_truncation_gives_up_with_error() {
             &|_: &str, _: &str, _: &ToolCall| {
                 Box::pin(async { agent_module_loop::ToolOutcome::text("") })
                     as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = agent_module_loop::ToolOutcome> + Send>,
+                        Box<
+                            dyn std::future::Future<Output = agent_module_loop::ToolOutcome> + Send,
+                        >,
                     >
             },
             Default::default(),

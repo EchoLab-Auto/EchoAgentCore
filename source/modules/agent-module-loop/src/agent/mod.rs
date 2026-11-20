@@ -10,11 +10,12 @@ pub(crate) mod groups;
 mod inbound;
 mod module_reload;
 pub mod persona_hosts;
+pub mod prodoc_tool;
 pub(crate) mod prompt;
 pub mod provider_host;
 pub mod registry;
-pub mod session_commands_host;
 pub mod session_api_store;
+pub mod session_commands_host;
 pub mod session_query;
 pub mod session_view_host;
 pub mod shell_host;
@@ -27,11 +28,10 @@ mod tool_exec;
 pub mod tools_host;
 mod turn;
 pub mod upgrade;
-pub mod writer_pause;
 mod workspace_commands;
 pub mod workspace_mirror;
-pub mod prodoc_tool;
 pub mod workspace_tool;
+pub mod writer_pause;
 // 命令域按包拆分：QQ 侧在 `crate::packages::instance_ops::commands`，
 // 工作区侧在本目录 `workspace_commands.rs`（模块实现已外迁到
 // `agent-module-workspace`，此处只留 Agent 接线）。
@@ -1723,13 +1723,13 @@ impl Agent {
         self.module_host()
             .collect_text_blocks_async(
                 &serde_json::json!({
-                "session_id": session_id,
-                "team_id": self.team_id().unwrap_or_default(),
-                "content": content,
-                "persona_system_skills": self.identity.capabilities.lock().ok()
-                    .and_then(|cap| cap.as_ref().map(|c| c.system_skills.clone()))
-                    .unwrap_or_default(),
-            }),
+                    "session_id": session_id,
+                    "team_id": self.team_id().unwrap_or_default(),
+                    "content": content,
+                    "persona_system_skills": self.identity.capabilities.lock().ok()
+                        .and_then(|cap| cap.as_ref().map(|c| c.system_skills.clone()))
+                        .unwrap_or_default(),
+                }),
                 |module_id| match &capabilities {
                     Some(cap) => crate::modules::profile_allows_module(cap, module_id),
                     // 没注入能力表 = 不启用任何人格级限制（单测/裸装配）。

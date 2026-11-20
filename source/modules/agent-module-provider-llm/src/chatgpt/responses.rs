@@ -49,7 +49,8 @@ use tokio::sync::mpsc;
 use echo_defs::llm::LlmError;
 use echo_defs::llm::LlmProvider;
 use echo_defs::message::{
-    ChatChunk, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatStreamAccumulator, ToolCallDelta,
+    ChatChunk, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatStreamAccumulator,
+    ToolCallDelta,
 };
 
 use super::auth::{self, ChatGptAuth};
@@ -192,7 +193,9 @@ impl ChatGptProvider {
             }
         }
         // 循环必然在内部 return，这里只是给类型系统一个出口。
-        Err(LlmError::Http(last.unwrap_or_else(|| "请求发送失败".into())))
+        Err(LlmError::Http(
+            last.unwrap_or_else(|| "请求发送失败".into()),
+        ))
     }
 
     async fn chat_stream_inner(
@@ -229,14 +232,15 @@ impl ChatGptProvider {
         let mut stream = response.bytes_stream();
         // SSE 行可能跨 chunk 切开：必须按行缓冲，不能假设一次读到的就是完整行。
         let mut buffer = String::new();
-        while let Some(next) = tokio::time::timeout(READ_IDLE_TIMEOUT, stream.next()).await.map_err(
-            |_| {
+        while let Some(next) = tokio::time::timeout(READ_IDLE_TIMEOUT, stream.next())
+            .await
+            .map_err(|_| {
                 LlmError::Http(format!(
                     "read idle timeout: no bytes from upstream for {}s",
                     READ_IDLE_TIMEOUT.as_secs()
                 ))
-            },
-        )? {
+            })?
+        {
             let bytes = next.map_err(|error| LlmError::Http(error.to_string()))?;
             buffer.push_str(&String::from_utf8_lossy(&bytes));
             while let Some(newline) = buffer.find('\n') {
@@ -416,10 +420,7 @@ fn apply_event(
                             .or_else(|| item.get("id"))
                             .and_then(Value::as_str)
                             .map(str::to_string),
-                        name: item
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
+                        name: item.get("name").and_then(Value::as_str).map(str::to_string),
                         // 这里的参数只能走**回填**，不能当 delta 拼接：`added`
                         // 若带参数，通常会再随 delta 逐段重发，拼接会变成两份。
                         arguments: None,
@@ -753,11 +754,7 @@ mod tests {
             images: vec![],
         };
         let body = build_request_body(
-            &request(vec![
-                ChatMessage::user("读 a.rs"),
-                assistant,
-                tool_result,
-            ]),
+            &request(vec![ChatMessage::user("读 a.rs"), assistant, tool_result]),
             "gpt-5-codex",
             echo_defs::ReasoningEffort::High,
         );
@@ -1184,8 +1181,7 @@ mod tests {
     /// 保留未使用但有意留下的辅助（避免 dead_code 噪声）。
     #[test]
     fn chunk_helper_is_wired() {
-        let (delta, _, _) =
-            chunk_of(json!({"type": "response.output_text.delta", "delta": "x"}));
+        let (delta, _, _) = chunk_of(json!({"type": "response.output_text.delta", "delta": "x"}));
         assert_eq!(delta.content_delta.as_deref(), Some("x"));
     }
 
@@ -1219,7 +1215,11 @@ mod tests {
         // 平台差异（Linux 是 Connection refused，别的平台措辞不同），
         // 所以只断言"有下层细节"，不断言具体单词。
         assert!(
-            described.lines().next().unwrap().contains("http://127.0.0.1:1"),
+            described
+                .lines()
+                .next()
+                .unwrap()
+                .contains("http://127.0.0.1:1"),
             "首行应保留原始 URL：{described}"
         );
     }
@@ -1251,7 +1251,6 @@ mod tests {
         assert!(message.contains("代理地址无效"), "{message}");
     }
 
-
     /// 请求体**不能**带 `include: ["reasoning_summary_text"]`。
     ///
     /// 这个字段值上游不认（合法值形如 `reasoning.encrypted_content`），会整条
@@ -1276,5 +1275,4 @@ mod tests {
             "推理摘要靠 reasoning.summary 控制，不能被顺手删掉：{body}"
         );
     }
-
 }

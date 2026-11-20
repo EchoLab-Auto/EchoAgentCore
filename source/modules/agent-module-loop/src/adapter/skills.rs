@@ -135,7 +135,10 @@ mod tests {
         // 正文里的 frontmatter 是权威：DTO 上的 name 只做兜底
         assert_eq!(skill.metadata.name, "qq-transport");
         assert_eq!(skill.metadata.description, "从正文覆盖");
-        assert_eq!(skill.metadata.keywords, vec!["qq".to_string(), "消息".to_string()]);
+        assert_eq!(
+            skill.metadata.keywords,
+            vec!["qq".to_string(), "消息".to_string()]
+        );
         assert_eq!(skill.instructions, "# 正文");
     }
 
@@ -172,14 +175,23 @@ mod owner_tests {
     #[test]
     fn same_package_across_instances_yields_one_owner() {
         let skills = vec![skill(Some("echo-agent.instance.qq"))];
-        assert_eq!(owner_of("instance-qq-qq", &skills), "echo-agent.instance.qq");
-        assert_eq!(owner_of("instance-qq-qq-2", &skills), "echo-agent.instance.qq");
+        assert_eq!(
+            owner_of("instance-qq-qq", &skills),
+            "echo-agent.instance.qq"
+        );
+        assert_eq!(
+            owner_of("instance-qq-qq-2", &skills),
+            "echo-agent.instance.qq"
+        );
     }
 
     /// 没声明 package（内置模块的常见情形）→ 用 module id。
     #[test]
     fn missing_package_falls_back_to_module_id() {
-        assert_eq!(owner_of("echo-agent.subagent", &[skill(None)]), "echo-agent.subagent");
+        assert_eq!(
+            owner_of("echo-agent.subagent", &[skill(None)]),
+            "echo-agent.subagent"
+        );
         assert_eq!(owner_of("echo-agent.prodoc", &[]), "echo-agent.prodoc");
     }
 

@@ -26,9 +26,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use agent_module_loop::adapter::{CoreApiService, RemoteInstance, RemoteTool};
 use echo_module_host::bootstrap::StartedModules;
 use echo_module_host::{HostServiceRegistry, ModuleSupervisor};
-use agent_module_loop::adapter::{CoreApiService, RemoteInstance, RemoteTool};
 
 /// 已装载并启动的子进程模块运行时。
 pub struct ModuleRuntime {
@@ -522,7 +522,9 @@ pub fn ensure_modules_base(config_path: &Path, entries: &[(String, String)]) {
 "#,
     );
     for (id, name) in entries {
-        text.push_str(&format!("# {name}\n[[module]]\nid = \"{id}\"\nkind = \"builtin\"\nenabled = true\n\n"));
+        text.push_str(&format!(
+            "# {name}\n[[module]]\nid = \"{id}\"\nkind = \"builtin\"\nenabled = true\n\n"
+        ));
     }
     if let Err(error) = std::fs::write(&path, text) {
         tracing::warn!(path = %path.display(), %error, "write modules-base.toml failed; builtin baseline stays implicit");
@@ -900,13 +902,7 @@ mod tests {
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let slot = seen.clone();
         let module = echo_module::BuiltinModule::new(
-            echo_module::ModuleManifest::builtin(
-                "t.management",
-                "管理面",
-                "1",
-                "management",
-                "",
-            ),
+            echo_module::ModuleManifest::builtin("t.management", "管理面", "1", "management", ""),
             move |mctx: &echo_module::MountContext| {
                 *slot.lock().unwrap() = mctx.config_str("address").map(str::to_string);
                 Ok(Vec::new())
@@ -945,7 +941,10 @@ mod tests {
         // 名字进注释、不进 `name =`：那个字段对 builtin 行不生效（面板标题
         // 来自模块自己的 manifest），写成键会让人以为改它能改标题。
         assert!(text.contains("# 内置工具集"), "名字应以注释形式出现");
-        assert!(!text.contains("name ="), "内置行的 name 字段不生效，不该写成键");
+        assert!(
+            !text.contains("name ="),
+            "内置行的 name 字段不生效，不该写成键"
+        );
 
         let plan = builtin_mount_plan(&config);
         let ids: Vec<&str> = plan.iter().map(|step| step.id.as_str()).collect();
@@ -965,7 +964,10 @@ mod tests {
         std::fs::write(&path, "# 手写的基线\n[[module]]\nid = \"x\"\nkind = \"builtin\"\nname = \"x\"\nenabled = false\n")
             .expect("write baseline");
 
-        ensure_modules_base(&config, &[("echo-agent.tools".to_string(), "内置工具集".to_string())]);
+        ensure_modules_base(
+            &config,
+            &[("echo-agent.tools".to_string(), "内置工具集".to_string())],
+        );
 
         let text = std::fs::read_to_string(&path).expect("read baseline");
         assert_eq!(text, "# 手写的基线\n[[module]]\nid = \"x\"\nkind = \"builtin\"\nname = \"x\"\nenabled = false\n");
@@ -1124,29 +1126,6 @@ mod tests {
             .is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// 部署方是否把某个内置模块**交给了外部产物**。
-///
-/// 判据：`modules.toml` 里有同 id、`enabled = true`、`kind != "builtin"` 的行。
-///
-/// - `kind != "builtin"`：内置行是"配置它"，不是"换掉它"；
-/// - `enabled`：`enabled = false` 是"关掉"，内置那份仍该留在目录里
-///   （面板里随时能打开）——那与"换个实现"是两件事。
-///
-/// 读不到文件 / 解析失败一律 `false`：配置问题不该让宿主"以为要换实现"从而
-/// 少造一份内置能力（少造是静默降级，多造至少还能用）。
-pub fn declares_external(path: &Path, module_id: &str) -> bool {
-    let Some(tree) = load_tree(path) else {
-        return false;
-    };
-    tree.entries
-        .iter()
-        .any(|entry| {
-            entry.id == module_id
-                && entry.kind != echo_module_loader::EntryKind::Builtin
-                && entry.enabled
-        })
 }
 
 /// 已被外部条目顶替的内置模块 id 集合（装配期从模块目录里摘掉它们）。

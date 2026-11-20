@@ -137,12 +137,7 @@ impl TrunkStore {
         // 走 Value 会多一份完整语法树，峰值内存翻倍）。
         let document: ArchiveDocument = match serde_json::from_str(&raw) {
             Ok(document) => document,
-            Err(error) => {
-                return (
-                    Vec::new(),
-                    Some(format!("归档不是合法的事件文档：{error}")),
-                )
-            }
+            Err(error) => return (Vec::new(), Some(format!("归档不是合法的事件文档：{error}"))),
         };
         let events: Vec<SessionEvent> = document
             .events

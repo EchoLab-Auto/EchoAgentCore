@@ -63,15 +63,15 @@ strip = "symbols"
 [workspace.dependencies]
 echo-defs = { path = "source/modules/echo-defs" }
 echo-config = { path = "source/modules/echo-config" }
-echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.2" }
+echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.4" }
 echo-session = { path = "source/modules/echo-session" }
 
 echo-protocol = { package = "agent-module-management", path = "source/modules/agent-module-management" }
 echo-test-utils = { path = "source/test/utils" }
-echo-module = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.2" }
-echo-module-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.2" }
-echo-module-host = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.2" }
-echo-module-loader = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.2" }
+echo-module = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.4" }
+echo-module-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.4" }
+echo-module-host = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.4" }
+echo-module-loader = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.19.4" }
 agent-module-provider-llm = { path = "source/modules/agent-module-provider-llm" }
 agent-module-skills = { path = "source/modules/agent-module-skills" }
 agent-module-federation = { path = "source/modules/agent-module-federation" }
@@ -89,10 +89,15 @@ agent-module-session = { path = "source/modules/agent-module-session" }
 agent-module-prodoc = { git = "https://github.com/EchoLab-Auto/agent-module-prodoc", branch = "main" }
 agent-module-transcript = { path = "source/modules/agent-module-transcript" }
 agent-module-tools = { path = "source/modules/agent-module-tools" }
-# 任务清单模块已迁出为独立仓库 agent-module-checklist（2026-11）。
-# 它只依赖 echo-defs + agent-module-management；[patch] 段把这两个拉回本地，
-# 避免同一进程里出现两份 `Tool` trait。
-agent-module-checklist = { git = "https://github.com/EchoLab-Auto/agent-module-checklist", branch = "main" }
+# 任务清单（`echo-agent.checklist`）**刻意不在这里**（2026-11-21）。
+#
+# 它是第一个"Core 完全不认识的模块"：实现与身份都在
+# agent-module-checklist 仓，Core 不以 git 依赖引入，也不注册它的模块目录。
+# 启用方式是在 modules.toml 里写一行 `kind = "stdio"`（或 `dylib"`）指向它的
+# 二进制，默认不启用；身份由它握手中 `Register.manifest` 上报。
+#
+# 这条也是"模块只有二进制、没有源码"的第一个实例：新增同类模块（外部仓、
+# 只发产物）时同样**不要**加进这张表——依赖一旦进来，宿主就重新"认识"它了。
 
 # async runtime
 tokio = { version = "1", features = ["full"] }
@@ -139,8 +144,10 @@ aho-corasick = "1"
 # 重定向至当前工作区，避免 path 与 git 各生成一份 trait 类型。
 [patch."https://github.com/EchoLab-Auto/EchoAgentCore"]
 echo-protocol = { path = "source/modules/echo-protocol" }
-# checklist 仓（独立仓库）按 `package = "agent-module-management"` 引用本仓同名
-# crate：不 patch 会让它在 git 源里再拉一份，`BackendCommand` 与本仓的类型不同源。
+# subagent 等外部仓按 `package = "...` 引用本仓同名 crate：不 patch 会让它们
+# 在 git 源里再拉一份，`BackendCommand` / `Tool` 与本仓的类型不同源。
+# （任务清单仓同样引用本仓的 echo-defs / agent-module-management，但它不再是
+# Core 的依赖，这些 patch 对它不生效——它自己的构建要靠本地 `[patch]` 注释段。）
 agent-module-management = { path = "source/modules/agent-module-management" }
 agent-module-tools = { path = "source/modules/agent-module-tools" }
 agent-module-shell = { path = "source/modules/agent-module-shell" }

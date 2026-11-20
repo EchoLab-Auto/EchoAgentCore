@@ -786,17 +786,14 @@ fi
 # 只在**文件不存在**时整份写；已存在时只追加缺失的条目（追加到末尾对 TOML 合法，
 # 因为都是顶层 `[[module]]` 数组元素），且绝不覆盖用户已有的同 id 行。
 write_modules_config() {
-    local panel_enabled=$1 checklist_enabled=$2
-    local need_self_update=0 need_panel=0 need_checklist=0 fresh=0
+    local panel_enabled=$1
+    local need_self_update=0 need_panel=0 fresh=0
     if [[ -f "$MODULES_CONFIG" ]]; then
         grep -q 'echo-agent\.selfupdate' "$MODULES_CONFIG" || need_self_update=1
         if ((panel_enabled)); then
             grep -q 'echo-agent\.panel\.web' "$MODULES_CONFIG" || need_panel=1
         fi
-        if ((checklist_enabled)); then
-            grep -q 'id = "echo-agent\.checklist"' "$MODULES_CONFIG" || need_checklist=1
-        fi
-        if ((need_self_update == 0 && need_panel == 0 && need_checklist == 0)); then
+        if ((need_self_update == 0 && need_panel == 0)); then
             echo "==> Preserved existing modules config: $MODULES_CONFIG"
             return 0
         fi
@@ -834,21 +831,26 @@ write_modules_config() {
                 '#   [module.config]' \
                 '#   bind = "127.0.0.1:8081"' \
                 ''
-            if ((checklist_enabled)); then
-                printf '%s\n' \
-                    '# 任务清单：**独立产物**（不是编译进 Core 的那份）。' \
-                    '# 与内置行同 id —— loader 按 id 整体替换，所以内置那份不会被' \
-                    '# 挂载，工具只注册一次。数据目录按 persona 各一份 JSON。' \
-                    '[[module]]' \
-                    'id = "echo-agent.checklist"' \
-                    'kind = "stdio"' \
-                    'enabled = true' \
-                    "command = \"$MODULES_DIR/agent-module-checklist/agent-module-checklist\"" \
-                    '' \
-                    '[module.config]' \
-                    "data_dir = \"$DATA_DIR/checklists\"" \
-                    ''
-            fi
+            # 任务清单：产物里带着二进制，但**默认不启用**（2026-11-21）。
+            #
+            # 它是第一个"Core 完全不认识"的模块：不在 Core 的依赖图里、没有
+            # 内置目录项，只有这一行配置能让它存在。默认关着而不是默认开着，
+            # 是因为"装了什么"与"开了什么"该是两件事——用户可以先看到产物，
+            # 再决定要不要这份能力。
+            #
+            # 真要启用，去掉下面五行的注释即可（`enabled = true` 那行是关键）。
+            printf '%s\n' \
+                '# 任务清单（可选）：产物里的独立二进制，默认不启用。' \
+                '# 去掉注释即启用；数据目录按 persona 各一份 JSON。' \
+                '# [[module]]' \
+                '# id = "echo-agent.checklist"' \
+                '# kind = "stdio"' \
+                '# enabled = true' \
+                "# command = \"$MODULES_DIR/agent-module-checklist/agent-module-checklist\"" \
+                '# ' \
+                '# [module.config]' \
+                "# data_dir = \"$DATA_DIR/checklists\"" \
+                ''
             if ((panel_enabled)); then
                 printf '%s\n' \
                     '[[module]]' \
@@ -876,20 +878,6 @@ write_modules_config() {
                     'enabled = false' \
                     ''
             fi
-            if ((need_checklist)); then
-                if [[ -s "$modtmp" ]]; then printf '\n'; fi
-                printf '%s\n' \
-                    '# 任务清单：独立产物形态（见 install-binary.sh）。' \
-                    '[[module]]' \
-                    'id = "echo-agent.checklist"' \
-                    'kind = "stdio"' \
-                    'enabled = true' \
-                    "command = \"$MODULES_DIR/agent-module-checklist/agent-module-checklist\"" \
-                    '' \
-                    '[module.config]' \
-                    "data_dir = \"$DATA_DIR/checklists\"" \
-                    ''
-            fi
             if ((need_panel)); then
                 if [[ -s "$modtmp" ]]; then printf '\n'; fi
                 printf '%s\n' \
@@ -908,7 +896,6 @@ write_modules_config() {
 INSTALL_PHASE=modules
 # 外部模块二进制：与源码安装同一落点 `modules/<包名>/<包名>`。
 # 逐个原子替换（`install` 到临时名再 `mv`），失败由事务守卫整体回滚。
-installed_modules=()
 if [[ -d "$UNPACK_DIR/modules" ]]; then
     for module_src in "$UNPACK_DIR"/modules/*/; do
         [[ -d "$module_src" ]] || continue
@@ -923,20 +910,19 @@ if [[ -d "$UNPACK_DIR/modules" ]]; then
         module_temporary=$(mktemp "$module_dir/$module_name.new.XXXXXX")
         install -m 755 "$binary" "$module_temporary"
         mv -f "$module_temporary" "$module_dir/$module_name"
-        installed_modules+=("$module_name")
         echo "==> Installed module binary: $module_dir/$module_name"
     done
     unset module_src module_name binary module_dir module_temporary
 fi
 
-# 模块二进制装上了才在 modules.toml 里启用它 —— 配置指向一个不存在的
-# 可执行文件时，Core 会以 "module start failed" 起来但仍算启动成功，
-# 那种半死状态最难查。
-checklist_installed=0
-for _m in "${installed_modules[@]}"; do
-    [[ "$_m" == "agent-module-checklist" ]] && checklist_installed=1
-done
-write_modules_config "$INSTALL_PANEL" "$checklist_installed"
+# 外部模块**不再自动启用**（2026-11-21）。
+#
+# 此前这里按"二进制真的装上了"决定要不要写启用行——理由是配置指向不存在的
+# 可执行文件会让 Core "起来但模块没起"。那条理由仍然成立，但它只回答"能不能
+# 写"，不回答"该不该开"。任务清单现在是宿主完全不认识的产物，默认关着才是
+# 它的正常状态：想用的人自己加一行（`write_modules_config` 里留了注释示例），
+# 不想用的人不该在升级时被悄悄打开一个新模式。
+write_modules_config "$INSTALL_PANEL"
 
 INSTALL_PHASE=launcher
 launcher_temporary=$(mktemp "$BIN_DIR/echo-agent-core.new.XXXXXX")

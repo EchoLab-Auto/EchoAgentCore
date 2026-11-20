@@ -134,9 +134,7 @@ impl LlmProvider for OpenAiProvider {
             if status.is_success() {
                 break text;
             }
-            if attempt < TRANSIENT_RETRIES
-                && is_transient_gateway_error(status.as_u16(), &text)
-            {
+            if attempt < TRANSIENT_RETRIES && is_transient_gateway_error(status.as_u16(), &text) {
                 let backoff = TRANSIENT_BACKOFF_MS[attempt];
                 attempt += 1;
                 tracing::warn!(
@@ -578,7 +576,8 @@ fn html_endpoint_hint(body: &str) -> &'static str {
 fn is_transient_gateway_error(status: u16, body: &str) -> bool {
     matches!(status, 429 | 500..=599)
         || (status == 400
-            && (body.contains("\"type\":\"server_error\"") || body.contains("Upstream request failed")))
+            && (body.contains("\"type\":\"server_error\"")
+                || body.contains("Upstream request failed")))
 }
 
 /// 瞬时故障的重试预算：1 次首发 + 2 次重试；退避够短（400ms / 1.2s），
@@ -774,8 +773,14 @@ mod tests {
         assert!(is_transient_gateway_error(502, ""));
         assert!(is_transient_gateway_error(429, "slow down"));
         // 请求本身有问题：重发只会得到同样的错误。
-        assert!(!is_transient_gateway_error(400, r#"{"error":{"message":"invalid model"}}"#));
-        assert!(!is_transient_gateway_error(401, r#"{"error":{"message":"bad key"}}"#));
+        assert!(!is_transient_gateway_error(
+            400,
+            r#"{"error":{"message":"invalid model"}}"#
+        ));
+        assert!(!is_transient_gateway_error(
+            401,
+            r#"{"error":{"message":"bad key"}}"#
+        ));
         assert!(!is_transient_gateway_error(404, "not found"));
     }
 

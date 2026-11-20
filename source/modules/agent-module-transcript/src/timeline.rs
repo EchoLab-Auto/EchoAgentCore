@@ -127,23 +127,25 @@ impl<H: TimelineHost + ?Sized + 'static> TimelineProjector<H> {
                     .iter()
                     .map(|image| echo_defs::media_store::spill_or_keep(image))
                     .collect();
-                self.host.push(TimelineMessage::user(
-                    content.clone(),
-                    session_id.clone(),
-                    *timestamp,
-                    Some(TimelineSource {
-                        instance_name: instance_name.clone(),
-                        platform: platform.clone(),
-                        user_id: user_id.clone(),
-                        user_name: user_name.clone(),
-                        channel: channel.clone(),
-                        group_name: group_name.clone(),
-                        received_at_ms: *received_at_ms,
-                        message_sequence: *message_sequence,
-                    }),
-                    images,
-                )
-                .with_files(files.clone()));
+                self.host.push(
+                    TimelineMessage::user(
+                        content.clone(),
+                        session_id.clone(),
+                        *timestamp,
+                        Some(TimelineSource {
+                            instance_name: instance_name.clone(),
+                            platform: platform.clone(),
+                            user_id: user_id.clone(),
+                            user_name: user_name.clone(),
+                            channel: channel.clone(),
+                            group_name: group_name.clone(),
+                            received_at_ms: *received_at_ms,
+                            message_sequence: *message_sequence,
+                        }),
+                        images,
+                    )
+                    .with_files(files.clone()),
+                );
             }
             BackendEvent::AgentReasoning {
                 session_id,

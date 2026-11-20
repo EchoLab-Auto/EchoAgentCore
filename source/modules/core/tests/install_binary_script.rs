@@ -544,21 +544,21 @@ fn downloads_have_a_total_timeout() {
 /// 二进制安装链路必须带**外部模块二进制**，且打包路径与解包路径一致。
 ///
 /// 三方必须一致：`release.yml` 打包路径、`install-binary.sh` 解包路径、
-/// `modules.toml` 启用行指向的路径。任何一处不同，得到的都是"装完少了
-/// 一个模块"，而那时离发布已经很远。
+/// 以及用户在 `modules.toml` 里要写的那条注释示例里的路径。任何一处不同，
+/// 得到的都是"装完少了（或指错了）一个模块"，而那时离发布已经很远。
 ///
 /// 焦点只在二进制链路：**源码安装刻意不带外部模块**（只带 Core 本体），
 /// 那条决定与理由见 `install_script_flag.rs::source_install_ships_only_the_core_binary`。
+///
+/// 2026-11-21 起清单彻底外置：release.yml 不再 `-p` 构建它（它不在 Core 的
+/// 依赖图里），改为独立克隆 + 它自己的 Cargo.toml 构建。这里盯"路径一致"，
+/// "怎么构建"归 `install_script_flag.rs` 那条守。
 #[test]
 fn external_module_artifact_paths_agree() {
     let workflow = read_file(&repo_root().join(".github/workflows/release.yml"));
     let binary = read_script("install-binary.sh");
 
-    // 1) release.yml：构建 + 放进 stage/modules/<包名>/<包名> + 打进 tar
-    assert!(
-        workflow.contains("-p agent-module-checklist"),
-        "release.yml 应构建外部模块二进制（否则产物里没有它）"
-    );
+    // 1) release.yml：产物落进 stage/modules/<包名>/<包名> 并打进 tar
     assert!(
         workflow.contains("stage/modules/agent-module-checklist/agent-module-checklist"),
         "release.yml 应把模块二进制放到 stage/modules/<包名>/<包名>"
@@ -587,9 +587,9 @@ fn external_module_artifact_paths_agree() {
         "install.sh 与 install-binary.sh 的模块落点必须一致"
     );
 
-    // 4) 二进制安装器必须知道该启用哪一个（写 modules.toml 的行）
+    // 4) 注释示例里的路径与真实落点同源（否则用户照着写会指向不存在的文件）
     assert!(
-        binary.contains("\"agent-module-checklist\""),
-        "install-binary.sh 应知道模块名，才能写 modules.toml 的启用行"
+        binary.contains("$MODULES_DIR/agent-module-checklist/agent-module-checklist"),
+        "install-binary.sh 的注释示例应指向 modules/<包名>/<包名>"
     );
 }

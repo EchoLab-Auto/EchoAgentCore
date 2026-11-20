@@ -25,15 +25,6 @@ pub use agent_module_shell::{
     resolve_provider as resolve_shell_provider, standalone_provider as standalone_shell_provider,
     ShellHostCtx, ShellToolProvider,
 };
-/// 清单工具集的构造契约（2026-11 从内置工具集拆出）。
-///
-/// 宿主侧只认识这个模块的**接缝**：`resolve_*` 从服务表问"挂上了吗"，
-/// `standalone_*` 是模块尚未挂载时的同一实现。
-pub use agent_module_checklist::{
-    resolve_provider as resolve_checklist_provider,
-    standalone_provider as standalone_checklist_provider, ChecklistHostCtx, ChecklistPort,
-    ChecklistToolProvider,
-};
 /// 实例命令域的宿主接缝。
 pub use agent_module_tools::instance_commands::{
     InstanceCommandHandler, InstanceCommandHost as InstanceCommandHostAlias,
@@ -59,19 +50,6 @@ pub fn build_registry(
     invoker: Option<agent_module_tools::RemoteInvoker>,
     shell: agent_module_shell::ShellHandle,
     session_query: Option<std::sync::Arc<dyn echo_defs::session_query::SessionQuery>>,
-    // 本 persona 的清单端口（持久 store / 冻结失败 / None=内存 store）。
-    // 由组合根按 `ChecklistRuntime` 的 per-persona store 构造。
-    checklist_port: Option<agent_module_checklist::ChecklistPort>,
-    // 清单工具的构造契约（2026-11 拆出 agent-module-checklist）。
-    //
-    // `Some(None)` = **这个部署把清单交给了独立产物**；此时不再回退
-    // standalone 实现，否则内置工具会先占住 `checklist` 这个名字，外部模块
-    // 的工具注册时被当成重名跳过（实测：
-    // "外部模块工具与已注册工具重名，已跳过该模块工具 tool=checklist"）。
-    //
-    // `Some(Some(p))` = 模块已挂载，用它的 provider。
-    // `None` = 装配期（模块尚未挂载），回退 standalone——这是既有行为。
-    checklist_provider: Option<Option<std::sync::Arc<dyn agent_module_checklist::ChecklistToolProvider>>>,
     provider: Option<std::sync::Arc<dyn BuiltinToolProvider>>,
     shell_provider: Option<std::sync::Arc<dyn ShellToolProvider>>,
 ) -> crate::tool::ToolRegistry {
@@ -85,28 +63,6 @@ pub fn build_registry(
         session_query,
     };
     let mut registry = provider.registry(&cx);
-
-    // 任务清单工具（`checklist`）**由清单模块造**（2026-11 从内置工具集拆出）：
-    // 它有自己的持久化真值（per-persona store）与包标签（`echo-agent.checklist`），
-    // 宿主只把端口递过去。降级口径与 shell 一致：装配期模块尚未挂载时回退到
-    // standalone 实现，persona 门控与包级启停仍在运行期生效。
-    //
-    // `Some(None)`（部署方声明清单由独立产物提供）时**不注册任何内置清单
-    // 工具**：那份能力归外部模块，宿主再造一个只会撞名。
-    match checklist_provider {
-        Some(None) => {}
-        other => {
-            let provider = match other {
-                Some(Some(provider)) => provider,
-                _ => agent_module_checklist::standalone_provider(),
-            };
-            let checklist_registry =
-                provider.registry(&agent_module_checklist::ChecklistHostCtx {
-                    port: checklist_port,
-                });
-            merge_registry(&mut registry, checklist_registry);
-        }
-    }
 
     // Shell 会话工具（`bash-start` / `bash-exec` / `bash-stop`）**由 shell 模块
     // 造**（2026-11）：它知道这些工具该打什么包标签、需要什么端口。宿主只把
@@ -162,8 +118,6 @@ mod tests {
             agent_module_shell::ShellHandle::new(),
             None,
             None,
-            None,
-            None,
             // 带上 shell 模块造的工具一起查重名：两个模块产出的名字同处一张
             // 注册表，撞名会被静默覆盖（这正是本测试要抓的）。
             Some(crate::tool::builtin::standalone_shell_provider()),
@@ -187,8 +141,7 @@ mod tests {
             agent_module_shell::ShellHandle::new(),
             None,
             None,
-            None,
-            None,
+            // 不传 shell provider：这条只关心 `list_api_profiles` 有没有接线。
             None,
         );
         assert!(

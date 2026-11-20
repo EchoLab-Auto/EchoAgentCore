@@ -235,11 +235,7 @@ impl crate::agent::registry::AgentRegistry for AgentManager {
 
 /// 团队管理面（见 [`crate::agent::registry::TeamAdmin`] 的"技术债"说明）。
 impl crate::agent::registry::TeamAdmin for AgentManager {
-    fn save_profile(
-        self: Arc<Self>,
-        id: &str,
-        profile: TeamMember,
-    ) -> Result<(), String> {
+    fn save_profile(self: Arc<Self>, id: &str, profile: TeamMember) -> Result<(), String> {
         AgentManager::save_profile(&self, id, profile)
     }
 
@@ -267,8 +263,7 @@ impl crate::agent::registry::TeamAdmin for AgentManager {
     fn await_retirement<'a>(
         &'a self,
         id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         // 收尾是异步的（停后台任务 + 等 turn 排空 + 最终保存）：调用方先等它，
         // 再重建。`Err` = 上一代没退干净（caller 必须放弃这次重建）。
         Box::pin(AgentManager::await_retirement(self, id))
@@ -988,10 +983,13 @@ mod tests {
     #[tokio::test]
     async fn set_enabled_is_the_single_source_of_truth() {
         let mut raw = AgentConfig::default();
-        raw.teams.insert("a".into(), TeamMember {
-            enabled: true,
-            ..Default::default()
-        });
+        raw.teams.insert(
+            "a".into(),
+            TeamMember {
+                enabled: true,
+                ..Default::default()
+            },
+        );
         let manager = std::sync::Arc::new(AgentManager::build(&raw, stub_agent));
         assert!(manager.infos()[0].running);
 
@@ -1202,7 +1200,9 @@ mod tests {
             ));
         assert!(first.agent.trunk.is_dirty());
 
-        manager.set_enabled("a", false, stub_agent).expect("disable");
+        manager
+            .set_enabled("a", false, stub_agent)
+            .expect("disable");
         // 同步部分：路由立刻解析不到、旧实例不再接新输入。
         assert!(manager.get("a").is_none(), "禁用即摘实例");
         assert!(first.agent.is_retired());
@@ -1330,7 +1330,9 @@ mod tests {
             .try_register_inbound_turn("local:tui::local_user", 1)
             .expect("turn registered");
 
-        manager.set_enabled("a", false, stub_agent).expect("disable");
+        manager
+            .set_enabled("a", false, stub_agent)
+            .expect("disable");
         // 收尾必须**被挡住**：给足"如果没挡就会跑完"的窗口，断言它没跑完。
         let blocked = tokio::time::timeout(
             std::time::Duration::from_millis(300),
@@ -1393,7 +1395,9 @@ mod tests {
             .agent
             .try_register_inbound_turn("local:tui::local_user", 1)
             .expect("turn registered");
-        manager.set_enabled("a", false, stub_agent).expect("disable");
+        manager
+            .set_enabled("a", false, stub_agent)
+            .expect("disable");
 
         // 等待者 1：跑到"在等结论"之后被取消（future drop）。
         let m1 = std::sync::Arc::clone(&manager);
@@ -1415,7 +1419,10 @@ mod tests {
             .expect("等待者必须被唤醒")
             .expect("join waiter");
         assert!(result.is_ok(), "收尾结论应为成功：{result:?}");
-        assert!(path.exists(), "收尾任务本身必须跑完（取消等待者不该 detach 它）");
+        assert!(
+            path.exists(),
+            "收尾任务本身必须跑完（取消等待者不该 detach 它）"
+        );
         assert!(manager.retiring_ids().is_empty());
         let _ = std::fs::remove_file(&path);
     }
@@ -1429,7 +1436,9 @@ mod tests {
             .agent
             .try_register_inbound_turn("local:tui::local_user", 1)
             .expect("turn registered");
-        manager.set_enabled("a", false, stub_agent).expect("disable");
+        manager
+            .set_enabled("a", false, stub_agent)
+            .expect("disable");
 
         // 不等、直接重建：入口自保必须拒绝。
         let error = manager
@@ -1452,10 +1461,7 @@ mod tests {
 
         // 收尾完成之后才能重建（同一入口、同一把闸）。
         first.agent.finish_inbound_turn(&turn.id);
-        manager
-            .await_retirement("a")
-            .await
-            .expect("retirement ok");
+        manager.await_retirement("a").await.expect("retirement ok");
         manager
             .set_enabled("a", true, stub_agent)
             .expect("收尾完成后可以重建");
@@ -1475,7 +1481,9 @@ mod tests {
             .agent
             .try_register_inbound_turn("local:tui::local_user", 1)
             .expect("turn registered");
-        manager.set_enabled("a", false, stub_agent).expect("disable");
+        manager
+            .set_enabled("a", false, stub_agent)
+            .expect("disable");
         assert!(manager.get("a").is_none(), "已下线：不在运行名单里");
 
         let m = std::sync::Arc::clone(&manager);
@@ -1500,11 +1508,10 @@ mod tests {
     #[tokio::test]
     async fn retired_persona_refuses_to_start_background_tasks() {
         let (manager, first) = running_manager();
-        manager.set_enabled("a", false, stub_agent).expect("disable");
         manager
-            .await_retirement("a")
-            .await
-            .expect("retirement ok");
+            .set_enabled("a", false, stub_agent)
+            .expect("disable");
+        manager.await_retirement("a").await.expect("retirement ok");
         assert_eq!(first.agent.background_task_count(), 0);
         first.agent.start_background_tasks();
         assert_eq!(
@@ -1783,11 +1790,11 @@ mod team_info_conclusion_fields {
     #[test]
     fn available_modules_are_canonicalized_and_deduped() {
         let raw: Vec<String> = vec![
-            "echo-agent.adapter.qq".into(), // 旧实例前缀
-            "echo-agent.instance.qq".into(), // 归一后与上一条相同
-            "".into(),                       // 空串（手写配置里的噪音）
+            "echo-agent.adapter.qq".into(),     // 旧实例前缀
+            "echo-agent.instance.qq".into(),    // 归一后与上一条相同
+            "".into(),                          // 空串（手写配置里的噪音）
             "  echo-agent.skills.dir  ".into(), // 前后空格
-            "echo-agent.skills.dir".into(),  // 重复
+            "echo-agent.skills.dir".into(),     // 重复
         ];
         let out = dedup_non_empty(raw.iter());
         assert_eq!(

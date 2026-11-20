@@ -60,12 +60,12 @@ async fn render_tool_catalog() -> String {
         Some(std::sync::Arc::new(
             agent_module_loop::agent::session_query::SessionQueryRegistry::new(),
         )),
-        // 清单端口：目录生成用内存 store（文档只关心工具定义，不关心状态）。
-        None,
-        // 清单工具由清单模块造：目录里必须有 `checklist`，所以给它 standalone。
-        // 外层 `Some` = "宿主自己决定用哪个 provider"；内层才是 provider 本身
-        // （`Some(None)` 表示"这个部署交给独立产物"，见 `build_registry`）。
-        Some(Some(agent_module_checklist::standalone_provider())),
+        // 清单工具**不在内置工具表里**（2026-11-21 彻底外置）：目录由内置
+        // 注册表生成，因此 `checklist` 不再出现——它现在是
+        // `agent-module-checklist` 通过协议注册的外部工具，装不装取决于
+        // `modules.toml`。目录文档如实反映"宿主自带什么"。
+        //
+        // 内置工具集 provider（`None` = 用 standalone 实现，文档只关心定义）。
         None,
         // Shell 工具（`bash-start` / `bash-exec` / `bash-stop`）由 shell 模块造
         // （2026-11 拆出）——目录要包含它们，所以这里给它一个 standalone provider。

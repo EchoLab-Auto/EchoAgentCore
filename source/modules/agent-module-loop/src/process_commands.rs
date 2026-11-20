@@ -133,7 +133,9 @@ async fn save_team(cmd: &BackendCommand, host: &ProcessCommandHost) {
     if profile.enabled {
         if let Err(error) = host.admin.await_retirement(id).await {
             tracing::error!(team = %id, %error, "rebuild refused: previous retirement incomplete");
-            host.error(format!("agent {id} 的上一代收尾未完成，暂不能保存/启用：{error}"));
+            host.error(format!(
+                "agent {id} 的上一代收尾未完成，暂不能保存/启用：{error}"
+            ));
             return;
         }
     }
@@ -205,7 +207,9 @@ async fn toggle_team(host: &ProcessCommandHost, id: &str, enabled: bool) {
         // 就放弃重建——`set_enabled` 的入口闸会再挡一次，这里先给出原因。
         if let Err(error) = host.admin.await_retirement(id).await {
             tracing::error!(team = %id, %error, "enable refused: previous retirement incomplete");
-            host.error(format!("agent {id} 的上一代收尾未完成，暂不能启用：{error}"));
+            host.error(format!(
+                "agent {id} 的上一代收尾未完成，暂不能启用：{error}"
+            ));
             return;
         }
     }

@@ -71,10 +71,10 @@ pub use shims_tool as tool;
 
 pub use agent::{Agent, EventSink};
 pub use agent_manager::AgentManager;
+pub use agent_module_skills::{Skill, SkillRegistry};
 pub use bridge::{create_bridge, BackendBridge, BackendHandle, FanoutHandle};
 pub use command::BackendCommand;
 pub use config::{AgentConfig, AgentProfile, ReasoningEffort, TeamMember, ThinkingMode};
-pub use agent_module_skills::{Skill, SkillRegistry};
 pub use event::{
     ApiProfileInfo, BackendEvent, ContextMessageInfo, SessionInfo, TimelineMessage, TimelineSource,
     TimelineTool,

@@ -21,9 +21,9 @@
 //! 代价是两份实现可能漂移——由 `echo-agent` 侧的
 //! `api_snapshot_matches_agent_config` 测试守着（同输入比结果）。
 
+use agent_module_management::protocol::event::{ApiProfileInfo, BackendEvent};
 use echo_defs::api_profile::ApiProfile;
 use echo_defs::mode::{ReasoningEffort, ThinkingMode};
-use agent_module_management::protocol::event::{ApiProfileInfo, BackendEvent};
 
 /// API 相关配置的**窄视图**：只带设置面需要的字段。
 ///
@@ -185,7 +185,10 @@ pub fn patch_agent_table(
         table.insert("api_key".into(), key_value);
     }
     // `teams` 由人格管理器独立持久化：快照里的副本可能过期，一律以磁盘为准。
-    let teams = root.get("agent").and_then(|agent| agent.get("teams")).cloned();
+    let teams = root
+        .get("agent")
+        .and_then(|agent| agent.get("teams"))
+        .cloned();
     match teams {
         Some(value) => {
             table.insert("teams".into(), value);

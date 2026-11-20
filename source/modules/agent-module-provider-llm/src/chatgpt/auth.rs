@@ -297,7 +297,10 @@ impl Pkce {
     pub fn from_verifier(verifier: String) -> Self {
         let digest = Sha256::digest(verifier.as_bytes());
         let challenge = base64_url(&digest);
-        Self { verifier, challenge }
+        Self {
+            verifier,
+            challenge,
+        }
     }
 }
 
@@ -458,11 +461,11 @@ pub fn proxy_url() -> Option<String> {
 /// "登录走了代理、调用没走"这种半通状态——那种状态下登录成功但一发消息就
 /// 超时，排查会绕远路。
 pub(crate) fn build_client() -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15));
+    let mut builder =
+        reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(15));
     if let Some(url) = proxy_url() {
-        let proxy = reqwest::Proxy::all(&url)
-            .map_err(|error| format!("代理地址无效（{url}）：{error}"))?;
+        let proxy =
+            reqwest::Proxy::all(&url).map_err(|error| format!("代理地址无效（{url}）：{error}"))?;
         builder = builder.proxy(proxy);
         tracing::debug!(%url, "chatgpt channel using proxy");
     }
@@ -583,9 +586,7 @@ pub async fn preflight() -> Result<(), String> {
         ])
         .send()
         .await
-        .map_err(|error| {
-            transport_hint(&error.to_string())
-        })?;
+        .map_err(|error| transport_hint(&error.to_string()))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     classify_preflight(status.as_u16(), &body)
@@ -822,16 +823,13 @@ pub fn extract_code_from_input(input: &str, expected_state: &str) -> Result<Stri
         match state.as_deref() {
             Some(state) if state == expected_state => {}
             Some(_) => {
-                return Err(
-                    "这条链接来自另一次登录尝试（state 不匹配）。\
+                return Err("这条链接来自另一次登录尝试（state 不匹配）。\
                      请重新点「登录 ChatGPT」拿一条新的链接。"
-                        .into(),
-                )
+                    .into())
             }
             // 缺 state：只在裸 code 分支允许。完整 URL 缺 state 说明被截断。
             None => {
-                return Err("链接里没有 state 参数——可能复制时被截断了，请重新复制完整地址"
-                    .into())
+                return Err("链接里没有 state 参数——可能复制时被截断了，请重新复制完整地址".into())
             }
         }
     }
@@ -1084,7 +1082,8 @@ mod tests {
 
     #[test]
     fn parse_callback_reads_code_and_state() {
-        let request = "GET /auth/callback?code=abc123&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let request =
+            "GET /auth/callback?code=abc123&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n";
         assert_eq!(
             parse_callback(request),
             Some(("abc123".to_string(), "xyz".to_string()))
@@ -1151,8 +1150,9 @@ mod tests {
     #[test]
     fn token_response_falls_back_to_access_token_account() {
         use base64::Engine;
-        let access_payload = serde_json::json!({ AUTH_CLAIM: { "chatgpt_account_id": "acc-from-access" } })
-            .to_string();
+        let access_payload =
+            serde_json::json!({ AUTH_CLAIM: { "chatgpt_account_id": "acc-from-access" } })
+                .to_string();
         let access = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(access_payload);
         let auth = TokenResponse {
             access_token: format!("h.{access}.s"),
@@ -1162,7 +1162,10 @@ mod tests {
         }
         .into_auth();
         assert_eq!(auth.account_id, "acc-from-access");
-        assert_eq!(auth.expires_at_ms > chrono::Utc::now().timestamp_millis(), true);
+        assert_eq!(
+            auth.expires_at_ms > chrono::Utc::now().timestamp_millis(),
+            true
+        );
     }
 
     #[test]
@@ -1338,7 +1341,10 @@ mod tests {
     fn preflight_accepts_non_geo_errors() {
         for (status, body) in [
             (400, r#"{"error":"invalid_grant"}"#),
-            (400, r#"{"error":"invalid_request","error_description":"bad code"}"#),
+            (
+                400,
+                r#"{"error":"invalid_request","error_description":"bad code"}"#,
+            ),
             (405, ""),
             (200, "{}"),
         ] {
@@ -1388,9 +1394,8 @@ mod tests {
     /// 完整 URL 缺 state：说明复制被截断，必须明确说出来。
     #[test]
     fn manual_input_rejects_truncated_url() {
-        let error =
-            extract_code_from_input("http://localhost:1455/auth/callback?code=abc", "s")
-                .unwrap_err();
+        let error = extract_code_from_input("http://localhost:1455/auth/callback?code=abc", "s")
+            .unwrap_err();
         assert!(error.contains("state"), "{error}");
     }
 

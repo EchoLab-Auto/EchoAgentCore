@@ -12,8 +12,8 @@
 use std::sync::Arc;
 
 use crate::protocol::BackendBridge;
-use echo_context::ServiceKey;
 use agent_module_federation::Federation;
+use echo_context::ServiceKey;
 
 /// 管理面需要宿主提供的一切。
 pub trait ManagementHost: Send + Sync {

@@ -58,8 +58,7 @@ pub fn modules(version: &str) -> Vec<Arc<dyn Module>> {
             let _ = (id, name, description);
             let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
                 .expect("循环模块的 module.toml 解析失败");
-            let module: Arc<dyn Module> =
-                Arc::new(BuiltinModule::new(manifest, mount_runner));
+            let module: Arc<dyn Module> = Arc::new(BuiltinModule::new(manifest, mount_runner));
             module
         })
         .collect()

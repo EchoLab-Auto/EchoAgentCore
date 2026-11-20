@@ -237,7 +237,11 @@ impl SkillRegistry {
     /// 引用检查，A 实例下线就会把 B 实例还在用的技能从表里删掉——症状是
     /// 「另一个实例正常运行时技能神秘消失」，且只在特定重启时序下复现。
     fn drop_if_unclaimed(&mut self, name: &str) {
-        if self.contributed.values().any(|names| names.iter().any(|n| n == name)) {
+        if self
+            .contributed
+            .values()
+            .any(|names| names.iter().any(|n| n == name))
+        {
             return;
         }
         self.skills.remove(name);
@@ -695,7 +699,10 @@ mod contributed_owner_tests {
         );
 
         registry.remove_contributed("instance-qq-base");
-        assert!(registry.get("qq-transport").is_none(), "最后一个来源走了才删");
+        assert!(
+            registry.get("qq-transport").is_none(),
+            "最后一个来源走了才删"
+        );
     }
 
     /// 替换语义下同样要查重：A 重新上报时少了一个技能，但 B 也声明着它。

@@ -410,8 +410,9 @@ pub fn display_history_extended(
     if let Some(context) = expand {
         if context.depth > 0 {
             if let Some((archive, replaced)) = newest_compaction(events, session_id) {
-                let (prefix_events, error) =
-                    context.source.archive_prefix_events(&archive, session_id, replaced);
+                let (prefix_events, error) = context
+                    .source
+                    .archive_prefix_events(&archive, session_id, replaced);
                 match error {
                     // 归档被轮转清理 / 解析失败：分隔行留着（让用户知道这里
                     // 曾经有历史），但不再提供「继续展开」。
@@ -908,10 +909,7 @@ mod tests {
             count: usize,
         ) -> (Vec<SessionEvent>, Option<String>) {
             match self.0.iter().find(|(name, _)| name == archive) {
-                Some((_, events)) => (
-                    events.iter().take(count).cloned().collect(),
-                    None,
-                ),
+                Some((_, events)) => (events.iter().take(count).cloned().collect(), None),
                 None => (Vec::new(), Some(format!("该归档已被清理：{archive}"))),
             }
         }
@@ -1016,7 +1014,10 @@ mod tests {
         );
         // 2 条事件 = 工具行 1 条（调用与结果配对）；第 3 条事件不该进来。
         assert_eq!(history.messages[0].kind, "tool");
-        assert_eq!(history.messages[0].tool.as_ref().unwrap().output.as_deref(), Some("done"));
+        assert_eq!(
+            history.messages[0].tool.as_ref().unwrap().output.as_deref(),
+            Some("done")
+        );
         assert!(
             !history.messages.iter().any(|m| m.content == "更早"),
             "replaced_count 之外的事件不能带进来"
@@ -1187,10 +1188,12 @@ impl TrunkStore {
         expand_depth: Option<usize>,
     ) -> ExtendedHistory {
         let events = self.event_log();
-        let context = expand_depth.filter(|depth| *depth > 0).map(|depth| ExpandContext {
-            source: self as &dyn ArchiveEventSource,
-            depth,
-        });
+        let context = expand_depth
+            .filter(|depth| *depth > 0)
+            .map(|depth| ExpandContext {
+                source: self as &dyn ArchiveEventSource,
+                depth,
+            });
         display_history_extended(&events, session_id, limit, context.as_ref())
     }
 }

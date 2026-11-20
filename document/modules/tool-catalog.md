@@ -23,7 +23,6 @@ group: Core
 | `bash-start` | builtin | Start a persistent background bash session. Commands run in the same shell keep state (cwd, exports, background jobs). R…｜包：`echo-agent.shell` |
 | `bash-stop` | builtin | Stop and destroy a persistent bash session (kills the whole process group, including background jobs). Also available on…｜包：`echo-agent.shell` |
 | `calculator` | builtin | 计算一个算术表达式，支持 + - * / ( ) 和数字。参数: expression(例如 "(2+3)*4")。｜包：`echo-agent.tools.builtin` |
-| `checklist` | builtin | 管理任务检查清单（按会话隔离、可持久化、带 epoch/revision 版本检查）。操作: list 枚举所有清单(带 name/list_id 时返回该清单完整内容), get 取清单完整数据, create 创建清单(可带 items…｜包：`echo-agent.checklist` |
 | `edit_file` | builtin | Replace lines in an existing file. Specify start_line and end_line (inclusive) to replace with new_content. Use this to …｜包：`echo-agent.tools.builtin` |
 | `instance_restart` | builtin | Restart a platform instance module (stop then start). Useful when it is not responding.｜包：`echo-agent.tools.builtin` |
 | `instance_start` | builtin | Start a platform instance module. Use 'all' to start all configured instances.｜包：`echo-agent.tools.builtin` |
@@ -34,6 +33,7 @@ group: Core
 | `list_sessions` | builtin | 列出当前人格的历史会话及最近消息。只读；结果按最近活跃排序，支持 limit（默认50，最大200）。｜包：`echo-agent.tools.builtin` |
 | `read_file` | builtin | Read the contents of a file in the project. Returns the file content with line numbers. Use this to examine source code,…｜包：`echo-agent.tools.builtin` |
 | `read_session` | builtin | 只读查看历史会话。view=model 返回模型实际可见的压缩上下文；view=audit 返回消息、工具调用/耗时及模型步骤/token/耗时。默认当前会话；limit 默认50、最大200；工具结果正文默认不返回，需 include_t…｜包：`echo-agent.tools.builtin` |
+| `read_url` | builtin | 读取一个网页的正文（Markdown）。当 web_search 的摘要不够、需要看原文细节（文档、安装步骤、报错信息、API 表格）时使用。参数: url(完整 http/https 地址)。｜包：`echo-agent.tools.builtin` |
 | `search_code` | builtin | Search project source files for a pattern. Default mode is literal, case-insensitive text; set regex=true for a regular …｜包：`echo-agent.tools.builtin` |
 | `web_search` | builtin | 搜索网页获取最新信息（新闻、天气、百科、实时数据）。参数: query(搜索关键词), max_results(可选, 默认5, 最大10)。｜包：`echo-agent.tools.builtin` |
 | `write_file` | builtin | Create a new file or overwrite an existing file with new content. Use this to create or update source files, config file…｜包：`echo-agent.tools.builtin` |

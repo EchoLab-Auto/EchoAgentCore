@@ -106,9 +106,8 @@ impl Tool for WebSearchTool {
                         // 关键：**不把搜索整体判失败**。DeepSeek 侧 402/429/网络
                         // 抖动时，Bing 往往还能给出可用答案；把原因写在结果尾部
                         // 让人知道"这次是兜底"。
-                        fallback_note = format!(
-                            "\n\n（注：DeepSeek 搜索失败已回退 Bing —— {error}）"
-                        );
+                        fallback_note =
+                            format!("\n\n（注：DeepSeek 搜索失败已回退 Bing —— {error}）");
                     }
                 }
             }
