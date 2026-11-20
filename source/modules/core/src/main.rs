@@ -1003,6 +1003,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 let state_file = qq_data_dir.join(format!("{platform}-{}.toml", instance.id));
                 echo_module_host::bootstrap::LaunchSpec {
                     module_id: format!("instance-{platform}-{}", instance.id),
+                    kind: echo_module_host::bootstrap::LaunchKind::Stdio,
                     command: command.clone(),
                     args: launch.args.clone(),
                     env: launch.env.clone(),

@@ -696,6 +696,7 @@ mod tests {
         let config_path = dir.join("echo-agent-core.toml");
         let spec = echo_module_host::bootstrap::LaunchSpec {
             module_id: "adapter-qq-test".to_string(),
+            kind: echo_module_host::bootstrap::LaunchKind::Stdio,
             command: "/nonexistent/agent-module-adapter-qq-test".to_string(),
             args: vec![],
             env: Default::default(),
