@@ -46,7 +46,15 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY source ./source
-RUN cargo build --release --locked -p echo-agent-core
+# 进程外模块二进制与 Core 同一次调用构建：最终镜像要把
+# `target/release/agent-module-checklist` 装到 `libexec/modules/<包>/<包>`，
+# 而**只有把包名放进 `-p`，它的 `[[bin]]` 才会被编出来**（只作为依赖需要时，
+# cargo 给的是 `lib*.rlib`）。名单与 install.sh / update.sh 的
+# `EXTERNAL_MODULE_BINARIES`、release.yml 的构建列表同源，三处必须一致
+# （守护测试：source/modules/core/tests/dockerfile_module_binaries.rs）。
+RUN cargo build --release --locked \
+    -p echo-agent-core \
+    -p agent-module-checklist
 
 # ── QQ 适配器（进程外模块，独立仓）──────────────────────────────────────
 #
