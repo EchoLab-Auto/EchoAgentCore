@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-federation"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -88,7 +88,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-loop"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-checklist",
  "agent-module-federation",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-management"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-federation",
  "anyhow",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-provider-llm"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-management",
  "async-trait",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-sanitize"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aho-corasick",
  "echo-context",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-self-update"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-management",
  "echo-context",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-session"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-management",
  "chrono",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-shell"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-management",
  "agent-module-tools",
@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-skills"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-management",
  "async-trait",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-tools"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-management",
  "async-trait",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-transcript"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-management",
  "chrono",
@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "echo-agent-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-checklist",
  "agent-module-federation",
@@ -1128,7 +1128,7 @@ dependencies = [
 
 [[package]]
 name = "echo-config"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "thiserror 2.0.21",
  "toml",
@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "echo-defs"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1228,14 +1228,14 @@ dependencies = [
 
 [[package]]
 name = "echo-protocol"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agent-module-management",
 ]
 
 [[package]]
 name = "echo-session"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "echo-defs",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "echo-test-utils"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "echo-defs",
@@ -3342,7 +3342,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
