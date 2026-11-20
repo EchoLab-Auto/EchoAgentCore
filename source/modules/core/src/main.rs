@@ -1988,9 +1988,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             })
             .map(|module| module.manifest().id.clone())
             .collect::<Vec<_>>();
+        // 「显式提到」= 内置行计划里有它 **或** `modules.toml` 里有任何一行
+        // 是它（`kind = "stdio"` / `"dylib"` 的外部模块行走的是第二条）。
+        //
+        // 只看内置行计划会漏掉外部行：那种行不进 `builtin_mount_plan`，于是
+        // 这里的默认禁用规则把它当成"部署方没提到"，注册表标记 `enabled =
+        // false`，persona 门控再把它的工具包一并关掉。症状极具误导性——模块
+        // 握手成功、贡献注册成功、面板可见，但模型就是没有那个工具。
+        let configured = modules_runtime::configured_entry_ids(&args.config_path());
         let plan = optional_ids
             .iter()
-            .filter(|id| !plan.iter().any(|step| step.id == **id))
+            .filter(|id| !configured.contains(*id) && !plan.iter().any(|step| step.id == **id))
             .map(|id| agent_module_loop::modules::MountStep::new(id.clone(), false))
             .chain(plan.iter().cloned())
             .collect::<Vec<_>>();

@@ -596,6 +596,23 @@ pub fn builtin_mount_plan(config_path: &Path) -> Vec<agent_module_loop::modules:
         .collect()
 }
 
+/// `modules.toml` 里**任何 kind** 的条目 id（内置行 + 外部行）。
+///
+/// 与 [`builtin_mount_plan`] 的分工：那份只收 `kind = "builtin"`（它们决定
+/// 内置模块的挂载顺序与启停）；这份收全部——用于回答"部署方**显式提到**了
+/// 哪些 id"。
+///
+/// 为什么需要它：`main` 对"不在 `BUILTIN_MODULE_IDS` 里的模块"有一条默认
+/// 禁用的规则（外部仓的进程内可选模块必须显式启用）。判据此前只看**内置行**
+/// 计划，于是 `kind = "stdio"` 的外部模块行虽然写进了配置，仍被当成"没提到"
+/// → 默认 `enabled = false` → 注册表标记禁用 → persona 门控把它的工具包一并
+/// 关掉。实测症状：模块握手成功、贡献注册成功、面板可见，但模型没有那个工具。
+pub fn configured_entry_ids(path: &Path) -> std::collections::HashSet<String> {
+    load_tree(path)
+        .map(|tree| tree.entries.iter().map(|entry| entry.id.clone()).collect())
+        .unwrap_or_default()
+}
+
 /// `modules.toml` 里内置行（`kind = "builtin"`）的 `[module.config]` → 配置表。
 ///
 /// 这是**配置下发**的装载端：结果交给
@@ -917,6 +934,40 @@ mod tests {
     }
 
     // ── 内置模块基线（modules-base.toml）────────────────────────────
+
+    /// `configured_entry_ids` 收**全部 kind**（内置行 + 外部行）。
+    ///
+    /// 这条守的是一次实测事故（2026-11-21 清单外置）：`main` 对"不在
+    /// `BUILTIN_MODULE_IDS` 的模块"默认禁用，判据此前只看内置行计划，于是
+    /// `kind = "stdio"` 的行被当成"没提到" → 注册表 enabled=false →
+    /// persona 门控把它的工具包关掉。症状是模块明明起来了、面板也看得见，
+    /// 但模型没有那个工具。
+    #[test]
+    fn configured_entry_ids_covers_every_entry_kind() {
+        let dir = unique_dir("cfg-entry-ids");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(
+            dir.join("modules.toml"),
+            "[[module]]\nid = \"a.builtin\"\nkind = \"builtin\"\nenabled = true\n\n             [[module]]\nid = \"a.external\"\nkind = \"stdio\"\nenabled = true\n\
+             command = \"/bin/true\"\n\n             [[module]]\nid = \"a.disabled\"\nkind = \"dylib\"\nenabled = false\n\
+             command = \"/tmp/x.so\"\n",
+        )
+        .expect("write profile");
+        let ids = configured_entry_ids(&dir.join("echo-agent-core.toml"));
+        assert!(ids.contains("a.builtin"), "内置行要收");
+        assert!(
+            ids.contains("a.external"),
+            "stdio 行要收（否则会被默认禁用）"
+        );
+        assert!(
+            ids.contains("a.disabled"),
+            "显式 enabled=false 的行也算\"部署方提到了\"——关掉它是它的意图，而不是\"没提\""
+        );
+        // 内置行计划仍然只收 builtin（两份视图的分工不能混）。
+        let plan = builtin_mount_plan(&dir.join("echo-agent-core.toml"));
+        assert_eq!(plan.len(), 1, "builtin_mount_plan 只收内置行：{plan:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// 缺失时生成，且生成的内容**通过装载器回放**得到同样的内置行。
     ///
