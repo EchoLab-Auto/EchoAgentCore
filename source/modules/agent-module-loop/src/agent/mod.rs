@@ -1687,7 +1687,7 @@ impl Agent {
         let base = self.model.config.read().await.system_prompt.clone();
         // 没有指定会话 → 上下文为空。模块负责决定"空上下文下有没有内容"
         // （如工作区模块在无 active 会话时不贡献块）。
-        let module_blocks = self.collect_module_text_blocks("", "");
+        let module_blocks = self.collect_module_text_blocks("", "").await;
         crate::agent::prompt::build_prompt_blocks(
             &base,
             None,
@@ -1704,7 +1704,9 @@ impl Agent {
     /// 2026-10 多窗口问题的修法（全局 active 是 per-persona 单槽，另一个窗口
     /// 激活工作区后会被注入到这里）；`team_id` 让进程级模块服务多个人格时能
     /// 找到"当前这个 agent 的那一份状态"。
-    pub(crate) fn collect_module_text_blocks(
+    /// **异步**：外部模块（独立产物）的块内容只能经协议取，那必然是异步的。
+    /// 进程内模块走同步路径，包一个 ready future 而已，没有额外开销。
+    pub(crate) async fn collect_module_text_blocks(
         &self,
         session_id: &str,
         content: &str,
@@ -1718,8 +1720,9 @@ impl Agent {
             .lock()
             .ok()
             .and_then(|cap| cap.clone());
-        self.module_host().collect_text_blocks(
-            &serde_json::json!({
+        self.module_host()
+            .collect_text_blocks_async(
+                &serde_json::json!({
                 "session_id": session_id,
                 "team_id": self.team_id().unwrap_or_default(),
                 "content": content,
@@ -1727,12 +1730,13 @@ impl Agent {
                     .and_then(|cap| cap.as_ref().map(|c| c.system_skills.clone()))
                     .unwrap_or_default(),
             }),
-            |module_id| match &capabilities {
-                Some(cap) => crate::modules::profile_allows_module(cap, module_id),
-                // 没注入能力表 = 不启用任何人格级限制（单测/裸装配）。
-                None => true,
-            },
-        )
+                |module_id| match &capabilities {
+                    Some(cap) => crate::modules::profile_allows_module(cap, module_id),
+                    // 没注入能力表 = 不启用任何人格级限制（单测/裸装配）。
+                    None => true,
+                },
+            )
+            .await
     }
     /// Decomposed context blocks for `/context`: the prompt sections of the
     /// most recent turn (falling back to a boundary-free build) plus the
@@ -1817,7 +1821,7 @@ impl Agent {
     async fn build_system_prompt(&self, content: &str) -> String {
         let base = self.model.config.read().await.system_prompt.clone();
         self.refresh_prompt_contributions("", content);
-        let module_blocks = self.collect_module_text_blocks("", content);
+        let module_blocks = self.collect_module_text_blocks("", content).await;
         let blocks = crate::agent::prompt::build_prompt_blocks(
             &base,
             None,

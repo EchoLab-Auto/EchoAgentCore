@@ -521,6 +521,19 @@ pub struct ModuleHost {
     /// 会让两层的槽互相覆盖——第一个人格的适配器被第二个人格顶掉，而且没有
     /// 任何报错。**必须重新构造**。
     persona_catalog: parking_lot::RwLock<Option<PersonaCatalogFn>>,
+    /// **外部模块**（`modules.toml` 里 `kind = "stdio"` / `"dylib"` 的条目）的句柄。
+    ///
+    /// 它们是**独立产物**（可执行文件或 `.so`），与注册表里的进程内模块
+    /// （`Arc<dyn Module>`）是两条不同的承载：前者只能经协议 `Invoke` 调用，
+    /// 后者是同步 trait 方法。这里存句柄，让命令 / 文本块 / 事件这几个消费面
+    /// 能把两种承载一起问，而不是只问进程内那半边。
+    ///
+    /// 为什么不是"把句柄包装成 `dyn Module` 塞进注册表"：那要给同步的
+    /// `text_block_content` 加一个异步例外，本质是让新东西伪装成旧东西。
+    /// 消费面在宿主侧（这里），抽象就该定义在这里。
+    ///
+    /// 空 = 没有外部模块（未配 `modules.toml`，或全部被禁用）。
+    external: parking_lot::RwLock<Vec<echo_module_host::ModuleHandle>>,
 }
 
 /// 目录工厂：每次调用产出一批**全新**模块实例。
@@ -590,6 +603,7 @@ impl ModuleHost {
             root: parking_lot::RwLock::new(None),
             persona_scopes: parking_lot::RwLock::new(std::collections::HashMap::new()),
             persona_catalog: parking_lot::RwLock::new(None),
+            external: parking_lot::RwLock::new(Vec::new()),
         }
     }
 
@@ -1020,21 +1034,63 @@ impl ModuleHost {
     }
 
     /// 把一条**非线协议**命令分发给模块（按名字 + 自由 JSON 载荷）。
+    /// 把一条**非线协议**命令分发给模块（按名字 + 自由 JSON 载荷）。
     ///
     /// 用途：跨仓库边界的宿主内部动作——模块拥有数据（store）而宿主不能直接
     /// 写它，只能经命令通道回来。面板不会发这类名字，因此它们不进
     /// `BackendCommand`（协议词汇表保持只描述前端可见命令）。
+    ///
+    /// **两种承载按序问**：先进程内（同步、零成本），再外部模块（经协议
+    /// `Invoke`）。这个顺序是刻意的——内置模块与外部模块声明同名命令时，
+    /// 内置的赢（它是随宿主发布的那一份，外部模块属于部署方追加）。
     pub async fn dispatch_raw(
         &self,
         name: &str,
         payload: serde_json::Value,
     ) -> Option<Result<serde_json::Value, String>> {
-        self.registry.dispatch_command_async(name, payload).await
+        if let Some(outcome) = self.registry.dispatch_command_async(name, payload.clone()).await {
+            return Some(outcome);
+        }
+        self.dispatch_raw_to_external(name, payload).await
+    }
+
+    /// 外部模块的命令分发（`Contribution::Command` → `Invoke`）。
+    ///
+    /// 超时用一个常量而不是无穷等：命令来自面板，用户在看；模块卡住时宁可
+    /// 回一个明确错误，也不要让面板转圈到天荒地老。
+    async fn dispatch_raw_to_external(
+        &self,
+        name: &str,
+        payload: serde_json::Value,
+    ) -> Option<Result<serde_json::Value, String>> {
+        const COMMAND_TIMEOUT_MS: u64 = 30_000;
+        let handles = self.external.read().clone();
+        for handle in handles {
+            if !Self::external_commands(&handle).iter().any(|cmd| cmd == name) {
+                continue;
+            }
+            let ctx = Self::external_invoke_ctx(&serde_json::Value::Null, COMMAND_TIMEOUT_MS);
+            let outcome = handle.invoke(name, ctx, payload).await;
+            tracing::debug!(
+                module = %handle.module_id(),
+                command = %name,
+                "command dispatched to an external module"
+            );
+            return Some(Self::outcome_to_result(outcome));
+        }
+        None
     }
 
     /// 某条命令当前归谁处理（诊断/测试用）。
     pub fn command_owner(&self, name: &str) -> Option<String> {
-        self.registry.command_owner(name)
+        if let Some(owner) = self.registry.command_owner(name) {
+            return Some(owner);
+        }
+        self.external
+            .read()
+            .iter()
+            .find(|handle| Self::external_commands(handle).iter().any(|cmd| cmd == name))
+            .map(|handle| handle.module_id().to_string())
     }
 
     /// 收集已挂载模块贡献的**有序文本块**（按 `order` 升序，空内容丢弃）。
@@ -1049,6 +1105,85 @@ impl ModuleHost {
     ) -> Vec<(echo_module::ModuleTextBlock, String)> {
         self.registry.collect_text_blocks_filtered(context, keep)
     }
+
+    /// 收集**全部**模块（进程内 + 外部产物）贡献的有序文本块。
+    ///
+    /// 为什么不把外部模块塞进 [`Self::collect_text_blocks`]：那条路径是同步
+    /// 的（进程内模块的 `text_block_content` 是同步 trait 方法），而跨进程取
+    /// 内容必然是异步的。给同步签名加一个"异步例外"就是把新承载伪装成旧承载
+    /// ——这里直接定义正确的抽象：**取内容这件事是异步的**。
+    ///
+    /// 合并规则与进程内一致：按 `order` 升序、等值按来源序（进程内在前），
+    /// 空内容丢弃。外部模块取内容失败 / 超时**不阻断**装配——记一条 warn 并
+    /// 跳过该块。理由：一个模块的摘要坏了不该让整轮对话发不出去。
+    pub async fn collect_text_blocks_async(
+        &self,
+        context: &serde_json::Value,
+        keep: impl Fn(&str) -> bool,
+    ) -> Vec<(echo_module::ModuleTextBlock, String)> {
+        /// 取一个外部块的超时：文本块在**每轮提示词装配**的路径上，卡住就是
+        /// 卡住整轮对话。宁可少一个块，也不要让人等。
+        const TEXT_BLOCK_TIMEOUT_MS: u64 = 2_000;
+
+        let mut blocks: Vec<(echo_module::ModuleTextBlock, String)> =
+            self.registry.collect_text_blocks_filtered(context, &keep);
+
+        let handles: Vec<_> = self
+            .external
+            .read()
+            .iter()
+            .filter(|handle| keep(handle.module_id()))
+            .cloned()
+            .collect();
+        if handles.is_empty() {
+            return blocks;
+        }
+
+        for handle in handles {
+            for declaration in Self::external_text_blocks(&handle) {
+                let ctx = Self::external_invoke_ctx(context, TEXT_BLOCK_TIMEOUT_MS);
+                let outcome = handle
+                    .invoke(&declaration.key, ctx, serde_json::Value::Null)
+                    .await;
+                match Self::outcome_to_result(outcome) {
+                    Ok(serde_json::Value::String(text)) if !text.trim().is_empty() => {
+                        blocks.push((
+                            echo_module::ModuleTextBlock::new(
+                                declaration.key.clone(),
+                                if declaration.label.is_empty() {
+                                    declaration.key.clone()
+                                } else {
+                                    declaration.label.clone()
+                                },
+                                declaration.order,
+                            ),
+                            text,
+                        ));
+                    }
+                    // 结构化结果 / 非法形状：文本块只接受纯文本。记下来而不是
+                    // 静默丢弃——模块作者会看到"我声明了块却没进提示词"的原因。
+                    Ok(other) => tracing::warn!(
+                        module = %handle.module_id(),
+                        block = %declaration.key,
+                        value = %other,
+                        "external text block returned a non-text payload; skipped"
+                    ),
+                    Err(error) => tracing::warn!(
+                        module = %handle.module_id(),
+                        block = %declaration.key,
+                        %error,
+                        "external text block could not be fetched; skipped"
+                    ),
+                }
+            }
+        }
+
+        // 稳定排序：进程内那批已经是有序的，外部块插入后整体再排一次，
+        // 等 rank 时保持"进程内在前"（`sort_by_key` 稳定）。
+        blocks.sort_by_key(|(block, _)| block.order);
+        blocks
+    }
+
 
     /// 事件投递计数（成功条数, 失败条数）——诊断用。
     pub fn event_counters(&self) -> (u64, u64) {
@@ -1069,6 +1204,129 @@ impl ModuleHost {
     pub fn subprocess_control(&self) -> Option<Arc<dyn SubprocessModuleControl>> {
         self.subprocess.read().clone()
     }
+
+    // ── 外部模块（独立产物：stdio / dylib）────────────────────────────────
+
+    /// 注入外部模块句柄（组合根在 `start_modules` 之后调用一次）。
+    ///
+    /// 传 `Vec<ModuleHandle>` 而不是 `StartedModules`：宿主要的是"能问谁"，
+    /// 不需要启动期的错误清单（那份归组合根记日志）。
+    ///
+    /// 重复调用会整体替换——外部模块的生命周期归组合根，这里只读。
+    pub fn set_external_modules(&self, handles: Vec<echo_module_host::ModuleHandle>) {
+        if handles.is_empty() {
+            *self.external.write() = Vec::new();
+            return;
+        }
+        tracing::info!(
+            modules = ?handles.iter().map(|h| h.module_id().to_string()).collect::<Vec<_>>(),
+            "external module handles attached to the module host"
+        );
+        *self.external.write() = handles;
+    }
+
+    /// 当前挂上的外部模块 id（诊断用）。
+    pub fn external_module_ids(&self) -> Vec<String> {
+        self.external
+            .read()
+            .iter()
+            .map(|h| h.module_id().to_string())
+            .collect()
+    }
+
+    /// 某外部模块声明的**命令名**（`Contribution::Command`）。
+    fn external_commands(handle: &echo_module_host::ModuleHandle) -> Vec<String> {
+        handle
+            .contributions()
+            .into_iter()
+            .filter_map(|contribution| match contribution {
+                echo_module_host::api::Contribution::Command(command) => Some(command.name),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 某外部模块声明的**文本块**（`Contribution::Text`，按 order 升序）。
+    fn external_text_blocks(
+        handle: &echo_module_host::ModuleHandle,
+    ) -> Vec<echo_module_host::api::TextBlockContribution> {
+        let mut blocks: Vec<_> = handle
+            .contributions()
+            .into_iter()
+            .filter_map(|contribution| match contribution {
+                echo_module_host::api::Contribution::Text(block) => Some(block),
+                _ => None,
+            })
+            .collect();
+        // 框架对 `Register` 的顺序不作承诺；这里按 `order` 排一次，与进程内
+        // 注册表的 `collect_text_blocks_filtered` 保持同一个可见顺序。
+        blocks.sort_by_key(|block| block.order);
+        blocks
+    }
+
+    /// 把一次 `InvokeOutcome` 收敛成宿主侧的统一形状。
+    ///
+    /// - `Ok`：优先取结构化 `result`（非 null 时），否则取遗留的 `text`。
+    ///   这是协议里两条并存的返回通道，收敛点只该有一处。
+    /// - `Error`：`code: message`。宿主把它原样往上报，不做语义解释。
+    fn outcome_to_result(
+        outcome: echo_module_host::api::InvokeOutcome,
+    ) -> Result<serde_json::Value, String> {
+        use echo_module_host::api::InvokeOutcome;
+        match outcome {
+            InvokeOutcome::Ok { text, result, .. } => {
+                if result.is_null() {
+                    Ok(serde_json::Value::String(text))
+                } else {
+                    Ok(result)
+                }
+            }
+            InvokeOutcome::Error { code, message } => Err(format!("{code}: {message}")),
+        }
+    }
+
+    /// 外部模块的调用上下文：文本块与命令都只带 `session_id` / `team_id`。
+    fn external_invoke_ctx(
+        context: &serde_json::Value,
+        deadline_ms: u64,
+    ) -> echo_module_host::api::InvokeContext {
+        let string_at = |key: &str| {
+            context
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        echo_module_host::api::InvokeContext {
+            session_id: string_at("session_id"),
+            team_id: string_at("team_id"),
+            branch_id: string_at("branch_id"),
+            deadline_ms: Some(deadline_ms),
+        }
+    }
+
+    /// 取走**全部外部模块**累积的事件（`ModuleToHost::Emit`），返回
+    /// `(module_id, event, payload)`。
+    ///
+    /// 框架侧的 `ModuleHandle::take_events` 队列封顶 1024 且**零生产消费方**
+    /// （封顶本身就是为了防止无人读时无界堆积）。这里补上消费端：调用方负责
+    /// 把它们转成宿主事件（`BackendEvent`）投给前端。
+    ///
+    /// 取走即清空——重复调用不会重复投递。
+    pub fn take_module_events(&self) -> Vec<(String, String, serde_json::Value)> {
+        self.external
+            .read()
+            .iter()
+            .flat_map(|handle| {
+                let module_id = handle.module_id().to_string();
+                handle
+                    .take_events()
+                    .into_iter()
+                    .map(move |(event, payload)| (module_id.clone(), event, payload))
+            })
+            .collect()
+    }
+
 
     /// 某个模块是不是**外部条目**（`modules.toml` 的 stdio 条目）。
     ///

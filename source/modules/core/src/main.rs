@@ -2098,12 +2098,54 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 )
             })?;
 
-        // 子进程模块生命周期控制面：面板的启停开关据此真正停/起子进程，
-        // 重启按钮据此 stop + start（注册表本身不持有进程句柄）。
         if let Some(runtime) = &module_runtime {
             module_host.set_subprocess_control(std::sync::Arc::new(
                 modules_runtime::SubprocessControl::new(runtime),
             ));
+
+            // ── 外部模块（独立产物）的三个消费面 ──────────────────────────
+            //
+            // 外部模块是 `modules.toml` 里 `kind = "stdio"` / `"dylib"` 的条目：
+            // 真正的独立产物，只能经协议 `Invoke` 调用，而进程内模块是同步
+            // trait 方法。两者并列挂在宿主上（不是把后者包装成前者），命令 /
+            // 文本块 / 事件三个消费面因此都能同时问到两种承载。
+            module_host.set_external_modules(runtime.started.handles.clone());
+
+            // 事件消费：框架侧的 `ModuleHandle::take_events` 队列此前**零消费
+            // 方**（封顶 1024 就是为防无人读时堆积）。这里接上出口——转成
+            // `BackendEvent::ModuleEvent` 走与内置模块同一个进程级汇聚点。
+            //
+            // 轮询而不是推送：`Emit` 是"投递即忘"的模块活动日志（面板当活动
+            // 流看），500ms 的可见延迟对它是无感的；为此在 supervisor 里加一条
+            // 回调通道会把关闭语义（backpressure / 重入）一并引进来，收益不抵。
+            {
+                let module_host = module_host.clone();
+                let sink = event_sink.clone();
+                let mut shutdown = shutdown_rx.clone();
+                tokio::spawn(async move {
+                    const POLL_INTERVAL: std::time::Duration =
+                        std::time::Duration::from_millis(500);
+                    let mut ticker = tokio::time::interval(POLL_INTERVAL);
+                    // 第一次 tick 立即发生；`skip` 掉它，避免启动瞬间空转一轮。
+                    ticker.tick().await;
+                    loop {
+                        tokio::select! {
+                            _ = ticker.tick() => {}
+                            _ = shutdown.changed() => break,
+                        }
+                        for (module, name, payload) in module_host.take_module_events() {
+                            sink(
+                                agent_module_management::protocol::BackendEvent::ModuleEvent {
+                                    module,
+                                    name,
+                                    payload,
+                                    at_ms: epoch_millis(),
+                                },
+                            );
+                        }
+                    }
+                });
+            }
         }
         // 定义来源（面板技术信息）：外部条目报「modules.toml 路径 + 启动命令 +
         // 环境变量键名」——排查「为什么不起来」不必翻配置文件。
