@@ -77,7 +77,7 @@ impl BuiltinToolProvider for BuiltinTools {
     fn registry(&self, cx: &ToolsHostCtx) -> ToolRegistry {
         let guard = core_self_stop_guard();
         let mut registry = ToolRegistry::new();
-        crate::register_core_tools(&mut registry);
+        crate::register_core_tools(&mut registry, cx.config_store.clone());
         // 供应商池清单（`list_api_profiles`）：数据源是共享 `ConfigStore` 的
         // `[agent.api_profiles]`，读取助手已随 `ApiProfile` 下沉进 provider
         // 模块（全模块化 S3）——本工具因此也搬进来了。

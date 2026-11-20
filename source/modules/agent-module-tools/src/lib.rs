@@ -43,12 +43,14 @@ pub mod instance_ops;
 pub mod list_api_profiles;
 pub mod module;
 pub use echo_defs::registry;
+pub mod deepseek_search;
 pub mod session;
 pub mod tool_commands;
 pub mod websearch;
 
 pub use calculator::CalculatorTool;
 pub use coding::{register_coding_tools, RemoteAwareTool};
+pub use deepseek_search::{DeepSeekClient, ReadUrlTool, SearchEngine};
 pub use instance::register_instance_tools;
 pub use instance_commands::{
     InstanceCommandHandler, InstanceCommandHost, COMMANDS as INSTANCE_COMMANDS,
@@ -60,7 +62,6 @@ pub use list_api_profiles::ListApiProfilesTool;
 pub use module::{BuiltinToolProvider, BuiltinTools, ToolsHostCtx, MODULE_ID, SERVICE_KEY};
 pub use tool_commands::{ToolsCommandHandler, ToolsCommandHost, COMMANDS as TOOL_COMMANDS};
 pub use websearch::WebSearchTool;
-
 /// 远程工具调用出口（`node://<peer>/…` 前缀的分流目标）。
 ///
 /// **类型定义在定义层**（`echo_defs::remote_tool::RemoteInvoker`，2026-11 S12）：
@@ -94,13 +95,27 @@ pub type CommandGuard = std::sync::Arc<dyn Fn(&str) -> Result<(), ToolError> + S
 /// 与 [`register_instance_tools`] / [`register_coding_tools`] /
 /// [`register_shell_tools`] 分开，是为了让组合根按可用性选择（例如沙箱环境
 /// 里不装 Shell 工具）。包标签由调用方打——本 crate 不认识包 id 的语义。
-pub fn register_core_tools(registry: &mut ToolRegistry) {
+///
+/// `config_store` 供 DeepSeek 官方搜索 / 读页使用：密钥与引擎选择都在**调用期**
+/// 从它现读（注册期没有 `AgentConfig`，见 `deepseek_search` 模块文档）。`None`
+/// 时退化为纯 Bing，且不注册 `read_url`——与"列不出供应商就不注册
+/// `list_api_profiles`"同一口径：没有数据源就别给一个注定失败的实现。
+pub fn register_core_tools(
+    registry: &mut ToolRegistry,
+    config_store: Option<echo_config::ConfigStore>,
+) {
     registry.register(Arc::new(CalculatorTool));
     // HTTP 客户端（连接池）在此构造一次、注入工具：仍是全进程复用一份，
     // 但不再藏进进程级全局槽（2026-10 技术债清理）。
-    registry.register(Arc::new(
-        WebSearchTool::new(WebSearchTool::default_client()),
-    ));
+    let client = websearch::WebSearchTool::default_client();
+    let mut web_search = websearch::WebSearchTool::new(client.clone());
+    if let Some(store) = config_store {
+        let deepseek = Arc::new(DeepSeekClient::new(store, client));
+        web_search = web_search.with_deepseek(deepseek.clone());
+        // 读页只走 DeepSeek Fetch（没有第二家实现），因此仅在有配置时注册。
+        registry.register(Arc::new(ReadUrlTool::new(deepseek)));
+    }
+    registry.register(Arc::new(web_search));
 }
 
 #[cfg(test)]
@@ -115,7 +130,7 @@ mod tests {
     #[test]
     fn registered_tool_names_are_unique_across_families() {
         let mut registry = ToolRegistry::new();
-        register_core_tools(&mut registry);
+        register_core_tools(&mut registry, None);
         register_coding_tools(&mut registry, std::env::temp_dir(), None, None);
         register_instance_tools(
             &mut registry,
@@ -128,7 +143,7 @@ mod tests {
     #[test]
     fn core_tool_families_are_registered() {
         let mut registry = ToolRegistry::new();
-        register_core_tools(&mut registry);
+        register_core_tools(&mut registry, None);
         let names = registry.names();
         for expected in ["calculator", "web_search"] {
             assert!(

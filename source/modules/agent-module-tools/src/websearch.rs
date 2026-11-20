@@ -9,7 +9,6 @@ use serde_json::{json, Value};
 
 use crate::{Tool, ToolError};
 
-#[derive(Debug, Default)]
 /// 检索工具。
 ///
 /// `client` 由注册方注入（`reqwest::Client` 内含**连接池**，应全进程复用一份）。
@@ -17,12 +16,31 @@ use crate::{Tool, ToolError};
 /// 注入——连接池仍是共享的，但不再是"没有主人的全局状态"。
 pub struct WebSearchTool {
     client: std::sync::Arc<reqwest::Client>,
+    /// DeepSeek 官方搜索（可选）。`None` = 只走 Bing。
+    ///
+    /// 引擎在**调用期**由配置（`[agent] web_search_engine`）决定，"有没有客户端"
+    /// 只是"这条路能不能走"的前提。于是同一份注册可以服务两种配置，运行期切换
+    /// 不必重建工具。
+    deepseek: Option<std::sync::Arc<crate::deepseek_search::DeepSeekClient>>,
 }
 
 impl WebSearchTool {
-    /// 以注入的 HTTP 客户端构造。
+    /// 以注入的 HTTP 客户端构造（只走 Bing）。
     pub fn new(client: std::sync::Arc<reqwest::Client>) -> Self {
-        Self { client }
+        Self {
+            client,
+            deepseek: None,
+        }
+    }
+
+    /// 追加 DeepSeek 官方搜索路径。注册期调用（`[agent]` 存在共享
+    /// `ConfigStore` 时才有；无配置的测试/沙箱环境保持纯 Bing）。
+    pub fn with_deepseek(
+        mut self,
+        deepseek: std::sync::Arc<crate::deepseek_search::DeepSeekClient>,
+    ) -> Self {
+        self.deepseek = Some(deepseek);
+        self
     }
 
     /// 构造一份默认客户端（15s 超时 / 限 5 次重定向 / 浏览器 UA）。
@@ -73,6 +91,29 @@ impl Tool for WebSearchTool {
             .unwrap_or(5)
             .clamp(1, 10) as usize;
 
+        // 引擎选择：配置说 deepseek、客户端在手、且确实有密钥时走官方 API。
+        // 任一条不满足就落到 Bing——不是"降级报错"，是本来就支持的两条路。
+        let mut fallback_note = String::new();
+        if let Some(deepseek) = &self.deepseek {
+            if deepseek.engine() == crate::deepseek_search::SearchEngine::DeepSeek
+                && deepseek.available()
+            {
+                match deepseek.search(query, max_results, false).await {
+                    Ok(hits) => {
+                        return Ok(crate::deepseek_search::render_hits(query, &hits));
+                    }
+                    Err(error) => {
+                        // 关键：**不把搜索整体判失败**。DeepSeek 侧 402/429/网络
+                        // 抖动时，Bing 往往还能给出可用答案；把原因写在结果尾部
+                        // 让人知道"这次是兜底"。
+                        fallback_note = format!(
+                            "\n\n（注：DeepSeek 搜索失败已回退 Bing —— {error}）"
+                        );
+                    }
+                }
+            }
+        }
+
         let results = search_bing(&self.client, query, max_results).await?;
         // Filter junk (Bing navigation pages, duplicates, irrelevant entries),
         // then cap to the requested count.
@@ -80,7 +121,7 @@ impl Tool for WebSearchTool {
         results.truncate(max_results);
 
         if results.is_empty() {
-            return Ok(format!("未搜索到关于“{query}”的结果。"));
+            return Ok(format!("未搜索到关于“{query}”的结果。{fallback_note}"));
         }
 
         let mut out = Vec::new();
@@ -96,7 +137,7 @@ impl Tool for WebSearchTool {
             }
             out.push(block);
         }
-        Ok(out.join("\n\n"))
+        Ok(format!("{}{fallback_note}", out.join("\n\n")))
     }
 }
 

@@ -40,6 +40,11 @@ fn default_stream_output() -> bool {
     true
 }
 
+/// 搜索后端的出厂默认：Bing（无密钥依赖，任何环境都能用）。
+fn default_web_search_engine() -> String {
+    "bing".to_string()
+}
+
 /// A team member (`[agent.teams.{id}]`, legacy `[agent.profiles.{id}]`).
 ///
 /// Each member is instantiated as an independent `Agent` with its own
@@ -227,13 +232,19 @@ pub struct AgentConfig {
     /// 可查询（DeepSeek 端点）profile 的余额写入本地 `echo-balances.jsonl`。
     #[serde(default = "default_balance_snapshot_secs")]
     pub balance_snapshot_secs: u64,
-    /// 主对话流式输出（2026-10，缺省 true）：模型增量经
-    /// `AgentContentDelta` / `AgentReasoningDelta` 实时转发（~40ms 合并批），
-    /// 终值仍以 `AgentOutput` / `AgentReasoning` 全量收敛（消费端做对账）。
     /// 关闭则退回整段到达（客户端动画）。仅主对话 turn 生效——子代理 /
     /// 上下文摘要等内部调用始终非流式。
     #[serde(default = "default_stream_output")]
     pub stream_output: bool,
+    /// 网页搜索后端引擎：`"bing"`（默认，公开 RSS、无需密钥）或 `"deepseek"`
+    /// （DeepSeek 官方 Search & Fetch API，需 `[agent].api_key` 或某个
+    /// `provider = "deepseek"` 的 profile 带密钥）。
+    ///
+    /// `"deepseek"` 时 `web_search` 走官方 Search API，失败回落 Bing（原因写在
+    /// 结果尾部）；`read_url` 工具恒用官方 Fetch API。未知值按 `"bing"` 处理——
+    /// 配置写错不该让搜索能力整体消失。
+    #[serde(default = "default_web_search_engine")]
+    pub web_search_engine: String,
     /// 模型定价表（费用估算用；缺省 = 内置默认价 [`default_pricing`]）。
     /// 自定义后（含显式清空 `pricing = []` 禁用估算）会随配置持久化。
     #[serde(
@@ -272,6 +283,7 @@ impl Default for AgentConfig {
             context_window_tokens: None,
             balance_snapshot_secs: default_balance_snapshot_secs(),
             stream_output: true,
+            web_search_engine: default_web_search_engine(),
             pricing: default_pricing(),
         }
     }
