@@ -1125,3 +1125,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// 部署方是否把某个内置模块**交给了外部产物**。
+///
+/// 判据：`modules.toml` 里有同 id、`enabled = true`、`kind != "builtin"` 的行。
+///
+/// - `kind != "builtin"`：内置行是"配置它"，不是"换掉它"；
+/// - `enabled`：`enabled = false` 是"关掉"，内置那份仍该留在目录里
+///   （面板里随时能打开）——那与"换个实现"是两件事。
+///
+/// 读不到文件 / 解析失败一律 `false`：配置问题不该让宿主"以为要换实现"从而
+/// 少造一份内置能力（少造是静默降级，多造至少还能用）。
+pub fn declares_external(path: &Path, module_id: &str) -> bool {
+    let Some(tree) = load_tree(path) else {
+        return false;
+    };
+    tree.entries
+        .iter()
+        .any(|entry| {
+            entry.id == module_id
+                && entry.kind != echo_module_loader::EntryKind::Builtin
+                && entry.enabled
+        })
+}
+
+/// 已被外部条目顶替的内置模块 id 集合（装配期从模块目录里摘掉它们）。
+pub fn external_replaced_ids(entries: &[StaticModuleEntry]) -> std::collections::HashSet<String> {
+    entries
+        .iter()
+        .filter(|entry| entry.kind != "builtin" && entry.enabled)
+        .map(|entry| entry.id.clone())
+        .collect()
+}

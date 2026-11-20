@@ -158,7 +158,17 @@ jobs:
           echo "version $toml_version matches tag v$tag_version"
 
       - name: Build Core
-        run: cargo build --release --locked -p echo-agent-core
+        run: |
+          set -euo pipefail
+          # 外部仓模块与 Core 同一次调用构建（同一个 target 目录、同一套
+          # --locked）：它们已在 Cargo.lock 里 pin 了 commit，`-p` 直接可用。
+          #
+          # 名单必须与 install.sh / update.sh 的 EXTERNAL_MODULE_BINARIES 一致
+          # （Core 侧守护测试盯的是那两个脚本；这里漏一个，二进制安装的产物
+          # 就会缺模块，而那要到装完才看得出来）。
+          cargo build --release --locked \
+            -p echo-agent-core \
+            -p agent-module-checklist
 
       # 产物自检：二进制自报的版本必须与 tag 一致。上面的 Cargo.toml 检查是
       # "声明的版本对"，这一条是"编出来的东西真的是那一版"——防止 build.rs /
@@ -204,6 +214,12 @@ jobs:
           install -m 644 packaging/systemd/echo-agent-core.service.in \
             stage/systemd/echo-agent-core.service.in
 
+          # 外部模块二进制：与源码安装同一个落点（`modules/<包名>/<包名>`），
+          # 安装器按这个相对路径解包。
+          install -d -m 755 stage/modules/agent-module-checklist
+          install -m 755 target/release/agent-module-checklist \
+            stage/modules/agent-module-checklist/agent-module-checklist
+
           # glibc 基线：从**产物本身**读最高 `GLIBC_x.y` 符号版本，而不是直接抄
           # 构建机的 glibc。两者通常相等，但真值只有符号表知道——虚报会让本来能跑
           # 的老系统被安装器拦掉，漏报会让它在启动时炸出 `GLIBC_2.xx not found`。
@@ -233,7 +249,7 @@ jobs:
           name="echo-agent-core-${version}-linux-${ARCH}"
           tar -C stage -czf "$name.tar.gz" \
             --owner=0 --group=0 --numeric-owner --sort=name \
-            bin web skills config systemd manifest.json
+            bin web skills config systemd modules manifest.json
           sha256sum "$name.tar.gz" >"$name.tar.gz.sha256"
 
           echo "artifact: $name.tar.gz ($(du -h "$name.tar.gz" | cut -f1))"

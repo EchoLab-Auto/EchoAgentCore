@@ -196,11 +196,21 @@ derive_paths() {
 }
 derive_paths "$HOME" 1
 
-# 随框架一起安装的**进程外模块二进制**：仓库内 `source/modules/*` 中
-# `[[bin]] path = "src/main.rs"` 的 crate（`src/bin/*` 是测试夹具，不装）。
-# 守护测试 source/modules/core/tests/install_script_flag.rs 比对本表与仓库实际；
-# 新增/删除可安装模块二进制时，本表与 update.sh 的 MODULE_BINARIES 同改。
+# 随框架一起安装的**进程外模块二进制**，分两类：
+#
+#   MODULE_BINARIES            本仓 `source/modules/*` 里带
+#                              `[[bin]] path = "src/main.rs"` 的 crate
+#                              （`src/bin/*` 是测试夹具，不装）。
+#   EXTERNAL_MODULE_BINARIES   外部仓里、被 Core 以 git 依赖引入的模块
+#                              （`Cargo.lock` 已 pin commit，`--locked` 保证
+#                              可复现）。它们的源码不在本仓，但二进制随框架
+#                              一起发——否则"独立产物"只在开发机上成立。
+#
+# 两张表都装到同一处：`modules/<包名>/<包名>`。
+# 守护测试 source/modules/core/tests/install_script_flag.rs 分别比对两个来源；
+# 新增/删除时，本表与 update.sh 的同名表同改。
 MODULE_BINARIES=()
+EXTERNAL_MODULE_BINARIES=(agent-module-checklist)
 
 # 服务作用域（2026-10）：`user`（默认，`systemctl --user`）或 `system`
 # （`/etc/systemd/system`，`systemctl` 无 --user）。
@@ -676,7 +686,8 @@ fi
 build_args=(build --release --locked -p echo-agent-core)
 # 进程外模块二进制与 Core 同一次 cargo 调用构建（同一个 target 目录、
 # 同一套 --locked / 镜像参数），避免第二轮解析依赖。
-for _module in "${MODULE_BINARIES[@]}"; do
+# 外部模块也在同一个调用里：它是 Cargo.lock 的依赖，`-p` 直接可构建。
+for _module in "${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}"; do
     build_args+=(-p "$_module")
 done
 build_args+=(--manifest-path "$SOURCE_DIR/Cargo.toml")
@@ -734,8 +745,8 @@ snapshot_file "$BIN_DIR/echo-agent-core" "$ROLLBACK_DIR/launcher"
 snapshot_file "$SYSTEMD_DIR/echo-agent-core.service" "$ROLLBACK_DIR/core_unit"
 snapshot_file "$SYSTEMD_DIR/echo-agent-core-update.service" "$ROLLBACK_DIR/update_unit"
 snapshot_file "$CORE_CONFIG" "$ROLLBACK_DIR/core_config"
-for _module in "${MODULE_BINARIES[@]}"; do
-    snapshot_file "$MODULES_DIR/$_modules/$_module" "$ROLLBACK_DIR/module-$_module"
+for _module in "${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}"; do
+    snapshot_file "$MODULES_DIR/$_module/$_module" "$ROLLBACK_DIR/module-$_module"
 done
 snapshot_file "$STATE_DIR/installed-revision" "$ROLLBACK_DIR/revision"
 snapshot_file "$STATUS_FILE" "$ROLLBACK_DIR/status"
@@ -749,8 +760,8 @@ install_rollback() {
     if [[ "${INSTALL_TRANSACTION:-0}" == 1 ]]; then
         restore_file "$LIBEXEC_DIR/echo-agent-core-bin" "$ROLLBACK_DIR/binary"
         restore_file "$LIBEXEC_DIR/update.sh" "$ROLLBACK_DIR/updater"
-        for _module in "${MODULE_BINARIES[@]}"; do
-            restore_file "$MODULES_DIR/$_modules/$_module" "$ROLLBACK_DIR/module-$_module"
+        for _module in "${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}"; do
+            restore_file "$MODULES_DIR/$_module/$_module" "$ROLLBACK_DIR/module-$_module"
         done
         restore_file "$BIN_DIR/echo-agent-core" "$ROLLBACK_DIR/launcher"
         restore_file "$SYSTEMD_DIR/echo-agent-core.service" "$ROLLBACK_DIR/core_unit"
@@ -785,7 +796,7 @@ install -m 755 "$SOURCE_DIR/target/release/echo-agent-core" "$binary_temporary"
 mv -f "$binary_temporary" "$LIBEXEC_DIR/echo-agent-core-bin"
 # 进程外模块二进制：`modules/<包名>/<二进制>`——modules.toml 的 command
 # 直接指这里。目录一次建好，便于用户往同一处放自己的模块。
-for _module in "${MODULE_BINARIES[@]}"; do
+for _module in "${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}"; do
     module_dir="$MODULES_DIR/$_module"
     install -d -m 755 "$module_dir"
     module_temporary=$(mktemp "$module_dir/$_module.new.XXXXXX")

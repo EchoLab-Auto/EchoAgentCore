@@ -540,3 +540,52 @@ fn downloads_have_a_total_timeout() {
         "download 应设总超时（--connect-timeout 不覆盖读数据阶段）"
     );
 }
+
+/// release 产物必须带**外部模块二进制**，且安装器把两者装到同一个落点。
+///
+/// 三方必须一致：`release.yml` 打包路径、`install-binary.sh` 解包路径、
+/// 源码安装的 `modules/<包名>/<包名>`。任何一处不同，得到的都是"装完少了
+/// 一个模块"，而那时离发布已经很远。
+#[test]
+fn external_module_artifact_paths_agree() {
+    let workflow = read_file(&repo_root().join(".github/workflows/release.yml"));
+    let binary = read_script("install-binary.sh");
+    let install = read_script("install.sh");
+
+    // 1) release.yml：构建 + 放进 stage/modules/<包名>/<包名> + 打进 tar
+    assert!(
+        workflow.contains("-p agent-module-checklist"),
+        "release.yml 应构建外部模块二进制（否则产物里没有它）"
+    );
+    assert!(
+        workflow.contains("stage/modules/agent-module-checklist/agent-module-checklist"),
+        "release.yml 应把模块二进制放到 stage/modules/<包名>/<包名>"
+    );
+    assert!(
+        workflow.contains("systemd modules manifest.json"),
+        "release.yml 的 tar 应包含 modules/ 目录"
+    );
+
+    // 2) install-binary.sh：解包后装到 $MODULES_DIR/<包名>/<包名>，并列进必需项
+    assert!(
+        binary.contains("$MODULES_DIR/$module_name"),
+        "install-binary.sh 应把模块装到 $MODULES_DIR/<包名>"
+    );
+    assert!(
+        binary.contains("skills modules"),
+        "install-binary.sh 应把 modules/ 列为产物必需项（缺了要报错，不能装完少功能）"
+    );
+
+    // 3) 源码安装同一落点（`modules/<包名>/<包名>`，由 apply_paths 保证）
+    assert!(
+        install.contains(r#"module_dir="$MODULES_DIR/$_module""#),
+        "install.sh 与 install-binary.sh 的模块落点必须一致"
+    );
+
+    // 4) 两张脚本表名单一致（install.sh 的守护在 install_script_flag.rs，
+    //    这里只确认二进制安装器知道自己该启用哪一个）
+    assert!(
+        binary.contains("\"agent-module-checklist\""),
+        "install-binary.sh 应知道模块名，才能写 modules.toml 的启用行"
+    );
+}

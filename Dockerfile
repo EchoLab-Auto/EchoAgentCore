@@ -138,6 +138,11 @@ COPY --from=builder /app/target/release/echo-agent-core /usr/local/bin/echo-agen
 # QQ 适配器模块：默认派生名 + 原包名（两者同一份二进制，谁先被找到都一样）。
 COPY --from=adapter-builder /adapter/target/release/agent-module-adapter-qq /usr/local/bin/echo-adapter-qq
 RUN ln -sf /usr/local/bin/echo-adapter-qq /usr/local/bin/agent-module-adapter-qq
+# 任务清单模块：**独立产物**（不是编进 echo-agent-core 的那份）。
+# 落点与源码/二进制安装一致：`<libexec>/modules/<包名>/<包名>`。
+# 容器里 libexec 用 /usr/local/libexec（见 entrypoint 的 ECHO_PREFIX 约定）。
+COPY --from=builder /app/target/release/agent-module-checklist \
+     /usr/local/libexec/echo-agent-core/modules/agent-module-checklist/agent-module-checklist
 COPY config/echo-agent-core.toml /app/config/echo-agent-core.toml
 COPY skills /app/skills
 COPY docker/entrypoint.sh /usr/local/bin/echo-agent-entrypoint

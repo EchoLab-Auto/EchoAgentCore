@@ -89,6 +89,18 @@ fn module_binaries(script: &str) -> Vec<String> {
     rest[..end].split_whitespace().map(str::to_string).collect()
 }
 
+/// 从脚本里抠出 `EXTERNAL_MODULE_BINARIES=(...)` 的条目。
+fn external_module_binaries(script: &str) -> Vec<String> {
+    let start = script
+        .find("EXTERNAL_MODULE_BINARIES=(")
+        .unwrap_or_else(|| panic!("script should declare EXTERNAL_MODULE_BINARIES"));
+    let rest = &script[start + "EXTERNAL_MODULE_BINARIES=(".len()..];
+    let end = rest
+        .find(')')
+        .unwrap_or_else(|| panic!("unterminated EXTERNAL_MODULE_BINARIES"));
+    rest[..end].split_whitespace().map(str::to_string).collect()
+}
+
 /// 仓库里**可安装**的进程外模块 crate：`source/modules/*/Cargo.toml` 中声明了
 /// `[[bin]] path = "src/main.rs"` 的包；`core` 是宿主二进制，显式排除。
 ///
@@ -131,7 +143,7 @@ fn installable_module_packages() -> Vec<String> {
 }
 
 /// 安装器与仓库实际一致：install.sh / update.sh 的 `MODULE_BINARIES` 必须
-/// 等于「可安装的进程外模块 crate」集合，且两个脚本彼此一致。
+/// 等于「本仓可安装的进程外模块 crate」集合，且两个脚本彼此一致。
 ///
 /// 为什么要有这条：自更新与首装装的是**同一套**模块二进制（Core 与模块必须
 /// 配套升级）。新增一个模块 crate 却忘了写进清单 → 装机后 `modules.toml`
@@ -159,6 +171,40 @@ fn module_binary_lists_match_the_workspace() {
     );
 }
 
+/// 外部仓模块二进制（`EXTERNAL_MODULE_BINARIES`）：**必须是真的 git 依赖**。
+///
+/// 与上面那条的分工：`MODULE_BINARIES` 是"本仓目录里的 crate"（判据是扫描
+/// 目录），外部模块的源码根本不在本仓，无法用同一条判据。这里的判据改成
+/// "写进 `Cargo.toml` 的 workspace 依赖里，名字对得上"——它保证表里不会有
+/// 幽灵条目（拼错名 / 已删的仓），那种错在装机时才暴露，报错还是
+/// "package not found"。
+#[test]
+fn external_module_binaries_are_real_git_dependencies() {
+    let install = read_script("install.sh");
+    let update = read_script("update.sh");
+    let mut from_install = external_module_binaries(&install);
+    let mut from_update = external_module_binaries(&update);
+    from_install.sort();
+    from_update.sort();
+
+    assert_eq!(
+        from_install, from_update,
+        "install.sh 与 update.sh 的 EXTERNAL_MODULE_BINARIES 必须一致（同一套二进制）"
+    );
+
+    let manifest_path = repo_root().join("Cargo.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
+    for package in &from_install {
+        let pattern = format!("{package} = {{ git = ");
+        assert!(
+            manifest.contains(&pattern),
+            "EXTERNAL_MODULE_BINARIES 里的 `{package}` 不是根 Cargo.toml 的 git 依赖；\
+             外部模块必须由 Core 以 git 依赖引入（否则 `cargo build -p {package}` 找不到）"
+        );
+    }
+}
+
 /// 模块目录约定接线：install.sh 建目录并把二进制装到 `modules/<包>/<包>`；
 /// update.sh 做版本化替换 + 回滚副本，且失败时能还原。
 #[test]
@@ -176,9 +222,13 @@ fn module_directory_install_and_rollback_are_wired() {
         install.contains(r#"mv -f "$module_temporary" "$module_dir/$_module""#),
         "install.sh 应原子替换模块二进制"
     );
+    // 路径是 `$MODULES_DIR/$_module/$_module`（`modules/<包名>/<包名>`）。
+    // 曾经这里是 `$_modules`（复数，从未定义）——当时 `MODULE_BINARIES` 恒空、
+    // 循环从不执行，`set -u` 也炸不出来，断言反而把这个笔误锁住了。表非空
+    // 之后它会立刻让安装与回滚失败，所以这条断言必须盯住正确的那一份。
     assert!(
-        install.contains(r#"snapshot_file "$MODULES_DIR/$_modules/$_module""#),
-        "install.sh 应把旧模块二进制纳入安装事务快照"
+        install.contains(r#"snapshot_file "$MODULES_DIR/$_module/$_module""#),
+        "install.sh 应把旧模块二进制纳入安装事务快照（路径 modules/<包名>/<包名>）"
     );
 
     let update = read_script("update.sh");

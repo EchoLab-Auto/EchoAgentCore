@@ -12,10 +12,13 @@ PREFIX=${ECHO_PREFIX:-"$HOME/.local"}
 # changes), falling back to the managed source checkout.
 DEFAULT_BINARY="$PREFIX/libexec/echo-agent-core/echo-agent-core-bin"
 # 随框架安装的进程外模块二进制（`modules/<包名>/<二进制>`）。
-# **必须与 install.sh 的 MODULE_BINARIES 一致**（守护测试：
+# **必须与 install.sh 的同名表一致**（守护测试：
 # source/modules/core/tests/install_script_flag.rs）；自更新与首装装同一套。
+#
+# 两张表的分工见 install.sh 的注释：本仓成员 vs 外部仓（git 依赖）。
 MODULES_DIR="$PREFIX/libexec/echo-agent-core/modules"
 MODULE_BINARIES=()
+EXTERNAL_MODULE_BINARIES=(agent-module-checklist)
 DEFAULT_STATUS_FILE="$STATE_HOME/echo-agent-core/update-status"
 DEFAULT_SOURCE_DIR="$DATA_HOME/echo-agent-core/source"
 
@@ -166,7 +169,7 @@ ROLLBACK_BINARY=""
 ROLLBACK_UPDATER=""
 # 每个模块二进制本次的回滚副本路径（assoc array；失败时逐个还原）。
 declare -A MODULE_ROLLBACKS=()
-SELECTED_MODULES=("${MODULE_BINARIES[@]}")
+SELECTED_MODULES=("${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}")
 HOT_SWAPPED=()
 temporary=""
 FINALIZED=0
@@ -455,7 +458,7 @@ select_update_scope() {
                 return 1
             fi
             UPDATE_SCOPE=full
-            SELECTED_MODULES=("${MODULE_BINARIES[@]}")
+            SELECTED_MODULES=("${MODULE_BINARIES[@]}" "${EXTERNAL_MODULE_BINARIES[@]}")
             return
         fi
     done

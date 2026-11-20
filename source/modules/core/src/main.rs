@@ -1232,6 +1232,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 存储根：**config 文件所在目录 / checklists**（不是 CWD，也不是
     // 进程级 global 槽）。这个 `Arc` 是进程内唯一实例：`make_agent` 按
     // persona 取 store，人格重建复用同一个 Arc；Agent 退场不销毁 store。
+    // 本部署是否把清单交给了**独立产物**（`modules.toml` 里 `echo-agent.checklist`
+    // 有启用的非 builtin 行）。是的话宿主不再造内置清单工具——否则它先占住
+    // `checklist` 这个名字，外部模块的工具注册时被当成重名跳过（实测 warn：
+    // "外部模块工具与已注册工具重名，已跳过该模块工具 tool=checklist"）。
+    //
+    // 这个判断必须在 **agent 工厂之前**：工厂闭包捕获它，而 `module_runtime`
+    // 在工厂之后才构建——所以这里提前读一次 `modules.toml`。
+    let checklist_external = modules_runtime::declares_external(
+        &args.config_path().with_file_name("modules.toml"),
+        agent_module_checklist::MODULE_ID,
+    );
     let checklist_root = factory_config_path
         .parent()
         .map(|parent| parent.join("checklists"))
@@ -1328,7 +1339,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     checklist_port,
                     // 清单工具由清单模块造（2026-11 拆出的独立模块）：
                     // 未挂载 = 这个 persona 没有 `checklist` 工具。
-                    agent_module_loop::tool::builtin::resolve_checklist_provider(&tool_ctx),
+                    // `Some(None)` = 本部署把清单交给了独立产物（见下）。
+                    if checklist_external {
+                        Some(None)
+                    } else {
+                        Some(agent_module_loop::tool::builtin::resolve_checklist_provider(
+                            &tool_ctx,
+                        ))
+                    },
                     agent_module_loop::tool::builtin::resolve_provider(&tool_ctx),
                     // Shell 工具由 shell 模块造（2026-11 拆出的独立模块）：
                     // 未挂载 = 这个 persona 没有 `bash-*` 工具，正是想要的效果。
@@ -1864,16 +1882,36 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 宿主适配器）。同一个实例挂进两层会让两层的槽互相覆盖——第一个人格的
         // 适配器被第二个人格顶掉，且无任何报错。所以每层重新构造一批。
         module_host.attach_root_ctx(ctx.clone());
+        // 被 `modules.toml` 的外部条目**顶替**的内置模块 id（根目录与人格
+        // 目录都要摘掉，否则同一份能力会注册两次）。
+        //
+        // 判据：`kind != "builtin"`（内置行是"配置它"）**且** `enabled`
+        // （`enabled = false` 是"关掉"，内置那份仍该留在目录里，面板随时能开）。
+        //
+        // 实测的两条硬错误就是这个缺口的症状：
+        //     module id already registered: echo-agent.checklist
+        //     service key `echo-agent.checklist.tools` is already provided
+        let replaced_by_external: std::collections::HashSet<String> = module_runtime
+            .as_ref()
+            .map(|runtime| modules_runtime::external_replaced_ids(&runtime.entries))
+            .unwrap_or_default();
         {
             let version = version.to_string();
             // 人格目录的工厂闭包要 `'static`：把宿主默认值先取出来（`cfg`
             // 本身活不到那儿，且 `CoreSection` 只有两个 String）。
             let core_section = cfg.core.clone();
+            let replaced = replaced_by_external.clone();
             module_host.set_persona_catalog(std::sync::Arc::new(move || {
                 match crate::builtin_modules::catalog_with(
                     &version,
                     external_builtin_modules(&version, &core_section),
-                ) {
+                )
+                .map(|mut catalog| {
+                    // 与根目录同一条判据：人格作用域也重新构造目录，漏了这一
+                    // 步就会让"被顶替"的内置模块在人格层复活。
+                    catalog.retain(|module| !replaced.contains(&module.manifest().id));
+                    catalog
+                }) {
                     Ok(catalog) => catalog,
                     Err(error) => {
                         // 目录构造失败（命令域重名 / 抢了保留命令）= 装配 bug，
@@ -1892,6 +1930,21 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             version,
             external_builtin_modules(version, &cfg.core),
         )?;
+        if !replaced_by_external.is_empty() {
+            let before = catalog.len();
+            catalog.retain(|module| {
+                let id = module.manifest().id.clone();
+                !replaced_by_external.contains(&id)
+            });
+            let dropped = before - catalog.len();
+            if dropped > 0 {
+                tracing::info!(
+                    dropped,
+                    replaced = ?replaced_by_external,
+                    "builtin modules replaced by external entries in modules.toml"
+                );
+            }
+        }
         // 配置驱动的两项在目录之后追加：平台实例（id 由 `[instances.<平台>]`
         // 派生）与外部条目（`modules.toml` 的非 builtin 行）——它们的"存在"
         // 取决于这份部署的配置，不该混进静态目录的签名。

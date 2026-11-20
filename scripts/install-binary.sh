@@ -547,7 +547,9 @@ UNPACK_DIR="$WORK_DIR/unpacked"
 install -d -m 700 "$UNPACK_DIR"
 echo "==> Unpacking artifact"
 tar -xzf "$artifact_file" -C "$UNPACK_DIR"
-for required in bin/echo-agent-core-bin manifest.json systemd/echo-agent-core.service.in config/echo-agent-core.toml skills; do
+# `modules/` 也列为必需：外部模块二进制是产物的一部分。缺了它不报错的话，
+# 装完只是"清单工具不见了"，而那时已经离发布很远，很难归因。
+for required in bin/echo-agent-core-bin manifest.json systemd/echo-agent-core.service.in config/echo-agent-core.toml skills modules; do
     if [[ ! -e "$UNPACK_DIR/$required" ]]; then
         echo "error: artifact is missing '$required' — not an EchoAgentCore release tarball" >&2
         exit 1
@@ -648,6 +650,11 @@ snapshot_file "$STATUS_FILE" "$ROLLBACK_DIR/status"
 if [[ -d "$PANEL_WEB_DIR" ]]; then
     cp -a -- "$PANEL_WEB_DIR" "$ROLLBACK_DIR/web"
 fi
+# 外部模块二进制：装的时候是"逐个原子替换"，回滚必须整体还原——
+# 新 Core + 旧清单模块（或反过来）会让协议版本对不上。
+if [[ -d "$MODULES_DIR" ]]; then
+    cp -a -- "$MODULES_DIR" "$ROLLBACK_DIR/modules"
+fi
 
 INSTALL_TRANSACTION=1
 INSTALL_PHASE=installing
@@ -665,6 +672,10 @@ install_rollback() {
         if [[ -d "$ROLLBACK_DIR/web" ]]; then
             rm -rf -- "$PANEL_WEB_DIR"
             cp -a -- "$ROLLBACK_DIR/web" "$PANEL_WEB_DIR"
+        fi
+        if [[ -d "$ROLLBACK_DIR/modules" ]]; then
+            rm -rf -- "$MODULES_DIR"
+            cp -a -- "$ROLLBACK_DIR/modules" "$MODULES_DIR"
         fi
         "${SYSTEMCTL[@]}" daemon-reload >/dev/null 2>&1 || true
         if [[ "${core_was_enabled:-0}" == 1 ]]; then
@@ -775,14 +786,17 @@ fi
 # 只在**文件不存在**时整份写；已存在时只追加缺失的条目（追加到末尾对 TOML 合法，
 # 因为都是顶层 `[[module]]` 数组元素），且绝不覆盖用户已有的同 id 行。
 write_modules_config() {
-    local panel_enabled=$1
-    local need_self_update=0 need_panel=0 fresh=0
+    local panel_enabled=$1 checklist_enabled=$2
+    local need_self_update=0 need_panel=0 need_checklist=0 fresh=0
     if [[ -f "$MODULES_CONFIG" ]]; then
         grep -q 'echo-agent\.selfupdate' "$MODULES_CONFIG" || need_self_update=1
         if ((panel_enabled)); then
             grep -q 'echo-agent\.panel\.web' "$MODULES_CONFIG" || need_panel=1
         fi
-        if ((need_self_update == 0 && need_panel == 0)); then
+        if ((checklist_enabled)); then
+            grep -q 'id = "echo-agent\.checklist"' "$MODULES_CONFIG" || need_checklist=1
+        fi
+        if ((need_self_update == 0 && need_panel == 0 && need_checklist == 0)); then
             echo "==> Preserved existing modules config: $MODULES_CONFIG"
             return 0
         fi
@@ -818,7 +832,23 @@ write_modules_config() {
                 '# 自动发现，不需要写 [module.config] static_dir。' \
                 '# 改监听地址/端口：' \
                 '#   [module.config]' \
-                '#   bind = "127.0.0.1:8081"'
+                '#   bind = "127.0.0.1:8081"' \
+                ''
+            if ((checklist_enabled)); then
+                printf '%s\n' \
+                    '# 任务清单：**独立产物**（不是编译进 Core 的那份）。' \
+                    '# 与内置行同 id —— loader 按 id 整体替换，所以内置那份不会被' \
+                    '# 挂载，工具只注册一次。数据目录按 persona 各一份 JSON。' \
+                    '[[module]]' \
+                    'id = "echo-agent.checklist"' \
+                    'kind = "stdio"' \
+                    'enabled = true' \
+                    "command = \"$MODULES_DIR/agent-module-checklist/agent-module-checklist\"" \
+                    '' \
+                    '[module.config]' \
+                    "data_dir = \"$DATA_DIR/checklists\"" \
+                    ''
+            fi
             if ((panel_enabled)); then
                 printf '%s\n' \
                     '[[module]]' \
@@ -846,6 +876,20 @@ write_modules_config() {
                     'enabled = false' \
                     ''
             fi
+            if ((need_checklist)); then
+                if [[ -s "$modtmp" ]]; then printf '\n'; fi
+                printf '%s\n' \
+                    '# 任务清单：独立产物形态（见 install-binary.sh）。' \
+                    '[[module]]' \
+                    'id = "echo-agent.checklist"' \
+                    'kind = "stdio"' \
+                    'enabled = true' \
+                    "command = \"$MODULES_DIR/agent-module-checklist/agent-module-checklist\"" \
+                    '' \
+                    '[module.config]' \
+                    "data_dir = \"$DATA_DIR/checklists\"" \
+                    ''
+            fi
             if ((need_panel)); then
                 if [[ -s "$modtmp" ]]; then printf '\n'; fi
                 printf '%s\n' \
@@ -861,7 +905,38 @@ write_modules_config() {
     chmod 644 -- "$MODULES_CONFIG"
     echo "==> Wrote modules config: $MODULES_CONFIG"
 }
-write_modules_config "$INSTALL_PANEL"
+INSTALL_PHASE=modules
+# 外部模块二进制：与源码安装同一落点 `modules/<包名>/<包名>`。
+# 逐个原子替换（`install` 到临时名再 `mv`），失败由事务守卫整体回滚。
+installed_modules=()
+if [[ -d "$UNPACK_DIR/modules" ]]; then
+    for module_src in "$UNPACK_DIR"/modules/*/; do
+        [[ -d "$module_src" ]] || continue
+        module_name=$(basename -- "$module_src")
+        binary="$module_src$module_name"
+        [[ -x "$binary" ]] || {
+            echo "error: module directory '$module_name' has no executable '$module_name'" >&2
+            exit 1
+        }
+        module_dir="$MODULES_DIR/$module_name"
+        install -d -m 755 "$module_dir"
+        module_temporary=$(mktemp "$module_dir/$module_name.new.XXXXXX")
+        install -m 755 "$binary" "$module_temporary"
+        mv -f "$module_temporary" "$module_dir/$module_name"
+        installed_modules+=("$module_name")
+        echo "==> Installed module binary: $module_dir/$module_name"
+    done
+    unset module_src module_name binary module_dir module_temporary
+fi
+
+# 模块二进制装上了才在 modules.toml 里启用它 —— 配置指向一个不存在的
+# 可执行文件时，Core 会以 "module start failed" 起来但仍算启动成功，
+# 那种半死状态最难查。
+checklist_installed=0
+for _m in "${installed_modules[@]}"; do
+    [[ "$_m" == "agent-module-checklist" ]] && checklist_installed=1
+done
+write_modules_config "$INSTALL_PANEL" "$checklist_installed"
 
 INSTALL_PHASE=launcher
 launcher_temporary=$(mktemp "$BIN_DIR/echo-agent-core.new.XXXXXX")
@@ -1010,7 +1085,7 @@ for rollback_file in "$ROLLBACK_DIR"/*; do
         rm -f -- "$rollback_file"
     fi
 done
-rm -rf -- "$ROLLBACK_DIR/web"
+rm -rf -- "$ROLLBACK_DIR/web" "$ROLLBACK_DIR/modules"
 rmdir "$ROLLBACK_DIR" 2>/dev/null || true
 
 if [[ "$SERVICE_SCOPE" == system ]]; then

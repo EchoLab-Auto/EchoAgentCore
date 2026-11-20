@@ -63,7 +63,15 @@ pub fn build_registry(
     // 由组合根按 `ChecklistRuntime` 的 per-persona store 构造。
     checklist_port: Option<agent_module_checklist::ChecklistPort>,
     // 清单工具的构造契约（2026-11 拆出 agent-module-checklist）。
-    checklist_provider: Option<std::sync::Arc<dyn agent_module_checklist::ChecklistToolProvider>>,
+    //
+    // `Some(None)` = **这个部署把清单交给了独立产物**；此时不再回退
+    // standalone 实现，否则内置工具会先占住 `checklist` 这个名字，外部模块
+    // 的工具注册时被当成重名跳过（实测：
+    // "外部模块工具与已注册工具重名，已跳过该模块工具 tool=checklist"）。
+    //
+    // `Some(Some(p))` = 模块已挂载，用它的 provider。
+    // `None` = 装配期（模块尚未挂载），回退 standalone——这是既有行为。
+    checklist_provider: Option<Option<std::sync::Arc<dyn agent_module_checklist::ChecklistToolProvider>>>,
     provider: Option<std::sync::Arc<dyn BuiltinToolProvider>>,
     shell_provider: Option<std::sync::Arc<dyn ShellToolProvider>>,
 ) -> crate::tool::ToolRegistry {
@@ -82,12 +90,23 @@ pub fn build_registry(
     // 它有自己的持久化真值（per-persona store）与包标签（`echo-agent.checklist`），
     // 宿主只把端口递过去。降级口径与 shell 一致：装配期模块尚未挂载时回退到
     // standalone 实现，persona 门控与包级启停仍在运行期生效。
-    let checklist_provider =
-        checklist_provider.unwrap_or_else(agent_module_checklist::standalone_provider);
-    let checklist_registry = checklist_provider.registry(&agent_module_checklist::ChecklistHostCtx {
-        port: checklist_port,
-    });
-    merge_registry(&mut registry, checklist_registry);
+    //
+    // `Some(None)`（部署方声明清单由独立产物提供）时**不注册任何内置清单
+    // 工具**：那份能力归外部模块，宿主再造一个只会撞名。
+    match checklist_provider {
+        Some(None) => {}
+        other => {
+            let provider = match other {
+                Some(Some(provider)) => provider,
+                _ => agent_module_checklist::standalone_provider(),
+            };
+            let checklist_registry =
+                provider.registry(&agent_module_checklist::ChecklistHostCtx {
+                    port: checklist_port,
+                });
+            merge_registry(&mut registry, checklist_registry);
+        }
+    }
 
     // Shell 会话工具（`bash-start` / `bash-exec` / `bash-stop`）**由 shell 模块
     // 造**（2026-11）：它知道这些工具该打什么包标签、需要什么端口。宿主只把

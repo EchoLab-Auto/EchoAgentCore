@@ -63,7 +63,9 @@ async fn render_tool_catalog() -> String {
         // 清单端口：目录生成用内存 store（文档只关心工具定义，不关心状态）。
         None,
         // 清单工具由清单模块造：目录里必须有 `checklist`，所以给它 standalone。
-        Some(agent_module_checklist::standalone_provider()),
+        // 外层 `Some` = "宿主自己决定用哪个 provider"；内层才是 provider 本身
+        // （`Some(None)` 表示"这个部署交给独立产物"，见 `build_registry`）。
+        Some(Some(agent_module_checklist::standalone_provider())),
         None,
         // Shell 工具（`bash-start` / `bash-exec` / `bash-stop`）由 shell 模块造
         // （2026-11 拆出）——目录要包含它们，所以这里给它一个 standalone provider。
