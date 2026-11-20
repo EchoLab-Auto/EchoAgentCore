@@ -581,4 +581,125 @@ fn external_module_hot_update_is_fail_closed_and_core_restart_free() {
         update.contains("BIN_REPLACED || UPDATER_REPLACED || MODULES_REPLACED"),
         "只替换模块二进制后失败也必须进入回滚事务"
     );
+    assert!(
+        update.contains("BIN_REPLACED || UPDATER_REPLACED || MODULES_REPLACED"),
+        "只替换模块二进制后失败也必须进入回滚事务"
+    );
+}
+
+/// 自更新必须能"交棒给自己"：`--remote` 合并到的版本若改了 `scripts/update.sh`，
+/// 磁盘上是新脚本、内存里是旧逻辑。旧逻辑不知道新版本要装什么，于是升级当场
+/// 少做一步，要等下**一次**更新才补上。
+///
+/// 实测（2026-11-20，0.1.0 → 0.3.0）：`EXTERNAL_MODULE_BINARIES` 从 0 条变 3 处，
+/// 升级当场 `libexec/modules` 连目录都没建，清单模块继续以内置那份挂载。
+///
+/// 上半段是接线断言，下半段是真跑一遍：造一个两 commit 的远端，第二个 commit
+/// 把脚本换成"写标记后退出"的版本，跑旧脚本，断言标记出现——证明交棒发生了。
+#[test]
+fn updater_hands_over_to_the_merged_version_of_itself() {
+    let update = read_script("update.sh");
+    for required in [
+        r#"ORIGINAL_ARGS=("$@")"#,
+        "ECHO_UPDATER_REEXEC",
+        r#"exec bash "$SOURCE_DIR/scripts/update.sh" "${ORIGINAL_ARGS[@]}""#,
+        r#"git -C "$SOURCE_DIR" diff --quiet "$current" "$TARGET" -- scripts/update.sh"#,
+        // 快路径必须连带核对模块二进制：修订号一致但模块没装，等于跑内置那份。
+        r#"[[ -x "$MODULES_DIR/$_p/$_p" ]]"#,
+    ] {
+        assert!(update.contains(required), "update.sh 缺少交棒接线：{required}");
+    }
+    assert!(
+        update.contains(r#"if [[ "${ECHO_UPDATER_REEXEC:-0}" != 1 ]]"#),
+        "交棒必须有单次守卫（否则两版对同一差异判读不一致时会无限重入）"
+    );
+
+    let tmp = std::env::temp_dir().join(format!("echo-updater-reexec-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+    let git = |dir: &Path, args: &[&str]| {
+        let output = Command::new("git")
+            .args(["-c", "user.name=guard", "-c", "user.email=guard@example.invalid"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    // 远端：第一个 commit 就是仓库里这份脚本（带交棒逻辑），第二个 commit 改到它。
+    let origin = tmp.join("origin");
+    std::fs::create_dir_all(origin.join("scripts")).expect("create origin");
+    git(&origin, &["-c", "init.defaultBranch=main", "init", "-q"]);
+    std::fs::write(origin.join("Cargo.toml"), "[workspace]\n").expect("write manifest");
+    std::fs::write(origin.join("scripts/update.sh"), &update).expect("write update.sh");
+    git(&origin, &["add", "-A"]);
+    git(&origin, &["commit", "-qm", "the updater under test"]);
+
+    let handoff = update.replacen(
+        "set -Eeuo pipefail\n",
+        "set -Eeuo pipefail\nprintf 'handed-over\\n' >\"${ECHO_TEST_MARKER:?}\"\nexit 0\n",
+        1,
+    );
+    assert_ne!(handoff, update, "应能注入标记钩子");
+    std::fs::write(origin.join("scripts/update.sh"), &handoff).expect("write new update.sh");
+    git(&origin, &["add", "-A"]);
+    git(&origin, &["commit", "-qm", "a newer updater"]);
+
+    let work = tmp.join("src");
+    git(&tmp, &["clone", "-q", origin.to_str().expect("utf8"), work.to_str().expect("utf8")]);
+    git(&work, &["checkout", "-q", "-B", "main", "HEAD~1"]);
+
+    // 脚本要求 cargo / systemctl 在 PATH 上；交棒发生在构建之前，桩函数不干活。
+    let stubs = tmp.join("stubs");
+    std::fs::create_dir_all(&stubs).expect("create stubs");
+    for name in ["cargo", "systemctl"] {
+        let path = stubs.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 1\n").expect("write stub");
+        Command::new("chmod")
+            .arg("+x")
+            .arg(&path)
+            .status()
+            .expect("chmod stub");
+    }
+
+    let marker = tmp.join("marker");
+    let status = tmp.join("status");
+    let path_env = format!("{}:{}", stubs.display(), std::env::var("PATH").unwrap_or_default());
+    let output = Command::new("bash")
+        .arg(work.join("scripts/update.sh"))
+        .args(["--remote", "--source"])
+        .arg(&work)
+        .arg("--binary")
+        .arg(tmp.join("prefix/echo-agent-core-bin"))
+        .arg("--status")
+        .arg(&status)
+        .env("PATH", &path_env)
+        .env("ECHO_TEST_MARKER", &marker)
+        .env("ECHO_SERVICE_SCOPE", "user")
+        .env("XDG_STATE_HOME", tmp.join("state"))
+        .env("XDG_DATA_HOME", tmp.join("data"))
+        .output()
+        .expect("run update.sh");
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        marker.exists(),
+        "合并到含新脚本的版本后没有交棒（标记文件未生成）；stderr:\n{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("read marker").trim(),
+        "handed-over"
+    );
+    assert!(
+        stderr.contains("handing over to the new version"),
+        "交棒应留下可诊断的一行；stderr:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
 }

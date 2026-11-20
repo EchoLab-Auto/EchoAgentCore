@@ -93,6 +93,10 @@ Options:
 EOF
 }
 
+# 原始命令行：`--remote` 合并到含新脚本的版本后要重入（见下面的 re-exec 段），
+# 而解析循环按位置 shift 掉了，所以先留一份。set -u 下用 `+` 展开，空参数也安全。
+ORIGINAL_ARGS=("$@")
+
 while (($#)); do
     case "$1" in
         --source)
@@ -339,7 +343,10 @@ fi
 
 # Holding the lock means no other update is running, so a leftover "running"
 # state belongs to an interrupted attempt. Record it before continuing.
-if [[ -f "$STATUS_FILE" ]] && grep -q '^state=running' "$STATUS_FILE" 2>/dev/null; then
+# 例外：本进程是上一轮 `exec` 交棒来的（`ECHO_UPDATER_REEXEC=1`，同一个 PID、
+# 同一把锁），那条 running 是**本次尝试自己**刚写的，不是中断残留。
+if [[ "${ECHO_UPDATER_REEXEC:-0}" != 1 ]] \
+    && [[ -f "$STATUS_FILE" ]] && grep -q '^state=running' "$STATUS_FILE" 2>/dev/null; then
     write_status interrupted "previous update was interrupted; starting a new attempt" "$(cat "$REVISION_FILE" 2>/dev/null || true)"
 fi
 installed=$(cat "$REVISION_FILE" 2>/dev/null || true)
@@ -399,10 +406,40 @@ else
     fi
     git -C "$SOURCE_DIR" merge --ff-only "$TARGET"
 
+    # ── 自交棒：本次合并可能改到本脚本自身 ──────────────────────────────
+    # bash 在启动时就把整份脚本读进内存了；`git merge` 之后磁盘上的是新脚本，
+    # 但**继续往下执行的是旧逻辑**。凡是"新版本要装新东西 / 新增一张表"的升级，
+    # 旧逻辑都不知道该做什么，于是整整晚一个版本才生效——实测 0.1.0 → 0.3.0：
+    # 新旧脚本的 EXTERNAL_MODULE_BINARIES 从 0 条变 3 处，而升级当场一行模块
+    # 安装代码都没跑，`libexec/modules` 连目录都没建。
+    #
+    # 所以合并后先看本脚本是否在本轮变更；是就用新脚本重新跑一遍（同一批参数）。
+    # `exec` 而不是子进程：fd 9 的锁随之交给新进程（同一个 PID，systemd 的
+    # TimeoutStartSec 也继续算在这一个进程上），新脚本重开 fd 9 时旧锁自然释放，
+    # 中间不存在"父进程攥着锁、子进程 flock -n 报 busy 直接退出"的坑。
+    # 守卫变量保证只交棒一次：万一两版脚本对同一差异判读不一致，也不会无限循环。
+    if [[ "${ECHO_UPDATER_REEXEC:-0}" != 1 ]] \
+        && ! git -C "$SOURCE_DIR" diff --quiet "$current" "$TARGET" -- scripts/update.sh 2>/dev/null; then
+        export ECHO_UPDATER_REEXEC=1
+        write_status running "scripts/update.sh changed by this revision; re-executing the new updater" "$TARGET"
+        echo "==> scripts/update.sh changed in this update; handing over to the new version" >&2
+        exec bash "$SOURCE_DIR/scripts/update.sh" "${ORIGINAL_ARGS[@]}"
+    fi
+
+    # 快路径：修订号一致还不够——模块二进制可能没装（旧脚本漏装 / 手工删过）。
+    # 那种安装看起来"已是最新"，实际跑的是内置那份；不修就一直修不好。
     if [[ "$installed" == "$TARGET" && -x "$BINARY" ]]; then
-        write_status current "already up to date" "$TARGET"
-        FINALIZED=1
-        exit 0
+        missing_installed=""
+        for _p in "${SELECTED_MODULES[@]}"; do
+            [[ -x "$MODULES_DIR/$_p/$_p" ]] || missing_installed+=" $_p"
+        done
+        unset _p
+        if [[ -z "$missing_installed" ]]; then
+            write_status current "already up to date" "$TARGET"
+            FINALIZED=1
+            exit 0
+        fi
+        echo "==> revision matches but module binaries are missing:${missing_installed}; repairing" >&2
     fi
 fi
 
