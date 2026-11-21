@@ -24,7 +24,7 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 
 | 覆盖层 | 组件 | 载体与层位 | 入口 | 契约 |
 | --- | --- | --- | --- | --- |
-| 会话区覆盖面板（七项） | `SessionOverlay`（内容为 `SessionSwitcher` / `WorkspacePanel` / `InstancePanel` / `TasksPanel` / `ChecklistSidebar` / `ContextView` / `AgentConfigModal`） | 会话视图内绝对定位（`top: 0`、`bottom` = 入口行顶，横向扣边栏留白，`z-index: 6`） | 入口行按钮 | 本文「会话区覆盖面板」 |
+| 会话区覆盖面板（壳体六项 + 扩展项） | `SessionOverlay`（壳内置内容为 `SessionSwitcher` / `WorkspacePanel` / `InstancePanel` / `TasksPanel` / `ContextView` / `AgentConfigModal`；扩展经 `PanelExtensionEntries` 复用同一个外壳，如清单面板 `extension:echo-agent.checklist:checklist`） | 会话视图内绝对定位（`top: 0`、`bottom` = 入口行顶，横向扣边栏留白，`z-index: 6`） | 入口行按钮 | 本文「会话区覆盖面板」 |
 | 上下文占用 | `ContextView` | 同上外壳（内容自带头部） | 入口行「上下文」（受 `echo-agent.management.panel` 模块门控） | 本文「会话区覆盖面板」 |
 | Agent 配置 | `AgentConfigModal` | 同上外壳 | 入口行「配置」 | 本文「会话区覆盖面板」 |
 | 全局确认 | `ConfirmDialog` | 库 `NeumorphismModal`（App 根挂载一次，`size=small`） | 任意组件调 `confirmDialog()` | 本文「全局确认与确认形式」 |

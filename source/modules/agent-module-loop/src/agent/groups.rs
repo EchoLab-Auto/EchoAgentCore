@@ -79,7 +79,7 @@ pub(crate) struct EventEgress {
     ///
     /// 工具用 `Tool::state_key` 声明"我有可见状态"，而"这状态长什么线上事件"
     /// 是**协议形状**——它由绑定这个工具的模块给出，不由执行链按工具名猜。
-    /// 例：`agent-module-tools` 注册 `checklist → ChecklistUpdated`。
+    /// 例：某个有状态工具的模块注册 `state_key → 它自己声明的事件形状`。
     ///
     /// 与出口同组的原因：这张表**就是**出口的一部分（它决定"状态的出口形状"）。
     pub(crate) state_events:

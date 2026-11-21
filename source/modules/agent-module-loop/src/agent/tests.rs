@@ -288,7 +288,7 @@ async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
             .lock()
             .unwrap()
             .iter()
-            .any(|e| matches!(e, BackendEvent::ChecklistUpdated { .. })),
+            .any(|e| matches!(e, BackendEvent::ModuleEvent { .. })),
         "没有绑定时不该发绑定产出的事件"
     );
 
@@ -302,10 +302,13 @@ async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
                 .lock()
                 .unwrap()
                 .push((session_id.to_string(), state.to_string()));
-            BackendEvent::ChecklistUpdated {
-                session_id: session_id.to_string(),
-                team_id: None,
-                state: state.clone(),
+            // 绑定返回的事件形状由声明方决定；这里用通用的 `ModuleEvent`
+            // 当样本（清单模块外置后，宿主协议里已经没有"清单"这个变体）。
+            BackendEvent::ModuleEvent {
+                module: "test.binding".into(),
+                name: format!("state:{session_id}"),
+                payload: state.clone(),
+                at_ms: 0,
             }
         }),
     );
@@ -331,7 +334,7 @@ async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
             .lock()
             .unwrap()
             .iter()
-            .any(|e| matches!(e, BackendEvent::ChecklistUpdated { .. })),
+            .any(|e| matches!(e, BackendEvent::ModuleEvent { .. })),
         "绑定产出的事件必须到达事件出口"
     );
 }

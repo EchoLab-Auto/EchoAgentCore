@@ -1324,13 +1324,6 @@ impl Agent {
                 session_id,
                 team_id,
             },
-            BackendEvent::ChecklistUpdated {
-                session_id, state, ..
-            } => BackendEvent::ChecklistUpdated {
-                session_id,
-                state,
-                team_id,
-            },
             BackendEvent::AgentReasoning {
                 session_id,
                 branch_id,

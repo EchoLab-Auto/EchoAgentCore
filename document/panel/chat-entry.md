@@ -19,7 +19,7 @@ y: 552
 | Agent 切换 | 见[桌面端布局](./desktop-layout.md)「Agent 切换器」；菜单与本节其它六项共用 `PanelPopover`（此前是入口行内的就地绝对定位弹层，窄屏会被横滚容器裁掉） |
 | 配置 | 打开 AgentConfigModal（当前 Agent 的能力配置）；无激活 Agent 时回退 teams[0]（`ChatView.vue` 的 `configTeam` computed） |
 | 上下文 | 打开 ContextView 弹层（**当前会话**的上下文明细；请求带 `session_id`，切换会话自动重拉、忽略他属陈旧快照；几何与「配置」弹层一致，点遮罩关闭，无返回按钮）。**面板默认展开全部块**（修正此前仅 base 展开、用户「看不到内容」的问题）；每块头部 = 种类徽标 + 名称 + token 数 + **占当前上下文总量的百分比**（<1% 显示 `<1%`；修正此前「相对最大块」口径的误读——小技能块显示 1%、大块显示 100%）；种类徽标覆盖 Core 全部 kind（含 `workspace`/`system-skill`，缺项会裸显英文）；名称自动剥掉与徽标重复的前缀（「常驻技能 · xx」→ 徽标「常驻技能」+ 名称「xx」）；**入口受 `echo-agent.management.panel` 模块对当前 Agent 门控**（`ChatView.vue` 的 `contextAvailable` computed） |
-| 清单 | `checklist` 工具可用或当前作用域已有清单时显示；工具禁用后保留只读入口，不删除状态。徽标为清单数，弹出只读清单卡、进度条和完成项；按 `(core, persona)` 精确取权限。聚合视图保留来源标签与复合身份，不能只按清单名作为卡片 key。快照同步与状态所有权见[工具系统](../modules/tools.md)。空态为「（暂无清单）」；未完成权威同步不能将旧缓存视为当前真值。 |
+| 清单（**扩展提供**） | **不是壳的内置项**：按钮、弹层与数据都在 `agent-module-checklist` 的 `panel-ui/` 扩展里（`entries` + `overlays` + `acceptEvent` 钩子），壳只渲染插槽（`PanelExtensionEntries`，overlay id 为 `extension:echo-agent.checklist:checklist`）。显隐由扩展自己的 `when` 决定：模块真的挂载 **且** 当前人格允许用该工具，或本地已有投影（工具禁用后保留只读回看，不删历史）。徽标数、聚合视图来源标签、空态文案与「未同步」标记同样是扩展的实现细节。快照与状态所有权见[工具系统](../modules/tools.md)§任务清单。 |
 | 会话 | 弹出 `SessionSwitcher`（多会话切换；**取代侧边栏会话卡**。显隐依赖会话归属完整——Core 侧三层保证见 [多 Agent](../core/agents.md)「会话模型」）：按平台分组列出当前智能体的会话（Local / 各平台私聊 / 各平台群聊 / 其他——当前只有 QQ），当前高亮、运行中带忙碌点，点击切换（聊天区按会话过滤；每个群/私聊有独立上下文，见 [多 Agent](../core/agents.md)「会话模型」）。**Local 分组含工作区通道**（`local:workspace:<id>:local_user`，昵称 = 工作区名，标签「工作区」）：选通道 = 激活对应工作区、选默认会话 = 取消激活（见 [多 Agent](../core/agents.md)「工作区会话与项目通道」）。**当前人格有多个可切换会话时显示**；切换 Agent 强制关闭 |
 | 工作区 | 弹出工作区会话面板（`WorkspacePanel`，普通宽度）：多会话管理（新建/编辑/删除/激活；每会话多个工作区目录）**+ 每会话多对话**（新建/重命名/删除/切换，经 `SaveWorkspaceSession` 全量 upsert；删对话要发 `ClearHistory` 一并清历史） |
 | 实例 | 弹出「实例管理」面板（见 [实例管理·任务·Shell](./instance-tasks.md)）——内容全由模块描述符决定，Panel 无平台专属逻辑；仅当前 Agent 启用实例模块时显示；切换 Agent 强制关闭 |
@@ -28,7 +28,7 @@ y: 552
 
 ## 弹出层几何与关闭语义
 
-除 Agent 切换外，入口行七项（清单 / 会话 / 工作区 / 实例 / 任务 / 上下文 / 配置）
+除 Agent 切换外，入口行含壳体六项（会话 / 工作区 / 实例 / 任务 / 上下文 / 配置）与**扩展提供的项**（当前有清单；见下表「扩展提供」行）
 打开的是**同一个外壳**：`SessionOverlay`（用户要求「统一成一种样式、大小等于
 会话消息区、唤起一个就关掉另一个」）。
 

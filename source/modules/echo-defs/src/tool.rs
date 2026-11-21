@@ -214,7 +214,7 @@ pub trait Tool: Send + Sync {
 
     /// Optional structured state snapshot for UI visualization. Tools that
     /// expose a state panel (e.g. checklist) override this; the agent emits
-    /// the returned value in a `ChecklistUpdated` event after each execution.
+    /// the returned value in whatever event the owning module declares after
     /// This is a UI projection that will move out of the definition layer
     /// (Phase 4: state panels become event subscriptions).
     ///
@@ -228,7 +228,7 @@ pub trait Tool: Send + Sync {
 
     /// 按**会话**过滤的 UI 投影快照（2026-10）。工具状态带会话维度时
     /// 覆盖此方法（checklist）；默认退化为 [`Self::snapshot`]——无会话
-    /// 维度的工具不受影响。事件侧（`ChecklistUpdated`）用本方法，避免把
+    /// 维度的工具不受影响。事件侧（模块自己声明的线上形状）用本方法，避免把
     /// 其他会话的状态挂到当前会话上广播。
     fn snapshot_for_session(&self, _session_id: &str) -> Option<Value> {
         self.snapshot()
@@ -257,7 +257,7 @@ pub trait Tool: Send + Sync {
     /// 本工具是否产生**可见状态**，以及该状态在线上的标识（2026-11）。
     ///
     /// 返回 `Some(key)` = "我执行完会有新状态，请广播"；`key` 是宿主侧
-    /// 协议映射表的键（例如 `"checklist"` → `ChecklistUpdated`）。
+    /// 协议映射表的键（由拥有该工具的模块声明，例如 `"tool.state"`）。
     ///
     /// 为什么放在 trait 上：执行链此前用 `if call.name == "checklist"` 判断，
     /// 等于把"哪个工具有状态面板"写成执行链里的一张名单——新增一个有状态的

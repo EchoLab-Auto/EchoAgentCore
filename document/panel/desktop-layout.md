@@ -88,7 +88,7 @@ Panel 覆写 ui-frame 的样式时，**裸类选择器压不过库**——库规
 | 拖动幽灵 | 200 | 边栏卡片拖拽幽灵（`RailDragGhost`，压住会话区一切悬浮元素） |
 | 模态 / Toast | 库管理 | `--nm-z-overlay: 400` / `--nm-z-toast: 500`，由 ui-frame 统一分配，始终高于应用层 |
 
-清单卡是入口行覆盖面板（`SessionOverlay`）的内容，`.checklist-float` 只是面板内的 sticky 容器（`z-index: 3`），**不再**在会话视图里独立悬浮；面板宽度大于卡片所需，故在 `ChatView` 里额外限宽 640px。
+扩展提供的覆盖层（如清单面板）与壳内置项共用 `SessionOverlay` 外壳：内容、限宽与内部粘性容器都由**扩展自己**决定，壳不再为任何具体面板保留样式与 z-index 段位。
 
 ## 三、主题与设计令牌
 

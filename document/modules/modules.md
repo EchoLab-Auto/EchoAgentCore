@@ -104,6 +104,28 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 握手中经 `Register.manifest` 自述，宿主据此生成描述符。搬家的来龙去脉见
 [工具系统](./tools.md)§任务清单。
 
+### 外部模块与宿主之间的两条通用通道（2026-11-21）
+
+外部模块不可能靠"在 `BackendCommand` / `BackendEvent` 里加具名变体"来对外
+提供能力——那会把模块的业务词汇钉进 Core 协议（前端生成的类型里也跟着出现
+该模块的概念，`ModulesList` 之外还得为它写专用面板代码）。于是宿主只保留
+两条**内容中立**的通道：
+
+| 方向 | 通道 | 宿主做什么 | 宿主不知道什么 |
+| --- | --- | --- | --- |
+| 前端 → 模块 | `InvokeModuleOp { module, method, payload }` | 按 `module` 找句柄，把调用送进它的命令分发表 | `method` 是什么、`payload` 里的字段 |
+| 模块 → 前端 | `ModuleEvent { module, name, payload, at_ms }` | 把模块 `Emit` 的东西原样搬给面板 | `name` 的语义、`payload` 的形状 |
+
+应答走 `ModuleInvokeResult { module, method, ok, data, error }`（**必发**：
+模块未挂载 / 未声明该方法 / 调用失败都回显式错误，绝不让调用方等到超时）。
+两条通道都登记为 **Frontend-only**：通用调用等于"任意模块的任意方法"，
+模型不可控它。
+
+**面板侧同理**：模块要界面就用 `panel-ui/` 扩展（入口按钮、覆盖层、主区
+视图、边栏卡片、`acceptEvent` 钩子），Panel 壳不写任何模块的业务代码。
+清单是这套机制的第一个完整样本：工具 + 数据 + 快照方法 + 事件 + 界面**全部**
+在模块仓里。
+
 > **`Kernel` 是什么**：2026-11 取消「中间层 / 模块」二分之后新增的类别——提供其它模块的**运行地基**（词汇 / 线契约 / 注册表 / 事件日志 / 配置存储 / 循环驱动）。它们与其它模块同形（有 manifest、进 catalog、出现在本表），但**不可禁用**：`modules.toml` 写 `enabled = false` 会让启动失败并点名。逐条理由见 [运行地基](./kernel.md)。
 
 表的来源分两类，别混算：**框架内置 17 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 17]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
@@ -170,7 +192,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
   - `selfupdate`：进程级、`kind = orchestration`（按人格启停是假开关——挂载是进程级的，命令分发不看人格白名单）
 - **优先级**：全局禁用（`ToggleModule` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
 - **任务清单的状态所有权**：`agent-module-checklist::ChecklistRuntime` 长期持有每个人格的 `ChecklistStore`，工具只作适配；人格重建复用同一 Arc。持久文件位于配置目录的 `checklists/` 下，按人格隔离，文件内按会话隔离；会话身份优先来自 `ToolContext`，不再由宿主向参数注入 `__session_id`。旧式直接调用的参数退路不用于联邦远程面（checklist 不声明 remote_capable）。
-- **任务清单同步**：`ChecklistUpdated` 是带身份与版本的单会话投影，`RequestChecklists` / `ChecklistsSnapshot` 提供权威补拉（空结果也必须表达，且带顶层 `epoch`/`revision`——与 `states` 同一次一致读；低 revision 的 full 不得覆盖更高的 live 投影）。Panel 按 `(core, team_id, session_id)` 存储，不通过解析键字符串推断来源。参见[工具系统](./tools.md)。
+- **任务清单同步**：模块自己 `Emit("checklist.updated")` 广播单会话投影，面板经通用调用 `InvokeModuleOp{method:"checklist.snapshot"}` 拿权威整人格快照（空结果也必须表达，且带顶层 `epoch`/`revision`——与 `states` 同一次一致读；低 revision 的 full 不得覆盖更高的 live 投影）。投影与版本判定在**模块自己的 panel-ui 扩展**里，按 `(core, team_id, session_id)` 存储；Panel 壳与 Core 协议都**不出现**清单的具名类型。参见[工具系统](./tools.md)。
 - **内置工具包覆盖**：清单随 `tools.builtin` 发布，工具启停控制模型能否修改；停用工具不删除 Store 或前端投影，已有清单可只读展示。清理/归档聊天历史不等于清空任务清单；明确的 `reset_session` 才重置该会话的清单状态。
 
 ### 同步清单

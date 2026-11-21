@@ -1087,6 +1087,51 @@ impl ModuleHost {
         None
     }
 
+    /// 把一次调用分发给**指定的**模块（`InvokeModuleOp` 的执行面）。
+    ///
+    /// 与 [`Self::dispatch_raw`] 的差别：那条按**命令名**找归属（"谁声明了
+    /// 这个名字"），这条按**模块 id** 定位（"我就是要调这个模块"）。通用
+    /// 调用必须按 id——同一个方法名在两个模块里各有一份是完全正常的，按名
+    /// 分发会把调用送给先注册的那个。
+    ///
+    /// 返回 `None` = 该 id 既不是已挂载的外部模块，也没有内置模块声明这个
+    /// 方法（调用方据此回一条显式错误，不要静默）。
+    pub async fn dispatch_to_module(
+        &self,
+        module: &str,
+        name: &str,
+        payload: serde_json::Value,
+    ) -> Option<Result<serde_json::Value, String>> {
+        const INVOKE_TIMEOUT_MS: u64 = 30_000;
+        // 外部模块：按 id 精确匹配。
+        {
+            let handles = self.external.read().clone();
+            for handle in handles {
+                if handle.module_id() != module {
+                    continue;
+                }
+                // 声明表是模块自己给的：没声明就是"没有这个方法"，直接报，
+                // 不要送进去让模块回一个笼统的 unknown_contribution。
+                if !Self::external_commands(&handle).iter().any(|cmd| cmd == name) {
+                    return Some(Err(format!("模块 {module} 未声明方法 {name}")));
+                }
+                let ctx = Self::external_invoke_ctx(&payload, INVOKE_TIMEOUT_MS);
+                let outcome = handle.invoke(name, ctx, payload).await;
+                return Some(Self::outcome_to_result(outcome));
+            }
+        }
+        // 内置模块：命令归属必须真的是这个模块 id。
+        match self.registry.command_owner(name) {
+            Some(owner) if owner == module => {
+                self.registry.dispatch_command_async(name, payload).await
+            }
+            Some(owner) => Some(Err(format!(
+                "方法 {name} 属于模块 {owner}，不是 {module}"
+            ))),
+            None => None,
+        }
+    }
+
     /// 某条命令当前归谁处理（诊断/测试用）。
     pub fn command_owner(&self, name: &str) -> Option<String> {
         if let Some(owner) = self.registry.command_owner(name) {
@@ -1170,6 +1215,10 @@ impl ModuleHost {
                             text,
                         ));
                     }
+                    // 空文本 = "本上下文没有话要说"（如该会话没有清单），
+                    // 不是错误也不是形状问题：正常的可选块都走这条，静默跳过。
+                    // 否则每轮提示词装配都会刷一条 warn，把真问题淹掉。
+                    Ok(serde_json::Value::String(_)) => {}
                     // 结构化结果 / 非法形状：文本块只接受纯文本。记下来而不是
                     // 静默丢弃——模块作者会看到"我声明了块却没进提示词"的原因。
                     Ok(other) => tracing::warn!(

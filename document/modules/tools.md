@@ -176,6 +176,7 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 | 有内置目录项吗 | **没有**（`BUILTIN_MODULE_IDS` 17 项，不含它） |
 | 怎么启用 | `modules.toml` 写一行 `kind = "stdio"` + `command`，**默认不启用** |
 | 宿主怎么知道它是什么 | 握手时模块自述身份（`Register.manifest` → `ModuleHandle::manifest_claim()`），宿主据此生成描述符（`kind` / `package` / 依赖） |
+| 面板界面归谁 | **模块自己**（`panel-ui/` 扩展）：壳只提供入口行按钮与覆盖层插槽 |
 | 没配置时 | **没有 `checklist` 工具**，面板没有清单入口——不是"降级"，是"这个能力不存在" |
 
 启用示例（路径按安装方式不同；二进制安装的产物里二进制已经就位）：
@@ -208,25 +209,36 @@ data_dir = "/home/me/.local/share/echo-agent-core/checklists"
 - **加载失败**：损坏 / 未知版本 / 超限文件**只报错，不覆盖**；该人格的
   `checklist` 工具变为“同名失败工具”（每次调用返回可排查错误），
   补拉与摘要都跳过，不会用空清单掩盖故障。
-- **补拉**：`RequestChecklists { team_id, session_id? }`。缺省 `session_id`
-  回 `ChecklistsSnapshot { team_id, epoch, revision, states }`（整人格权威
-  快照：`states` 是完整集合，不在其中的会话视为无清单；空表也发，且**空表
-  同样带版本**）；指定会话回 `ChecklistUpdated`。`RequestState` 全量快照会
-  补全所有运行中人格的清单。
+- **补拉（`checklist.snapshot` 方法）**：面板经**通用模块调用通道**
+  `InvokeModuleOp { module, method, payload }` 点名调用，应答是
+  `ModuleInvokeResult { module, method, ok, data, error }`。
+  `payload = { team_id, session_id? }`，`data` 是
+  `{ team_id, epoch, revision, states }`（整人格权威快照：`states` 是完整
+  集合，不在其中的会话视为无清单；空表也返回，且**空表同样带版本**）。
   顶层 `epoch` / `revision` 是**文件级**版本，与 `states` 来自**同一次**
   store 全量快照（`ChecklistStore::full_snapshot`，单次一致读）——绝不先读
   meta 再读 states 拼两个时刻。`revision` 跨 `reset` / 重载单调递增（reset
   同时换 `epoch`，两者不比大小），因此**低 revision 的 full 永不覆盖更高
   revision 的 live 投影，即使 epoch 不同**；前端按顶层 `revision` + 每条
   state 的 `epoch`/`revision` 拒绝旧快照。存储加载失败或快照形状异常时
-  补拉发**显式错误事件**（`RequestState` 补全路径）或**命令错误**（
-  `RequestChecklists` 路径），不会用空快照冒充“没有清单”。
+  回**显式错误**（`ok=false` + `error` 原因），不会用空快照冒充“没有清单”。
+- **为什么没有具名命令**：曾经的 `RequestChecklists` / `ChecklistsSnapshot` /
+  `ChecklistUpdated` 是 Core 协议里的三个变体——那等于让宿主的协议词汇表替
+  模块定义业务接口（前端生成的类型里也跟着出现“清单”这个概念）。2026-11-21
+  起这三条由通用通道取代：Core 只搬 `module` / `method` / 自由 JSON，不认识
+  清单。
+- **状态广播**：写入成功后模块自己 `Emit("checklist.updated",
+  { session_id, team_id, state })`，经 `BackendEvent::ModuleEvent` 到前端；
+  面板把它当**模块事件**消费（`name` / `payload` 是模块与面板的约定，宿主不
+  解释）。这就是“模块自己的领域事件走通用通道”的样板。
 - **装配**：宿主给端口、模块造工具。`ChecklistToolProvider`（服务键
   `echo-agent.checklist.tools`）产出带 `echo-agent.checklist` 包标签的
-  `checklist` 工具；宿主侧只剩三段薄接线——注入 per-persona 端口
-  （`ChecklistPort`）、注册状态绑定（`all_state_event_bindings`）、实现命令域
-  接缝（`ChecklistCommandHost`：`resolve_registry` + `emit`）。模块未挂载时
-  宿主回退 `standalone_provider`（内存 store），与内置工具集、shell 同款降级。
+  `checklist` 工具。进程外形态下宿主**没有**任何清单专用接线（没有命令域
+  接缝、没有状态绑定）；工具本身由模块的 `Contribution::Custom` 声明、宿主
+  经 `RemoteTool` 适配进注册表。
+- **面板**：清单入口与面板由模块自己的 `panel-ui/` 扩展提供
+  （`PANEL_UI_EXTENSIONS` 装配），Panel 壳只给插槽（入口按钮 / 覆盖层 /
+  事件钩子 / 命令发送）。壳里**没有任何清单代码**：不认识的模块也能长出界面。
 - **模型摘要**：模块通过 `ModuleTextBlock` 把当前会话的限额摘要注入系统
   提示词；摘要只在 `checklist` 工具对该人格**可用**时出现，工具关闭后不会
   要求模型调用不可用工具（面板仍可只读观察既有清单）。

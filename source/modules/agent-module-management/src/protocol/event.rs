@@ -554,46 +554,6 @@ pub enum BackendEvent {
         branch_id: String,
         delta: String,
     },
-    /// A tool published a structured state snapshot for TUI visualization
-    /// (e.g. the checklist tool → checklist panel). `state` is tool-specific;
-    /// the checklist tool emits `{"lists": [{name, done, total, items}]}`.
-    ChecklistUpdated {
-        session_id: String,
-        state: serde_json::Value,
-        /// 归属人格（2026-10）：同一 core 内多 persona 的同名会话（各自
-        /// 的 `local:tui::local_user`）此前在消费端（core+session_id）键
-        /// 冲突——补 team 维度供消费端消歧。
-        #[serde(default)]
-        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
-        team_id: Option<String>,
-    },
-    /// 某人格全部会话的**权威清单快照**（2026-11 清单可靠化）。
-    ///
-    /// 消费端收到后按 `team_id` **整体替换**该人格的清单投影：`states` 是
-    /// 该人格的**完整集合**（不在其中的会话视为无清单，必须清掉旧投影）；
-    /// `states` 为空同样是权威结果，不得保留旧缓存。
-    ///
-    /// `epoch` / `revision` 是**文件级**版本，**必填**，且必须与 `states`
-    /// 来自**同一次**存储读取（Core 侧用 `ChecklistStore::full_snapshot` 的
-    /// 一次一致快照转换；绝不先读 meta 再读 states 拼两个时刻）。空 `states`
-    /// 也带版本——否则“revision 0 的旧空 full”会晚到并清掉更新的 live 投影。
-    ///
-    /// 判据：`revision` 跨 `reset` / 重载**单调递增**（reset 同时换 `epoch`，
-    /// 但两者不做大小比较）。因此**低 revision 的 full 永远不得覆盖更高
-    /// revision 的 live 投影，即使 epoch 不同**；只有真正换库/重置（更低的
-    /// revision）才由消费端在重连时清掉版本基线、把旧投影标脏，等 bootstrap
-    /// full 收敛。
-    ///
-    /// `team_id` 是必填归属（本事件不靠 `annotate_team` 补齐）：Core 进程级
-    /// 核心服务代理的 `team_id` 为空，补发他人格的快照时不能依赖它。
-    ChecklistsSnapshot {
-        team_id: String,
-        /// 文件级 epoch（UUID）：`reset_session` 时推进；不与 revision 比大小。
-        epoch: String,
-        /// 文件级 revision：每次成功修改 +1，跨 reset / 重新加载保持单调。
-        revision: u64,
-        states: Vec<ChecklistSnapshotEntry>,
-    },
     /// Agent generated backend output. This is never sent to a platform
     /// automatically; platform delivery requires an explicit tool call.
     /// `branch_id` links the output to the temporary snapshot branch that
@@ -950,6 +910,31 @@ pub enum BackendEvent {
         ok: bool,
         /// 人读说明（成功也带一句，便于 toast 直接显示）。
         message: String,
+    },
+    /// **通用模块调用回执**（`InvokeModuleOp` 的结构化结果）。
+    ///
+    /// 为什么单开一个变体而不是扩 `ModuleOpResult`：那个是启停/重启的**宿主
+    /// 操作**回执（`op` 只有三种），携带的是"这次操作成不成"；本变体是**模块
+    /// 自己方法的返回值**，携带的是数据（`data` 形状由模块定义）。混在一起
+    /// 会让"成功的重启"和"成功的读取"长得一样，前端还得按 `op` 再分叉。
+    ///
+    /// 与 [`Self::ModuleEvent`] 的分工：那条是模块**主动广播**（无请求方、
+    /// 投递即忘），这条是**对某次调用的应答**（有请求方、带 method 回显，
+    /// 前端可精确配对）。两者都不让宿主解释 payload。
+    ModuleInvokeResult {
+        /// 目标模块 id（回显请求里的 `module`）。
+        module: String,
+        /// 方法名（回显请求里的 `method`，前端据此配对并发调用）。
+        method: String,
+        /// 是否成功。
+        ok: bool,
+        /// 返回值（失败时为 `null`，原因在 `error`）。
+        #[serde(default)]
+        data: serde_json::Value,
+        /// 失败原因（成功时缺省）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+        error: Option<String>,
     },
     /// **模块事件**（echo-fabric-arch v0.7 的事件通道出口）。
     ///
@@ -1768,25 +1753,6 @@ pub struct ApiUsagePoint {
     pub est_cost: Option<f64>,
 }
 
-/// 一条会话的清单快照（[`BackendEvent::ChecklistsSnapshot`] 的元素）。
-///
-/// `state` 的线形状由清单工具定义：`{lists: [{id,name,archived,items:
-/// [{id,text,done}],done,total}], epoch: string, revision: u64}`。协议层保持
-/// 自由 JSON（与 `ChecklistUpdated.state` 同口径）：新增字段是纯增量，老前端
-/// 不必跟着升级；消费端必须把 `epoch`/`revision` 当作快照新旧判据。
-///
-/// 事件顶层的 `epoch` / `revision` 是**文件级**版本（与这里的 `state` 出自
-/// 同一次存储读取）：条目级版本用于单会话投影对账，顶层版本用于判断“整份
-/// full 是否比手上的 live 更旧”（低 revision 的 full 永不覆盖更新的 live）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
-pub struct ChecklistSnapshotEntry {
-    /// 归属会话 id（含通道前缀，如 `local:tui::local_user`）。
-    pub session_id: String,
-    /// 该会话的权威清单状态。
-    pub state: serde_json::Value,
-}
-
 /// `BackendEvent` is dispatchable on the harness event bus: the enum derives
 /// Clone + Debug + Send + Sync, this impl declares the membership so
 /// listeners can subscribe by event type (dsh typed events).
@@ -1818,8 +1784,6 @@ impl BackendEvent {
             Self::ToolResult { .. } => "ToolResult",
             Self::AgentContentDelta { .. } => "AgentContentDelta",
             Self::AgentReasoningDelta { .. } => "AgentReasoningDelta",
-            Self::ChecklistUpdated { .. } => "ChecklistUpdated",
-            Self::ChecklistsSnapshot { .. } => "ChecklistsSnapshot",
             Self::AgentOutput { .. } => "AgentOutput",
             Self::AgentCompleted { .. } => "AgentCompleted",
             Self::SessionUpdated { .. } => "SessionUpdated",
@@ -1848,6 +1812,7 @@ impl BackendEvent {
             Self::ToolsList { .. } => "ToolsList",
             Self::ModulesList { .. } => "ModulesList",
             Self::ModuleOpResult { .. } => "ModuleOpResult",
+            Self::ModuleInvokeResult { .. } => "ModuleInvokeResult",
             Self::ModuleEvent { .. } => "ModuleEvent",
             Self::TeamsList { .. } => "TeamsList",
             Self::ApiTestResult { .. } => "ApiTestResult",
@@ -2104,11 +2069,12 @@ mod session_history_tests {
                 ok: true,
                 message: "ok".into(),
             },
-            BackendEvent::ChecklistsSnapshot {
-                team_id: "alix".into(),
-                epoch: "e".into(),
-                revision: 1,
-                states: vec![],
+            BackendEvent::ModuleInvokeResult {
+                module: "p".into(),
+                method: "m".into(),
+                ok: true,
+                data: serde_json::Value::Null,
+                error: None,
             },
         ];
         for event in &samples {
@@ -2123,50 +2089,6 @@ mod session_history_tests {
                 "kind_name 与 serde tag 分叉（订阅侧会收不到）"
             );
         }
-    }
-
-    /// 清单整人格快照的线形状：`team_id` + 顶层 `epoch`/`revision` 必填 +
-    /// `states[{session_id,state}]`（空 `states` 也带版本、也是合法且权威的
-    /// 结果）。前端按这个形状整体替换，并按 revision 拒绝旧 full。
-    #[test]
-    fn checklists_snapshot_wire_shape_is_explicit_team_and_entries() {
-        let event = BackendEvent::ChecklistsSnapshot {
-            team_id: "alix".into(),
-            epoch: "6f1d…".into(),
-            revision: 7,
-            states: vec![ChecklistSnapshotEntry {
-                session_id: "s".into(),
-                state: serde_json::json!({"lists": [], "epoch": "6f1d…", "revision": 7}),
-            }],
-        };
-        let value = serde_json::to_value(&event).unwrap();
-        let payload = &value["ChecklistsSnapshot"];
-        assert_eq!(payload["team_id"], "alix");
-        assert_eq!(payload["epoch"], "6f1d…", "顶层 epoch 必填");
-        assert_eq!(payload["revision"], 7, "顶层 revision 必填");
-        assert_eq!(payload["states"][0]["session_id"], "s");
-        assert_eq!(payload["states"][0]["state"]["revision"], 7);
-        let empty = BackendEvent::ChecklistsSnapshot {
-            team_id: "alix".into(),
-            epoch: "6f1d…".into(),
-            revision: 0,
-            states: vec![],
-        };
-        let empty_payload = serde_json::to_value(&empty).unwrap()["ChecklistsSnapshot"].clone();
-        assert_eq!(empty_payload["states"], serde_json::json!([]));
-        assert_eq!(
-            empty_payload["revision"], 0,
-            "空 states 也必须是带版本（revision 0）的权威快照"
-        );
-        assert_eq!(empty_payload["epoch"], "6f1d…");
-
-        // 缺版本字段的载荷必须解析失败：静默补默认会让「无版本的旧 empty」
-        // 冒充权威快照，把面板更新的 live 投影清掉。
-        let legacy = serde_json::json!({"ChecklistsSnapshot": {"team_id": "alix", "states": []}});
-        assert!(
-            serde_json::from_value::<BackendEvent>(legacy).is_err(),
-            "epoch/revision 是必填字段，不能默认"
-        );
     }
 
     /// 变更明细的**线格式**是对面板的契约（`changed_entries[{path,index,worktree}]`，

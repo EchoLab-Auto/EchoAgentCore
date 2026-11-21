@@ -15,7 +15,7 @@
 //! |---|---|---|
 //! | 参数注入 | `match tool { "checklist" => __session_id, "shell_*" => __team_id }` | 工具覆写 `Tool::execute_in` 直接拿上下文 |
 //! | 编排分派 | `if call.name == "spawn_subagent"` → 另一条通道 | 它就是普通工具，覆写 `execute_in` |
-//! | 状态广播 | `match state_key { "checklist" => ChecklistUpdated }` | 绑定时声明（见 [`Agent::tool_state_events`]） |
+//! | 状态广播 | `match state_key { … }` 的映射表 | 绑定时声明（见 [`Agent::tool_state_events`]） |
 //!
 //! 判据很简单：**执行链不该认识任何一个具体工具的名字**。名字只出现在两个
 //! 地方——工具自己的实现、以及绑定它的那行注册。
@@ -255,7 +255,7 @@ impl Agent {
     /// 例（`agent-module-tools` 装配 checklist 时）：
     /// ```ignore
     /// agent.register_tool_state_event("checklist", |session_id, state| {
-    ///     BackendEvent::ChecklistUpdated { session_id: session_id.into(), state: state.clone(), team_id: None }
+    ///     BackendEvent::ModuleEvent { module: "my.module".into(), name: "state".into(), payload: state.clone(), at_ms: 0 }
     /// });
     /// ```
     ///

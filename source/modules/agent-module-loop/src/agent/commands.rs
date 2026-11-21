@@ -276,6 +276,50 @@ impl Agent {
                     message: "API 命令由 echo-agent.provider.llm 模块处理，但该模块未启用".into(),
                 });
             }
+            // 通用模块调用（2026-11）：宿主不认识 `method` / `payload`，只按
+            // `module` 找到模块并把调用送进它的命令分发表。**必回一条
+            // `ModuleInvokeResult`**——模块未挂载 / 未声明该方法 / 调用失败
+            // 都要让调用方拿到显式原因，绝不能静默（清单面板曾经就栽在
+            // "命令发出去了、没人应答、前端永远等"上）。
+            BackendCommand::InvokeModuleOp {
+                module,
+                method,
+                payload,
+            } => {
+                let host = self.module_host();
+                // 上下文从 payload 里取：模块的 `InvokeContext` 需要 team/session
+                // 身份，而通用通道的载荷本来就是一个自由 JSON 对象——约定
+                // `team_id` / `session_id` 两个键，缺省即无身份（模块自行决定
+                // 是回落到全局还是报错）。
+                let outcome = host
+                    .dispatch_to_module(&module, &method, payload.clone())
+                    .await;
+                match outcome {
+                    Some(Ok(data)) => self.emit(BackendEvent::ModuleInvokeResult {
+                        module: module.clone(),
+                        method: method.clone(),
+                        ok: true,
+                        data,
+                        error: None,
+                    }),
+                    Some(Err(error)) => self.emit(BackendEvent::ModuleInvokeResult {
+                        module: module.clone(),
+                        method: method.clone(),
+                        ok: false,
+                        data: serde_json::Value::Null,
+                        error: Some(error),
+                    }),
+                    None => self.emit(BackendEvent::ModuleInvokeResult {
+                        module: module.clone(),
+                        method: method.clone(),
+                        ok: false,
+                        data: serde_json::Value::Null,
+                        error: Some(format!(
+                            "模块 {module} 未挂载，或未声明方法 {method}（检查 modules.toml 与模块的 contribution 列表）"
+                        )),
+                    }),
+                }
+            }
             BackendCommand::RestartModule { id } => {
                 // 防自锁：重启管理面模块 = 先卸下 management WS，Panel 立即
                 // 断连且无法经界面恢复（与禁用同一条约束）。
@@ -320,13 +364,10 @@ impl Agent {
             }
             // 工具管理面命令域已迁进 `agent-module-tools`（全模块化 S3：
             // 清单与启停本来就是这个模块拥有的东西）。这里只剩兜底。
-            BackendCommand::RequestToolsList
-            | BackendCommand::RequestChecklists { .. }
-            | BackendCommand::ToggleTool { .. } => {
+            BackendCommand::RequestToolsList | BackendCommand::ToggleTool { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
-                    message: "工具与清单命令由 echo-agent.tools.builtin 模块处理，但该模块未启用"
-                        .into(),
+                    message: "工具命令由 echo-agent.tools.builtin 模块处理，但该模块未启用".into(),
                 });
             }
             BackendCommand::RequestModulesList => {

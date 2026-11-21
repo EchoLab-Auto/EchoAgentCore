@@ -493,7 +493,33 @@ pub enum BackendCommand {
         #[serde(default)]
         payload: serde_json::Value,
     },
-
+    /// 调用**任意已挂载模块**自己声明的一个方法（2026-11 通用模块调用通道）。
+    ///
+    /// 与 [`Self::InvokeInstanceOp`] 的关系：那条是"模块实例的管理面"（QQ 之类
+    /// 平台自定义方法），这条是"模块的能力面"——**宿主完全不解释 `method` 与
+    /// `payload`**，只按 `module` 找到模块、把调用送进它的 `Contribution::Command`
+    /// 分发表，再把返回值原样回给调用方。
+    ///
+    /// 为什么必须有这条：本通道之前，任何模块想给面板提供数据，都只有"在
+    /// `BackendCommand` 里加一个具名变体"这一条路——那等于把模块的业务词汇
+    /// 钉进 Core 的协议（前端生成的类型里也就跟着出现该模块的概念）。有了
+    /// 通用调用，模块自己的读接口不再需要宿主认识它。
+    ///
+    /// 响应为 [`crate::event::BackendEvent::ModuleOpResult`]（**必发**：模块
+    /// 未挂载 / 未声明该 method / 调用失败都回显式错误，绝不让面板等成超时）。
+    ///
+    /// **Frontend-only**（类别判定，fail-closed）：通用通道等于"任意模块的
+    /// 任意方法"，模型不可控它——否则一个被投毒的模块描述就能让模型驱动
+    /// 任意模块的管理面。
+    InvokeModuleOp {
+        /// 目标模块 id（`ModuleInfo.id`，如 `vendor.group.name`）。
+        module: String,
+        /// 方法名：目标模块在 `contribution` 里声明的命令名。
+        method: String,
+        /// 方法参数（JSON；缺省空对象）。模块自行约定形状。
+        #[serde(default)]
+        payload: serde_json::Value,
+    },
     // ---- 工作区会话（workspace 模块：基于工作空间的会话管理）----
     /// 请求某 persona 的工作区会话列表。
     /// 响应 `BackendEvent::WorkspaceSessions`。
@@ -667,21 +693,6 @@ pub enum BackendCommand {
     /// Request the list of all registered tool definitions.
     /// Responds with `BackendEvent::ToolsList`.
     RequestToolsList,
-    /// 请求某人格的**权威清单快照**（2026-11 清单可靠化）。
-    ///
-    /// - `session_id` 缺省 = 该人格全部会话，回
-    ///   [`BackendEvent::ChecklistsSnapshot`]（`states` 为空也是权威结果：
-    ///   明确没有清单，前端必须整体替换而不是保留旧缓存）；
-    /// - `session_id` 指定 = 只回该会话的 [`BackendEvent::ChecklistUpdated`]。
-    ///
-    /// `team_id` 必填且必须**精确存在**：不存在就拒绝，绝不回落到默认人格。
-    RequestChecklists {
-        team_id: String,
-        #[serde(default)]
-        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
-        session_id: Option<String>,
-    },
-
     // ── 自更新（2026-10，**Frontend-only**）──
     /// 触发框架自更新：启动 `echo-agent-core-update.service`（oneshot，
     /// 脱离本进程执行 构建→替换→重启）。Graceful Drain 保证当前回复
@@ -776,6 +787,7 @@ impl BackendCommand {
             Self::RestartInstance { .. } => "RestartInstance",
             Self::RequestInstanceStatus { .. } => "RequestInstanceStatus",
             Self::InvokeInstanceOp { .. } => "InvokeInstanceOp",
+            Self::InvokeModuleOp { .. } => "InvokeModuleOp",
             Self::RequestWorkspaceSessions { .. } => "RequestWorkspaceSessions",
             Self::SaveWorkspaceSession { .. } => "SaveWorkspaceSession",
             Self::DeleteWorkspaceSession { .. } => "DeleteWorkspaceSession",
@@ -795,7 +807,6 @@ impl BackendCommand {
             Self::RequestSkillsList { .. } => "RequestSkillsList",
             Self::ReloadSkills { .. } => "ReloadSkills",
             Self::RequestToolsList { .. } => "RequestToolsList",
-            Self::RequestChecklists { .. } => "RequestChecklists",
             Self::SaveFederationPeer { .. } => "SaveFederationPeer",
             Self::DeleteFederationPeer { .. } => "DeleteFederationPeer",
             Self::RequestFederationStatus { .. } => "RequestFederationStatus",
@@ -850,7 +861,6 @@ pub const BROADCAST_READONLY_COMMANDS: &[&str] = &[
     "RequestModulesList",
     "RequestSkillsList",
     "RequestToolsList",
-    "RequestChecklists",
     "RequestSystemPrompt",
     "RequestRemoteApiProfiles",
     "RequestChatGptStatus",
@@ -886,7 +896,6 @@ pub const PANEL_READONLY_COMMANDS: &[&str] = &[
     "RequestModulesList",
     "RequestSkillsList",
     "RequestToolsList",
-    "RequestChecklists",
     "RequestSystemPrompt",
     "RequestRemoteApiProfiles",
     "RequestInstanceStatus",
@@ -944,6 +953,8 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
     match cmd {
         // 模块实例管理命令：类别判定（任意平台、任意方法）。
         BackendCommand::InvokeInstanceOp { .. }
+        // 通用模块调用：同上——任意模块、任意方法都是人在环的管理/读取面。
+        | BackendCommand::InvokeModuleOp { .. }
         | BackendCommand::SaveWorkspaceSession { .. }
         | BackendCommand::DeleteWorkspaceSession { .. }
         | BackendCommand::ActivateWorkspaceSession { .. }
@@ -1021,7 +1032,6 @@ mod tests {
             names,
             vec![
                 "RequestChatGptStatus",
-                "RequestChecklists",
                 "RequestFederationDirectory",
                 "RequestFederationInvite",
                 "RequestFederationStatus",
@@ -1190,9 +1200,10 @@ mod tests {
                 team_id: None,
                 path: String::new(),
             },
-            BackendCommand::RequestChecklists {
-                team_id: "alix".into(),
-                session_id: None,
+            BackendCommand::InvokeModuleOp {
+                module: "echo-agent.checklist".into(),
+                method: "checklist.snapshot".into(),
+                payload: serde_json::json!({"team_id": "alix"}),
             },
         ];
         for cmd in &samples {
@@ -1209,33 +1220,49 @@ mod tests {
         }
     }
 
-    /// `RequestChecklists` 的线形状：`team_id` 必填，`session_id` 可缺席。
+    /// 通用模块调用的线形状：`module` / `method` 必填，`payload` 可缺席
+    /// （缺省空对象）。**`payload` 是自由 JSON**——宿主不认识里面的字段，
+    /// 这正是这条通道存在的理由（模块的业务词汇不进 Core 协议）。
     #[test]
-    fn request_checklists_requires_team_and_allows_absent_session() {
-        let with_session: BackendCommand = serde_json::from_str(
-            r#"{"RequestChecklists":{"team_id":"alix","session_id":"local:tui::u"}}"#,
+    fn invoke_module_op_wire_shape_is_generic() {
+        let with_payload: BackendCommand = serde_json::from_str(
+            r#"{"InvokeModuleOp":{"module":"echo-agent.checklist","method":"checklist.snapshot","payload":{"team_id":"alix"}}}"#,
         )
         .unwrap();
         assert_eq!(
-            with_session,
-            BackendCommand::RequestChecklists {
-                team_id: "alix".into(),
-                session_id: Some("local:tui::u".into()),
+            with_payload,
+            BackendCommand::InvokeModuleOp {
+                module: "echo-agent.checklist".into(),
+                method: "checklist.snapshot".into(),
+                payload: serde_json::json!({"team_id": "alix"}),
             }
         );
-        // 缺 session_id 合法（= 整人格补拉）；缺 team_id 必须失败。
-        let no_session: BackendCommand =
-            serde_json::from_str(r#"{"RequestChecklists":{"team_id":"alix"}}"#).unwrap();
+        // payload 缺席合法（模块自己决定"没有参数"是什么意思）。
+        let no_payload: BackendCommand = serde_json::from_str(
+            r#"{"InvokeModuleOp":{"module":"m","method":"x"}}"#,
+        )
+        .unwrap();
         assert_eq!(
-            no_session,
-            BackendCommand::RequestChecklists {
-                team_id: "alix".into(),
-                session_id: None,
+            no_payload,
+            BackendCommand::InvokeModuleOp {
+                module: "m".into(),
+                method: "x".into(),
+                payload: serde_json::Value::Null,
             }
         );
-        assert!(serde_json::from_str::<BackendCommand>(r#"{"RequestChecklists":{}}"#).is_err());
-        assert!(is_broadcast_readonly("RequestChecklists"));
-        assert!(is_panel_readonly_allowed("RequestChecklists"));
+        // module / method 必填：缺了就是接线错误，不能默默调空。
+        assert!(serde_json::from_str::<BackendCommand>(r#"{"InvokeModuleOp":{"method":"x"}}"#).is_err());
+        assert!(serde_json::from_str::<BackendCommand>(r#"{"InvokeModuleOp":{"module":"m"}}"#).is_err());
+        // 通用调用是**人在环**的面（任意模块、任意方法）：不是只读广播命令。
+        assert!(!is_broadcast_readonly("InvokeModuleOp"));
+        assert_eq!(
+            command_clearance(&BackendCommand::InvokeModuleOp {
+                module: "m".into(),
+                method: "x".into(),
+                payload: serde_json::Value::Null,
+            }),
+            CommandClearance::Frontend
+        );
     }
 
     /// `payload_value()` 剥掉外层 tag：模块拿到的就是命令自己的字段。

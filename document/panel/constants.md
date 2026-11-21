@@ -47,8 +47,8 @@ y: 216
 | 输入区圆角 | 桌面 `--composer-radius: 24px`（内框/按钮 24−12=12）；窄屏 `clamp(20px, 屏圆角−8px, 34px)` = 34（内框/按钮 24） | `ChatView.vue` 的 `.chat-composer-float` |
 | 设置视图 | 一级菜单 168px；条目列表 250px；API 概览 ≤720px（表单按需展开）；智能体编辑器 = 头部卡 + 3 折叠分区（默认展开前两个） | SettingsView.vue / ApiSettings.vue |
 | 入口行弹出层 | 默认宽 520px，视口不足按 `100vw - 24px` 收窄；无全屏遮罩（点外部即关） | PanelPopover.vue |
-| 入口行按钮 | ui-frame `NeumorphismButton`（glass/pill/small；`--nm-glass-bg` 45% 更透 + blur 24px）；清单徽标 `NeumorphismBadge` | ChatView.vue |
-| z-index 阶梯 | 清单卡 3（`.checklist-float`，容器内 sticky）/ 边栏列 4 / 输入区与「回到底部」5 / 入口行 6 / 入口行弹出层与 Agent 菜单 30（`PanelPopover`；设置视图同段 30–31）/ 根 chip 速览 40 / 浮层遮罩 50 / 目录选择器 60 / 拖动幽灵 200；模态与 Toast 由库统一分配 | styles.css / ChatView.vue / PanelPopover.vue / WorkspaceFileBrowser.vue / AgentSwitcher.vue / RailDragGhost.vue |
+| 入口行按钮 | ui-frame `NeumorphismButton`（glass/pill/small；`--nm-glass-bg` 45% 更透 + blur 24px）；扩展入口按钮由 `PanelExtensionEntries` 按同一规格渲染 | ChatView.vue / PanelExtensionEntries.vue |
+| z-index 阶梯 | 扩展覆盖层内容自带层级（壳不再分配）/ 边栏列 4 / 输入区与「回到底部」5 / 入口行 6 / 入口行弹出层与 Agent 菜单 30（`PanelPopover`；设置视图同段 30–31）/ 根 chip 速览 40 / 浮层遮罩 50 / 目录选择器 60 / 拖动幽灵 200；模态与 Toast 由库统一分配 | styles.css / ChatView.vue / PanelPopover.vue / WorkspaceFileBrowser.vue / AgentSwitcher.vue / RailDragGhost.vue |
 | Agent 切换器 | 卡片高 34px（窄屏 ≤140px 宽、隐藏区域徽标）；菜单 = `PanelPopover` 宽 360px / 内容 `max-height: 52vh`（窄屏贴底全宽） | `AgentSwitcher.vue` 的卡片样式 + `PanelPopover.vue` |
 | 轮询：日志 / 任务耗时 | 5s / 1s | `LogView.vue` 的自动刷新定时器 / `TasksPanel.vue` 的耗时刷新（QQ 登录状态为 WS 事件驱动，无轮询） |
 | HTTP 超时 | 10s | `api.ts` 的 `FETCH_TIMEOUT_MS` |

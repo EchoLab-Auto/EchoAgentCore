@@ -194,7 +194,8 @@ pub fn module(version: &str) -> Arc<dyn Module> {
         // （宿主 `apply_command` 在落内置 match 之前问一次模块）。
         //
         // `*Shell*` 四条已随 shell 工具搬进 `agent-module-shell`（2026-11）；
-        // `RequestChecklists` 随清单搬进 `agent-module-checklist`（2026-11）。
+        // 清单的查询方法随清单一起搬进 `agent-module-checklist`（2026-11）：
+        // 面板经通用调用通道 `InvokeModuleOp` 点名，宿主协议里不再有它的变体。
         // 三者同一个理由：会话生命周期、清单真值都是独立能力，不该让
         // "想关其中一个"变成"关掉整个工具集"。
         .with_commands(

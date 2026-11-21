@@ -128,7 +128,7 @@ EchoAgentPanel/
 
 1. **reducer 里带 `team_id` / `core` 的事件必须过滤或按复合键存储**，不得写进无键的
    单槽——`WorkspaceSessions` 曾因不过滤 `team_id` 而被他 agent 的通播覆盖；其余事件用
-   `belongsToActiveTeam` 或 `teamKey` / `checklistKey` 已满足。
+   `belongsToActiveTeam` 或 `teamKey` / `sessionScopedKey` 已满足。
 2. **不要把「窗口在看什么」写进服务器状态或共享 localStorage 后再无条件跟随**，
    改动需带「本窗口意图」判别：工作区的 5s TTL 意图（消费点可能被前置条件跳过，
    无 TTL 的残留会让本窗口被任意窗口的同目标激活带走）与 `team-select` / `team-reset` /
