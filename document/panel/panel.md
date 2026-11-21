@@ -37,7 +37,9 @@ EchoAgentPanel/
 │       ├── state_domains/           # timeline / helpers
 │       ├── connection.ts            # WS 连接（重连退避 + Bootstrap）
 │       ├── pending.ts               # 请求-响应跟踪（加载三态：150ms/6s/20s）
-│       └── components/              # 聊天 / 设置 / 实例 / 任务 / 清单
+│       ├── extensions/registry.ts    # 扩展注册表（入口/覆盖层/主区视图/卡片/钩子）
+│       ├── extension-api.ts          # 模块唯一允许依赖的壳 SDK
+│       └── components/              # 聊天 / 设置 / 实例 / 任务 / 上下文（**无业务模块实现**）
 └── scripts/                         # install.sh / update.sh / uninstall.sh
 ```
 
@@ -95,6 +97,37 @@ EchoAgentPanel/
 主机密钥默认 TOFU（首连写入 `~/.ssh/known_hosts`；之后变更一律拒绝，防 MITM；`accept_new_host_key = false` 关闭自动接受）。认证顺序：私钥文件 → ssh-agent → `~/.ssh/id_ed25519`、`~/.ssh/id_rsa` → 密码（全部可选；失败原因分类上报 UI）。隧道阶段（连接中/已连接/离线 + 原因）与固定本地端口经 `/api/upstreams` 的 `ssh` 字段回传（凭据仅 `password_set` 标记）；测试面：`tests/ssh.rs` 用**进程内假 sshd**（russh server）端到端验证转发/exec/媒体/TOFU/认证失败。
 - 已知限制：无会话恢复——刷新页面先由磁盘缓存（`trunk-cache.ts`）立即可渲染，再经 `RequestState` / `RequestTrunkTimeline{since_seq}` 增量 Bootstrap
 - 否决的备选：后端做协议层转发/会话管理（等于重写 Core 桥接层）；浏览器直连 Core :3132（跨域 + 暴露 management 端口）
+
+## 外壳边界：只提供布置 UI 的接口
+
+**Panel 只提供"布置 UI 的接口"供模块调用；Panel 的概念空间里没有外部模块的
+具体实现。**
+
+这条边界是硬约束，不是风格偏好。判据只有一条：**新增一个模块时，改的是模块仓
+（或它的 `panel-ui/`），不改 Panel 源码**。反过来检查也成立——在壳里 `grep` 某个
+模块的 id / 工具名 / 事件名，应当**零命中**。
+
+| 壳提供（机制） | 壳不提供（业务） |
+| --- | --- |
+| 入口按钮位、覆盖层外壳、主区视图、边栏卡片（`extensions/registry.ts`） | 任何模块的数据类型与 reducer |
+| 事件钩子（`acceptEvent` / `setup` / `teamLanding` …） | 按模块名 / 工具名的特判分支 |
+| 命令发送（`sendCommand`）与身份上下文（`teamId` / `sessionId` / `core`） | 模块面板组件与它的样式 |
+| 通用模块通道：`InvokeModuleOp` 发命令、`ModuleEvent` / `ModuleInvokeResult` 收应答 | 某个模块的专用命令或专用事件 |
+
+三条推论：
+
+1. **模块投影不进 `AppState`**。壳的状态只描述壳自己（连接、时间线、选择、
+   时间线缓存）；清单列表、文档树这类业务投影住在模块扩展自己的 store 里。
+   派生键（`sessionScopedKey` 之类）留在壳是允许的——它是机制。
+2. **壳不解释 payload**。`ModuleEvent.name` / `payload` 与 `ModuleInvokeResult.data`
+   的形状是模块与扩展之间的约定；壳只搬运（存进 `state.moduleEvents` 供活动流
+   展示，或交给 `acceptEvent` 扩展钩子）。
+3. **不为一个模块加一条协议**。想加专用命令/事件就是"让宿主替模块定义业务
+   接口"——那会让可插拔退化成壳里加分支。缺能力时补**通用**通道，不补专用变体。
+
+现状核对（2026-11-21）：workspace / prodoc / checklist 三个模块的界面全部在各自
+仓的 `panel-ui/` 里，壳里没有任何一个的实现。清单曾是反例（约 900 行壳内实现），
+迁出过程与判据见 Panel 仓的 `docs/ui-extensions.md`「边界原则」。
 
 ## 状态管理与数据流
 
