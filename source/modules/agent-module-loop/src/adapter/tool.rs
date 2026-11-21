@@ -95,6 +95,48 @@ impl Tool for RemoteTool {
         Ok(result.text)
     }
 
+    /// 带上下文的执行：**这是外部模块工具拿到会话 / 人格的唯一途径**。
+    ///
+    /// 此前只有 `execute`（签名不带上下文），于是 RemoteTool 只能从参数里捞
+    /// `__session_id` / `__team_id`——而执行链早已改成"覆写 `execute_in`
+    /// 直接拿上下文"，不再往参数里注入那些键。结果：远程工具永远拿不到会话，
+    /// 一切按会话隔离的状态（清单！）全部落到 `__global` 一个桶里。
+    ///
+    /// 这里把 `ToolContext` 映射成协议侧 `InvokeContext`：模块与宿主之间
+    /// 只有这一种身份传递方式（参数是模型可见面，**不可**当身份用）。
+    async fn execute_in(
+        &self,
+        cx: &echo_defs::tool::ToolContext,
+        arguments: Value,
+    ) -> Result<ToolResult, ToolError> {
+        // 参数里残留的旧式上下文键仍要剥掉：它们是模型可见面，不可信。
+        let (payload, mut ctx) = split_context(arguments);
+        ctx.session_id = Some(cx.session_id.clone()).filter(|id| !id.is_empty());
+        ctx.team_id = cx.team_id.clone().filter(|id| !id.is_empty());
+        ctx.branch_id = Some(cx.branch_id.clone()).filter(|id| !id.is_empty());
+        let outcome = self
+            .handle
+            .invoke(&self.contribution.name, ctx, payload)
+            .await;
+        match outcome {
+            InvokeOutcome::Ok {
+                text,
+                images,
+                result,
+            } => Ok(ToolResult::with_images(
+                if text.is_empty() && !result.is_null() {
+                    result.to_string()
+                } else {
+                    text
+                },
+                images,
+            )),
+            InvokeOutcome::Error { code, message } => {
+                Err(ToolError::Execution(format!("{message} ({code})")))
+            }
+        }
+    }
+
     async fn execute_rich(&self, arguments: Value) -> Result<ToolResult, ToolError> {
         let (payload, ctx) = split_context(arguments);
         let outcome = self
