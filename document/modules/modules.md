@@ -121,12 +121,28 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 两条通道都登记为 **Frontend-only**：通用调用等于"任意模块的任意方法"，
 模型不可控它。
 
-**面板侧同理**：模块要界面就用 `panel-ui/` 扩展（入口按钮、覆盖层、主区
-视图、边栏卡片、`acceptEvent` 钩子），Panel 壳不写任何模块的业务代码——
-**Panel 只提供布置 UI 的接口，它的概念空间里没有外部模块的具体实现**
+**面板侧同理**：模块要界面就用 `panel-ui/` 扩展，Panel 壳不写任何模块的业务
+代码——**Panel 只提供布置 UI 的接口，它的概念空间里没有外部模块的具体实现**
 （判据、推论与现状核对见 [Panel 前端](../panel/panel.md)「外壳边界」）。
+
+扩展拿到的插槽与钩子（全部是通用能力，壳不认识任何模块词汇）：
+
+| 类别 | 能力 | 典型用途 |
+| --- | --- | --- |
+| 插槽 | `entries` / `overlays` / `mainViews` / `railCards` / `railCardSlots` | 入口按钮、覆盖层、一级视图、边栏卡片 |
+| 徽标 | `entries[].badge(context)` | 按钮上的数字（壳只渲染，不解释含义） |
+| 事件 | `acceptEvent` | 归约本模块的帧（返回 false 则壳不再看） |
+| 查询 | `sessionBusy` / `toolPresentation` | "这个会话还有事在做吗" / "这次工具调用怎么呈现" |
+| 生命周期 | `setup` / `teamLanding` / `beforeSessionPick` / `cancelSessionWork` / `onCoreRemoved` / `sessionPresentation` / `canConfigureSessionApi` | 会话落点、取消、上游回收、标签与配置权限 |
+
+**"问句归壳、答案归模块"**：壳里那些与模块无关的通用机制（回合收尾要不要把工具
+行收尾、重连要不要清缓存、工具行显示什么图标）保留问句；答案由扩展给。于是壳
+既不需要持有模块状态，也不需要认任何工具名——这正是 `sessionBusy` /
+`toolPresentation` 存在的理由。
+
 清单是这套机制的第一个完整样本：工具 + 数据 + 快照方法 + 事件 + 界面**全部**
-在模块仓里。
+在模块仓里。到 2026-11-22，workspace / prodoc / checklist / subagent 四个外部
+模块都走这条路径。
 
 > **`Kernel` 是什么**：2026-11 取消「中间层 / 模块」二分之后新增的类别——提供其它模块的**运行地基**（词汇 / 线契约 / 注册表 / 事件日志 / 配置存储 / 循环驱动）。它们与其它模块同形（有 manifest、进 catalog、出现在本表），但**不可禁用**：`modules.toml` 写 `enabled = false` 会让启动失败并点名。逐条理由见 [运行地基](./kernel.md)。
 

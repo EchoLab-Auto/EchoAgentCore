@@ -109,10 +109,17 @@ EchoAgentPanel/
 
 | 壳提供（机制） | 壳不提供（业务） |
 | --- | --- |
-| 入口按钮位、覆盖层外壳、主区视图、边栏卡片（`extensions/registry.ts`） | 任何模块的数据类型与 reducer |
-| 事件钩子（`acceptEvent` / `setup` / `teamLanding` …） | 按模块名 / 工具名的特判分支 |
-| 命令发送（`sendCommand`）与身份上下文（`teamId` / `sessionId` / `core`） | 模块面板组件与它的样式 |
-| 通用模块通道：`InvokeModuleOp` 发命令、`ModuleEvent` / `ModuleInvokeResult` 收应答 | 某个模块的专用命令或专用事件 |
+| 入口按钮位（含数字徽标）、覆盖层外壳、主区视图、边栏卡片（`extensions/registry.ts`） | 任何模块的数据类型与 reducer |
+| 事件钩子：`acceptEvent` / `setup` / `teamLanding` / `beforeSessionPick` | 按模块名 / 工具名的特判分支 |
+| 查询钩子：`sessionBusy`（还有事在做吗）/ `toolPresentation`（工具行怎么呈现） | 模块面板组件与它的样式 |
+| 生命周期钩子：`cancelSessionWork` / `onCoreRemoved` | 模块的任务、清单、文档树等投影 |
+| 命令发送（`sendCommand`）与身份上下文（`teamId` / `sessionId` / `core`） | 某个模块的专用命令或专用事件 |
+| 通用模块通道：`InvokeModuleOp` 发命令、`ModuleEvent` / `ModuleInvokeResult` 收应答 | — |
+
+**为什么需要查询/生命周期钩子**：壳里有些通用机制天然要知道"这个会话还有事在做吗"
+（回合收尾时决定是否把工具行收尾）、"这次工具调用该显示成什么"（工具行标签与
+图标）、"用户取消后要清什么"。这些**问句**留在壳（与模块无关），**答案**由扩展给
+——壳因此既不需要持有模块状态，也不需要认任何工具名。
 
 三条推论：
 
@@ -125,9 +132,19 @@ EchoAgentPanel/
 3. **不为一个模块加一条协议**。想加专用命令/事件就是"让宿主替模块定义业务
    接口"——那会让可插拔退化成壳里加分支。缺能力时补**通用**通道，不补专用变体。
 
-现状核对（2026-11-21）：workspace / prodoc / checklist 三个模块的界面全部在各自
-仓的 `panel-ui/` 里，壳里没有任何一个的实现。清单曾是反例（约 900 行壳内实现），
-迁出过程与判据见 Panel 仓的 `docs/ui-extensions.md`「边界原则」。
+现状核对（2026-11-22）：workspace / prodoc / checklist / subagent 四个模块的界面
+与投影全部在各自仓的 `panel-ui/` 里——入口按钮与徽标、覆盖层、边栏卡片、事件
+归约、任务/清单/工作区数据，壳里一份都不留。壳源码里这些模块的 id、工具名、
+状态字段的**代码路径**为零（只剩解释历史的注释）。
+
+迁移顺序与遇到的两个坑（都值得记住）：
+1. **壳里的"通用机制"可能偷偷依赖模块状态**——回合收尾要读 `state.tasks`、
+   工具行要按 `spawn_subagent` 分支、重连要清工作区缓存。这些不是"壳的业务"，
+   而是**问句归壳、答案归模块**：补 `sessionBusy` / `toolPresentation` /
+   `onCoreRemoved` 之后才能搬。
+2. **模块投影不是响应式对象**：搬出 `reactive` 的 `AppState` 后，写普通对象
+   不会触发重算。做法是模块自己维护一个结构版本号（`ref`），读投影的 computed
+   **各自**读它——只让上层 computed 读会踩 Vue 的短路（布尔没变 → 下游不重算）。
 
 ## 状态管理与数据流
 
