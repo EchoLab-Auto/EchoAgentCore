@@ -6,17 +6,19 @@ x: 4308
 y: 216
 ---
 
-# 模块开发指南（外部进程模块）
+# 模块开发指南（进程外 / 进程内）
 
-> **定位**：本指南面向**外部模块作者**——如何写一个独立进程模块、如何用 `modules.toml` 装载、以及协议与生命周期约定。读者：模块作者与 Core 宿主侧维护者。内置模块体系（清单、能力开关）见 [模块化设计](./modules.md)。
+> **定位**：本指南面向**模块作者**，两条路各讲一半：**进程外模块**（独立进程 + 帧协议）与**进程内模块**（一个 crate 编进 Core）。两者共用 `modules.toml` 装载，但技术栈、生命周期与能力完全不同——先看「进程内模块」一节的判据表再选。读者：模块作者与 Core 宿主侧维护者。内置模块清单与能力开关见 [模块化设计](./modules.md)。
 
-> **状态**：协议冻结、宿主（inproc/stdio）、模块 SDK、试点模块、`modules.toml` 装载**全部可用**，工具贡献已端到端跑通；**安全限额已落地**（`[module.limits]` 子进程 rlimit + 入站频率限额 + 可逆停止）；热替换仍在推进。技能/服务贡献为后续方向。
+> **状态**：进程外——协议冻结、宿主（inproc/stdio）、模块 SDK、`modules.toml` 装载**全部可用**，工具与实例贡献端到端跑通，安全限额已落地（`[module.limits]` + 入站频率限额 + 可逆停止），**热替换仍在推进**。进程内——注册（`provide` / `require`）、命令域、文本块、事件订阅、**技能注册**（`SkillRegistrar`）均可用；停/再启对多数模块有真实运行效果。
+>
+> **技能贡献的两条路**：进程外模块在 `Register` 帧里上报（宿主拉取）；进程内模块在自己的 `mount` 里经 `SKILL_REGISTRAR` 登记（见「注册技能」）。
 
 > **框架在哪**：`echo-module` / `echo-module-api` / `echo-module-host` / `echo-module-loader` /
 > `echo-module-sdk` / `echo-context` 六件套住在**独立仓库**
 > [echo-fabric-arch](https://github.com/EchoLab-Auto/echo-fabric-arch)，**不在本仓**。
-> Core 通过 workspace 的 git 依赖按 tag 钉版本（`Cargo.toml` 的 `echo-module-* = { git = …, tag = "v0.14.0" }`），
-> 所以在本仓 `cargo grep echo_module_sdk` 找不到源码——要读实现或改框架去那个仓。
+> Core 通过 workspace 的 git 依赖按 tag 钉版本（`Cargo.toml` 的 `echo-module-* = { git = …, tag = "v0.19.4" }`），
+> 所以在本仓搜不到 `echo_module_sdk` 的源码——要读实现或改框架去那个仓。
 > 本仓内 `source/modules/*` 是**用框架写的业务模块**，不是框架本身。
 
 ## 五分钟上手
@@ -208,6 +210,171 @@ name = "echo-module-demo"
 - `modules.toml` 不存在 → 打印一行说明并**退出码 0**（特性休眠不是错误）；
 - stdout 只有 TOML 正文（`>` 落盘、`diff` 两份合成结果都干净）。
 - `--config` 可写在子命令**前或后**（`dump-config -c x` 与 `-c x dump-config` 等价）。
+
+## 进程内模块（编进 Core）
+
+前七节讲的是**进程外**模块（独立 PID、帧协议、可崩溃重启）。另一种是**进程内**模块：一个 crate 直接编进 Core 二进制，`mount` 就是它的构造函数。
+
+### 先选路：进程内还是进程外
+
+| 判据 | 进程内 | 进程外 |
+| --- | --- | --- |
+| 要动宿主内部（服务表、会话、事件出口、工具注册表） | ✅ 唯一选择 | ❌ 只能经有限回呼 |
+| 要与宿主共享类型（`Tool` trait、`BackendEvent` 等） | ✅ 同一份类型 | ❌ 只能过 JSON 帧 |
+| 要故障隔离 / 独立重启 / 独立资源限额 | ❌ 崩了 Core 一起崩 | ✅ 独立 PID |
+| 要独立发布、不随 Core 发版 | ❌ 跟着 Core 的构建 | ✅ 自带二进制 |
+| 要给提示词加文本块、注册技能、声明命令 | ✅ 直接可用 | 部分（命令/文本块仅进程内） |
+
+一句话：**功能深度优先选进程内，隔离与独立发版优先选进程外**。
+
+### 最小形状
+
+一个目录、两个文件：
+
+```text
+source/modules/agent-module-example/
+├── Cargo.toml
+├── module.toml          # 身份（单一真值）
+└── src/lib.rs           # manifest() + module()
+```
+
+`module.toml`——身份、依赖、提供全在这里，`lib.rs` 用 `include_str!` 读它：
+
+```toml
+id = "echo-agent.example"
+name = "示例模块"
+kind = "tool"            # 决定挂一层还是一份，见下表
+description = "……"
+builtin = true
+tag = "inner"            # 随 Core 发布
+
+requires = ["echo-agent.host.prompt_store"]        # 硬依赖：缺了不许挂
+optional_requires = ["echo-agent.host.skill_registrar"]  # 软依赖：有则用
+provides = ["echo-agent.example.tools"]            # 我能给别人的服务键
+```
+
+`lib.rs`：
+
+```rust
+pub const MANIFEST_TOML: &str = include_str!("../module.toml");
+pub const MODULE_ID: &str = "echo-agent.example";
+
+pub fn manifest(version: &str) -> echo_module::ModuleManifest {
+    echo_module::ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("module.toml 解析失败")
+}
+
+pub fn module(version: &str) -> std::sync::Arc<dyn echo_module::Module> {
+    std::sync::Arc::new(
+        echo_module::BuiltinModule::new(manifest(version), |mctx| {
+            // ① 解析宿主给的能力（按稳定键，不靠构造参数）
+            let store = mctx.require(&agent_module_skills::host_keys::PROMPT_STORE)?;
+            // ② 把自己的服务登记出去（返回 disposer，卸载时自动撤）
+            let ctx = mctx.context().ok_or_else(|| {
+                echo_module::ModuleMountError::Mount("缺少 Ctx".into())
+            })?;
+            // `MY_SERVICE_KEY` 是你自己声明的 ServiceKey，与 module.toml 的
+            // `provides` 同一个字符串。
+            let keep = ctx
+                .provide(&MY_SERVICE_KEY, std::sync::Arc::new(MyService::new(store)))
+                .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?;
+            // ③ 返回 disposer 列表 = 这个模块的可逆副作用
+            Ok(vec![keep])
+        })
+    )
+}
+```
+
+三个约定：
+
+1. **`module(version)` 是唯一构造入口**，目录里只写这一句（组合根不认识你的内部结构）；
+2. **`mount` 返回值是 `Vec<Disposer>`**——凡是"注册/占用/提供"，都返回对应的 disposer，卸载时框架逐个执行。不返回 disposer 的运行期状态会在热停用后残留；
+3. **`mount` 里不要拿运行期句柄当构造参数**，按 `ServiceKey` 解析（`mctx.require` / `ctx.service`）。这是"目录零参数"的前提。
+
+### `MountContext` 能拿到什么
+
+| 方法 | 用途 | 缺席时 |
+| --- | --- | --- |
+| `mctx.require(&KEY)` | 硬依赖：解析宿主或其他模块提供的服务 | 返回 `MissingService`（含可用键清单），挂载失败 |
+| `ctx.service(&KEY)` | 软依赖：有则用、无则降级 | `None` |
+| `mctx.context()` | 拿到 `Arc<Ctx>`，用于 `provide` / 订阅变更 / fork 子作用域 | `None`（裸注册表测试） |
+| `mctx.config()` / `config_str(k)` | `modules.toml` 的 `[module.config]`，未配置是 `Null` | `Null` |
+| `mctx.events` | 宿主事件出口；`emit(name, payload)` 即发即走 | 丢弃不算错 |
+| `mctx.module_id()` | 本模块 id（日志与事件来源标注） | 空串 |
+| `mctx.nest()` | 挂子模块的子作用域，卸载时级联 | `None` |
+
+### 贡献面：模块能对外给什么
+
+| 构造器 | 给出什么 | 消费者 |
+| --- | --- | --- |
+| `with_commands([...])` + `with_command_handler_async(...)` | 命令域（`BackendCommand` 的名字） | 命令泵按名分发 |
+| `with_text_blocks([ModuleTextBlock::new(key, label, order)])` + `with_text_block_content(...)` | 系统提示词文本块 | 提示词组装（按 `order` 排序） |
+| `with_subscriptions(["some.event"])` | 声明订阅的事件名 | 事件总线只投递订阅过的 |
+| `ctx.provide(&KEY, value)`（在 `mount` 里） | 服务键 → 能力 | 其他模块的 `require` |
+
+**文本块**注意两点：`key` 要带模块前缀（去重与覆盖按它算）；`order` 只影响块在提示词里的先后，小的在前。
+
+### 依赖语义：`requires` vs `optional_requires`
+
+| 声明 | 缺失后果 | 参与拓扑排序 | 参与启动就绪判定 |
+| --- | --- | --- | --- |
+| `requires` | 挂载失败（启动失败并点名） | ✅ | ✅ |
+| `optional_requires` | 降级（模块照常挂载） | ✅ | ❌ |
+
+软依赖**照样参与排序**是刻意设计：它表达"有则先于我"。只按硬依赖排会漏掉一大类真实顺序——例如业务模块要把技能交给 `skills.dir`，但"关掉技能目录"不该让业务模块起不来，于是它只能是软依赖；如果软依赖不参与排序，技能模块可能后挂，`mount` 时接缝还没就位，**技能静默丢失**。
+
+### 注册技能（`SkillRegistrar`）
+
+技能正文跟着模块走，是 2026-11 起的推荐做法。改造前归属写在宿主的硬编码清单里，后果是：`modules.toml` 里 `enabled = false` 的模块，技能照样进提示词——模型被教一个本部署没有的工具。
+
+```rust
+fn mount(mctx: &echo_module::MountContext) -> echo_module::ModuleMountResult {
+    let Some(ctx) = mctx.context() else { return Ok(Vec::new()) };
+    // 软依赖：没挂 skills.dir 时只少一段提示词，业务功能不受影响
+    let Some(registrar) = ctx.service(&echo_defs::skill::SKILL_REGISTRAR) else {
+        tracing::warn!(module = MODULE_ID, "技能注册接缝缺席");
+        return Ok(Vec::new());
+    };
+    registrar
+        .register_markdown(MODULE_ID, &[(SKILL_MARKDOWN, "my-skill")])
+        .map_err(|e| echo_module::ModuleMountError::Mount(e))?;
+    Ok(vec![echo_defs::Disposer::from_fn(move || {
+        registrar.unregister(MODULE_ID);
+    })])
+}
+```
+
+要点：
+
+- **只交正文，不交结构体**：`Skill ∈ echo-defs` 的 frontmatter 解析归技能模块，注册方不必依赖解析器，也不会出现两份格式规则；
+- **`owner` 用模块 id**：技能表按 `owner` 整体替换，卸载时整批撤销；
+- **反向成立**：模块被禁用/卸载时技能一起消失，这正是这条接缝存在的理由；
+- **降级而非失败**：接缝缺席只 warn（配 `optional_requires` 声明它），登记失败也不该让整个模块起不来——功能还在，缺的只是提示词里那段规则。
+
+同一份规则对**文本块**同样适用：文本块的 `with_text_block_content` 回调在模块未挂载时自然不产出内容，因此不需要额外的撤销逻辑。
+
+### 依赖方向纪律
+
+进程内模块**不许 import 业务 crate `echo-agent`**（只有组合根 `modules/core` 可以），只允许依赖定义层与机制层。逐 crate 白名单在 `scripts/deps-policy.txt`，由 `modules/core/tests/module_dependency_direction.rs` 与 `scripts/check-deps.sh` 共读同一张表——新增 crate 要同时登记，否则门禁形同虚设。
+
+### 怎么让它被挂上
+
+三步，缺一不可：
+
+1. **进目录**：组合根 `source/modules/core/src/builtin_modules.rs` 里 `push_module(&mut catalog, your_crate::module(version))?`；
+2. **进 `BUILTIN_MODULE_IDS`**（`agent-module-loop/src/modules.rs`）：更新器校验、文档门禁与"内置还是外部"的判定都读它，漏登记会让三处校验静默变弱；
+3. **进文档**：`document/modules/modules.md` 的内置模块表要有一行（`doc_catalog` 门禁会比对数量与 id）。
+
+挂载层级由 `module.toml` 的 `kind` 决定（见「同一个文件也管内置模块」）：`tool` / `skill` / `provider` 每人格一份，其余进程级单例。**选错这一栏的典型症状是"监听端口被开了 N 次"或"第一个人格的适配器被第二个人格顶掉"**。
+
+`modules.toml` 里写 `[[module]] id = "..." kind = "builtin" enabled = false` 可以关掉它（注册但不挂载）；**没写进文件的内置模块一律照旧挂载**。
+
+### 验证清单
+
+- `cargo test -p <你的 crate>`：`mount` 的服务缺席分支、disposer 撤销、命令/文本块内容；
+- `cargo test -p echo-agent-core`：目录构造、`BUILTIN_MODULE_IDS` 双向相等、文档门禁；
+- 起真进程看启动日志：`modules mounted mounted=[...]` 里有你的 id；`contributed_owners` 里有你的技能（如果登记了）；
+- 关掉它再起一次：技能、命令、文本块都应当一起消失——这是"归属跟着生存期走"的反向验证。
 
 ## 框架贡献与 Core 自定义分类
 
