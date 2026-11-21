@@ -91,6 +91,13 @@ y: 216
 技能 frontmatter 声明 `package: echo-agent.subagent`，随包级门控与工具一起
 启停（见 [模块化设计](./modules.md)「Package」章节）。
 
+**正文随模块注册**（2026-11）：`subagent-delegation` 的 SKILL.md 由本 crate
+`include_str!` 持有，`mount` 时经 `echo_defs::skill::SKILL_REGISTRAR` 登记，
+卸载时撤销（`crates/agent-module-subagent/src/module.rs`）。因此在
+`modules.toml` 里 `enabled = false` 的部署，提示词里**不会**出现这个技能——
+改造前它在宿主的硬编码清单里，关掉模块技能照样在。`model-profiles` 属于
+文件层（`skills/` 目录，frontmatter 标 `package:`），不走这条接缝。
+
 ## Hook 机制（agent-module-loop 注入接口）
 
 子任务完成通知与 QQ 消息/定时器同族：**结构化 hook → 新入站 turn**。

@@ -61,6 +61,7 @@ pub mod token;
 pub mod tool;
 
 pub use chat::{ChannelType, IncomingFile, IncomingMessage};
+pub use disposer::Disposer;
 pub use llm::{LlmError, LlmProvider};
 pub use media::{compact_embedded_media, elide_inline_data_uris, image_placeholder};
 pub use message::{

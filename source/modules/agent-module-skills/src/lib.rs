@@ -84,10 +84,15 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
             let store_keep = ctx
                 .provide(&host_keys::PROMPT_REFRESHER, refresher)
                 .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?;
+            let registrar_handle: std::sync::Arc<dyn echo_defs::skill::SkillRegistrar> =
+                std::sync::Arc::new(RegistrarHandle(skill_runtime.clone()));
+            let registrar_keep = ctx
+                .provide(&echo_defs::skill::SKILL_REGISTRAR, registrar_handle)
+                .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?;
             let runtime_keep = ctx
                 .provide(&host_keys::SKILLS_RUNTIME, skill_runtime)
                 .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?;
-            Ok(vec![keep, store_keep, runtime_keep])
+            Ok(vec![keep, store_keep, runtime_keep, registrar_keep])
         })
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
@@ -735,5 +740,24 @@ mod contributed_owner_tests {
             registry.package_names("echo-agent.instance.qq"),
             vec!["s".to_string()]
         );
+    }
+}
+
+/// 注册接缝的 provide 形态：`Arc<SkillsRuntime>` + "登记即重载"。
+///
+/// 为什么不直接把 `SkillsRuntime` 交出去：`register_markdown(&self, …)` 的
+/// 签名拿不到 `Arc`，而重载要跨 `await` spawn 出去。这一层持有 `Arc`，
+/// 把"写表"与"让新表生效"合成一个动作——模块 mount 里调用一次就完，
+/// 不需要它知道本模块什么时候愿意重载。
+struct RegistrarHandle(std::sync::Arc<runtime::SkillsRuntime>);
+
+impl echo_defs::skill::SkillRegistrar for RegistrarHandle {
+    fn register_markdown(&self, owner: &str, skills: &[(&str, &str)]) -> Result<(), String> {
+        self.0.register_and_reload(owner, skills)
+    }
+
+    fn unregister(&self, owner: &str) {
+        echo_defs::skill::SkillRegistrar::unregister(self.0.as_ref(), owner);
+        self.0.reload_now("unregister");
     }
 }

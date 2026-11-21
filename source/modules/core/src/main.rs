@@ -1786,15 +1786,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 观测出处：合并与否都给——独立监听时 Panel 连的端口正是
                 // 管理端口，邀请串要宣告「它用的那个地址」（2026-11）。
                 federation_observer: Some(merge_fed.clone()),
-                // 技能贡献来源：外部模块（`Register` 帧）+ 内置模块（编译期
-                // 常量）。外部模块要 `module_runtime` 启动之后才有，而
-                // `HostWiring` 正好组装在那之后；内置模块与环境无关，所以这个
-                // 来源**无条件注册**——没配 modules.toml 的部署也要有 subagent
-                // 与 prodoc 的技能。
+                // 技能贡献来源：只剩**进程外**模块（`Register` 帧）这一路。
+                // 内置模块（subagent / prodoc …）2026-11 起在自己的 `mount`
+                // 里经 `echo_defs::skill::SKILL_REGISTRAR` 登记，不再经过宿主
+                // 清单——归属跟着挂载状态走，模块被禁用时技能一起消失。
                 skill_contributions: Some(std::sync::Arc::new(
                     crate::modules_runtime::ModuleSkillContributions::new(
                         module_runtime.as_ref().map(|runtime| &runtime.started),
-                        crate::builtin_modules::skill_contributions(),
                     ),
                 )
                     as std::sync::Arc<dyn agent_module_skills::host_keys::SkillContributionSource>),
@@ -2017,11 +2015,22 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .map(|module| module.provides())
                 .unwrap_or_default()
         };
+        // 排序用 **硬 + 软** 依赖（2026-11）：软依赖只表达"有则先于我"，
+        // 不参与 `mount_when_ready` 的缺失判定（那里只看 `required`）。
+        // 只按硬依赖排会漏掉一大类真实顺序——例如 subagent 的
+        // `optional_requires = ["echo-agent.host.skill_registrar"]`：它不是
+        // 硬依赖（关掉技能目录不该让 subagent 起不来），但技能模块确实必须
+        // 先挂上，否则 mount 时接缝还没就位、技能静默丢失。
         let requires_of = |id: &str| -> Vec<String> {
             catalog
                 .iter()
                 .find(|module| module.manifest().id == id)
-                .map(|module| module.inject().required)
+                .map(|module| {
+                    let inject = module.inject();
+                    let mut keys = inject.required;
+                    keys.extend(inject.optional);
+                    keys
+                })
                 .unwrap_or_default()
         };
         let (order, dependency_diagnostics) =

@@ -77,35 +77,6 @@ fn push_builtin(
 ///
 /// ## 为什么与 stdio 模块分开走
 ///
-/// 外部模块（qq）经握手帧 `Register` 上报贡献，宿主从 `ModuleHandle` 读出；
-/// 内置模块没有那套协议——它们和宿主编在同一个二进制里，贡献就是几个
-/// `&'static str` 常量。两条路在 [`crate::modules_runtime::ModuleSkillContributions`]
-/// 汇合，技能表只看见一份 `(owner, skills)`。
-///
-/// ## 为什么正文由各自 crate 提供
-///
-/// 技能内容是**模块的领域知识**（subagent 怎么用、ProDoc 文档怎么写），
-/// 只有对应的 crate 能保证它跟实现同步。这里只负责解析成宿主技能类型
-/// ——解析器属于技能模块，别的 crate 不必认识 SKILL.md 格式。
-pub fn skill_contributions() -> Vec<(String, Vec<echo_defs::skill::Skill>)> {
-    vec![
-        (
-            agent_module_loop::modules::SUBAGENT_MODULE_ID.to_string(),
-            vec![agent_module_skills::loader::parse_skill_text(
-                agent_module_subagent::SKILL_MARKDOWN,
-                "subagent-delegation",
-            )],
-        ),
-        (
-            agent_module_prodoc::MODULE_ID.to_string(),
-            vec![agent_module_skills::loader::parse_skill_text(
-                agent_module_prodoc::SKILL_MARKDOWN,
-                "prodoc-format",
-            )],
-        ),
-    ]
-}
-
 fn push_module(catalog: &mut Vec<Arc<dyn Module>>, module: Arc<dyn Module>) -> anyhow::Result<()> {
     let id = module.manifest().id.clone();
     validate_module_id(&id)?;
@@ -246,12 +217,10 @@ pub(crate) fn catalog_with(
     // ── 联邦（命令域 + 远程工具路由）──
     push_module(&mut catalog, agent_module_federation::module(version))?;
 
-    // ── subagent 委派（纯身份：工具与 hook 在 echo-agent 侧实现）──
-    push_builtin_identity(
-        &mut catalog,
-        version,
-        agent_module_loop::modules::SUBAGENT_MODULE_ID,
-    )?;
+    // ── subagent 委派（工具与 hook 在 echo-agent 侧实现；本模块只做身份
+    //    与技能登记——`mount` 里把 `subagent-delegation` 正文交给技能模块，
+    //    归属因此跟着挂载状态走）──
+    push_module(&mut catalog, agent_module_subagent::module(version))?;
 
     // ── 显示层（时间线投影 + 会话视图命令域）──
     //
@@ -369,7 +338,6 @@ fn push_builtin_identity(
     // `MANIFEST_TOML` 字符串，解析在这里做：**声明归 crate，解析归组合根**，
     // 同一份 TOML 只有一个。
     let text = match id {
-        agent_module_loop::modules::SUBAGENT_MODULE_ID => agent_module_subagent::MANIFEST_TOML,
         echo_defs::MODULE_ID => echo_defs::MANIFEST_TOML,
         echo_config::MODULE_ID => echo_config::MANIFEST_TOML,
         agent_module_management::PROTOCOL_MODULE_ID => {
@@ -729,54 +697,68 @@ mod catalog_shape_tests {
 mod tests {
     use super::*;
 
-    /// 内置模块的技能必须真的解析出来——`SKILL_MARKDOWN` 是编译期常量，
-    /// 一旦有人把 crate 里的 skills/ 目录改坏（或忘了带进发布包），
+    /// 内置模块的技能正文必须真的解析出来——`SKILL_MARKDOWN` 是编译期
+    /// 常量，一旦有人把 crate 里的 `skills/` 目录改坏（或忘了带进发布包），
     /// 症状是「技能静默消失」，不是编译错误。
+    ///
+    /// 2026-11：**归属**已经搬到模块自己的 `mount`（经
+    /// `echo_defs::skill::SKILL_REGISTRAR`），Core 不再持有清单。这里守的是
+    /// 另一半——正文本身仍然可解析、带包标签、frontmatter 被剥掉。归属那
+    /// 一侧由各 crate 的 mount 测试与启动日志 `contributed_owners` 保证。
     #[test]
-    fn builtin_modules_contribute_their_skills() {
-        let contributions = skill_contributions();
-        let names: Vec<(String, Vec<String>)> = contributions
-            .iter()
-            .map(|(owner, skills)| {
-                (
-                    owner.clone(),
-                    skills.iter().map(|s| s.metadata.name.clone()).collect(),
-                )
-            })
-            .collect();
-        assert!(
-            names.contains(&(
-                "echo-agent.subagent".to_string(),
-                vec!["subagent-delegation".to_string()]
-            )),
-            "subagent 的技能没解析出来：{names:?}"
-        );
-        assert!(
-            names.contains(&(
-                "echo-agent.prodoc".to_string(),
-                vec!["prodoc-format".to_string()]
-            )),
-            "prodoc 的技能没解析出来：{names:?}"
-        );
-        // 包标签必须落在技能上，否则禁用模块时技能不会跟着消失。
-        for (_, skills) in &contributions {
-            for skill in skills {
-                assert!(
-                    skill.metadata.package.is_some(),
-                    "技能 {} 缺 package 标签，包级门控会漏掉它",
-                    skill.metadata.name
-                );
-                assert!(
-                    !skill.instructions.is_empty(),
-                    "技能 {} 正文为空",
-                    skill.metadata.name
-                );
-                assert!(
-                    !skill.instructions.starts_with("---"),
-                    "技能 {} 的 frontmatter 没被剥掉，会原样进提示词",
-                    skill.metadata.name
-                );
-            }
+    fn module_skills_are_parseable_and_attributed() {
+        let cases: [(&str, &str, &str); 2] = [
+            (
+                agent_module_loop::modules::SUBAGENT_MODULE_ID,
+                agent_module_subagent::SKILL_MARKDOWN,
+                "subagent-delegation",
+            ),
+            (
+                agent_module_prodoc::MODULE_ID,
+                agent_module_prodoc::SKILL_MARKDOWN,
+                "prodoc-format",
+            ),
+        ];
+        for (owner, markdown, expected_name) in cases {
+            let skill = agent_module_skills::loader::parse_skill_text(markdown, expected_name);
+            assert_eq!(
+                skill.metadata.name, expected_name,
+                "`{owner}` 的技能名与兜底名不一致"
+            );
+            assert!(
+                !skill.instructions.is_empty(),
+                "`{owner}` 的技能正文为空"
+            );
+            assert!(
+                !skill.instructions.starts_with("---"),
+                "`{owner}` 的技能 frontmatter 没被剥掉，会原样进提示词"
+            );
+            // 包标签必须落在技能上，否则禁用模块时技能不会跟着消失。
+            assert!(
+                skill.metadata.package.is_some(),
+                "`{owner}` 的技能缺 package 标签，包级门控会漏掉它"
+            );
+        }
+    }
+
+    /// 两个带技能的模块都必须声明技能注册接缝——否则它们的正文永远进不了
+    /// 提示词，而且**没有任何报错**（mount 里只 warn）。
+    #[test]
+    fn skill_owning_modules_declare_the_registrar() {
+        for manifest_text in [
+            agent_module_subagent::MANIFEST_TOML,
+            agent_module_prodoc::MANIFEST_TOML,
+        ] {
+            let manifest =
+                ModuleManifest::from_toml(manifest_text, "0.0.0-test").expect("清单解析");
+            assert!(
+                manifest
+                    .optional_requires
+                    .iter()
+                    .any(|key| key == "echo-agent.host.skill_registrar"),
+                "模块 `{}` 没声明技能注册接缝",
+                manifest.id
+            );
         }
     }
 
