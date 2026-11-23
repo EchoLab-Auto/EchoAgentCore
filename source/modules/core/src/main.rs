@@ -1980,13 +1980,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // modules.toml 时被漏掉默认禁用，出现「只想加载 Core 内置模块，
         // workspace 却仍被挂载」的部署偏差。按 catalog 是否位于
         // BUILTIN_MODULE_IDS 判定，新增外部仓可选模块自动获得同一语义。
+        //
+        // 例外见 [`DEFAULT_ENABLED_EXTERNAL_IDS`]（工作区默认启用）。
         let optional_ids = catalog
             .iter()
-            .filter(|module| {
-                !agent_module_loop::modules::BUILTIN_MODULE_IDS
-                    .contains(&module.manifest().id.as_str())
-            })
             .map(|module| module.manifest().id.clone())
+            .filter(|id| needs_explicit_enable(id))
             .collect::<Vec<_>>();
         // 「显式提到」= 内置行计划里有它 **或** `modules.toml` 里有任何一行
         // 是它（`kind = "stdio"` / `"dylib"` 的外部模块行走的是第二条）。
@@ -2689,6 +2688,53 @@ mod tests {
             PathBuf::from("config/echo-agent-core.toml")
         );
     }
+
+    /// 工作区**默认启用**：它是纯客户端能力，不该要求部署方先写一行配置。
+    ///
+    /// 锁住的是实测踩到的症状——全新二进制安装的部署里，面板模块清单里
+    /// 根本没有 `echo-agent.workspace`（`emit_modules_list` 只发 enabled 的
+    /// 模块，禁用即从清单消失，用户在界面上既看不到也无从启用）。
+    #[test]
+    fn workspace_does_not_need_explicit_enable() {
+        assert!(!needs_explicit_enable(agent_module_workspace::MODULE_ID));
+    }
+
+    /// 内嵌 Panel 仍然要显式启用：默认开它等于默认对外监听一个端口。
+    #[test]
+    fn panel_still_needs_explicit_enable() {
+        assert!(needs_explicit_enable(agent_module_panel::MODULE_ID));
+    }
+
+    /// 本仓声明的内置模块永远不需要"显式启用"（它们本来就默认挂载）。
+    #[test]
+    fn builtin_modules_never_need_explicit_enable() {
+        for id in agent_module_loop::modules::BUILTIN_MODULE_IDS {
+            assert!(!needs_explicit_enable(id), "{id}");
+        }
+    }
+}
+
+/// 外部仓的**进程内**模块里，默认启用（不需要部署方在 `modules.toml` 提一句）。
+///
+/// 默认禁用的理由只对一类模块成立：**默认启用等于默认对外开一个面**。
+/// Panel 就是那类（它监听端口）。工作区不是——它是纯客户端能力（面板多会话 /
+/// 多目录 + 一个 `workspace` 工具），不监听任何端口、不引入新的信任边界。
+///
+/// 把它留在"可选"名单里的实际后果是**所有新部署都没有工作区入口**：
+/// `emit_modules_list` 只发 `enabled` 的模块（禁用即卸载，"清单的语义是当前
+/// 挂载的模块"），所以它在面板上既不可见、也无从就地启用。实测就是这个症状
+/// ——一个全新二进制安装的部署，模块清单里根本没有 `echo-agent.workspace`。
+///
+/// 不想要它的部署照旧写 `enabled = false`（那比"想要却看不到开关"好查得多）。
+pub(crate) const DEFAULT_ENABLED_EXTERNAL_IDS: [&str; 1] = [agent_module_workspace::MODULE_ID];
+
+/// 该模块是否**必须**由部署方在 `modules.toml` 里显式启用才挂载。
+///
+/// 判据只有两条：不在 [`agent_module_loop::modules::BUILTIN_MODULE_IDS`]
+/// （本仓声明的内置模块）里，且不在 [`DEFAULT_ENABLED_EXTERNAL_IDS`] 里。
+fn needs_explicit_enable(module_id: &str) -> bool {
+    !agent_module_loop::modules::BUILTIN_MODULE_IDS.contains(&module_id)
+        && !DEFAULT_ENABLED_EXTERNAL_IDS.contains(&module_id)
 }
 
 /// 来自其它仓库、编译进本二进制的进程内模块。
