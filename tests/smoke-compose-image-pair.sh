@@ -288,6 +288,10 @@ cleanup() {
     trap - EXIT INT TERM
 
     if ((COMPOSE_UP == 1)) && ((${#COMPOSE[@]})); then
+        # 先留证据再拆：应用层验收失败时，这两份日志是唯一能解释「谁先断」的东西。
+        "${COMPOSE[@]}" ps >"${SCRATCH:-/tmp}/logs/compose-ps.log" 2>&1 || true
+        "${COMPOSE[@]}" logs --no-color --timestamps \
+            >"${SCRATCH:-/tmp}/logs/compose.log" 2>&1 || true
         timeout 180 "${COMPOSE[@]}" down -v --remove-orphans \
             >"${SCRATCH:-/tmp}/logs/compose-down.log" 2>&1 || true
     fi
@@ -698,7 +702,7 @@ EOF
 
     cat >"$PROJECT/docker-compose.override.yml" <<EOF
 # 本文件由 tests/smoke-compose-image-pair.sh 生成：只做隔离覆盖，不改模板。
-# `!override` / `!reset` 需要 compose v2.24.4+。
+# !override / !reset 需要 compose v2.24.4+。
 services:
   core:
     container_name: $UNIQ-core
@@ -711,7 +715,7 @@ services:
     restart: "no"
     # 模板默认 "8080:8080"（生产端口）——只绑回环随机端口。
     ports: !override ["127.0.0.1:$PANEL_PORT:8080"]
-  # 模板里的 NapCat：挂到永不启用的 profile，连 `up` 不带服务名也不会起。
+  # 模板里的 NapCat：挂到永不启用的 profile，连 up 不带服务名也不会起。
   napcat:
     profiles: ["wave2-pair-never"]
 networks:
@@ -1069,14 +1073,15 @@ main() {
 
     hdr "② 临时回环 registry + digest 取证"
     start_registry
-    CORE_DIGEST=$(push_and_resolve "$CORE_LOCAL" "echo-agent-wave2/core" core) || exit 1
-    hdr "② 临时回环 registry + digest 取证"
-    start_registry
     push_and_resolve "$CORE_LOCAL" "echo-agent-wave2/core" core
     CORE_DIGEST=$RESOLVED_DIGEST
     push_and_resolve "$PANEL_LOCAL" "echo-agent-wave2/panel" panel
     PANEL_DIGEST=$RESOLVED_DIGEST
     [[ -n $CORE_DIGEST && -n $PANEL_DIGEST ]] || die digest "digest 解析为空"
+    CORE_REF="$REG_HOST/echo-agent-wave2/core@$CORE_DIGEST"
+    PANEL_REF="$REG_HOST/echo-agent-wave2/panel@$PANEL_DIGEST"
+    record PASS "pair" "digest 配对成立：core=$CORE_DIGEST panel=$PANEL_DIGEST"
+    PANEL_PORT=$(choose_port) || die project "无法选择空闲端口"
     [[ -n $PANEL_PORT ]] || die project "无法选择空闲端口"
     setup_project
     compose_config_checks
