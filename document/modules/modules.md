@@ -38,8 +38,8 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 - 注册为**可逆**副作用：`Module::mount` 返回 disposer（`ModuleMountResult`，注册表持有、卸载时调用）；`register_and_mount` 注册并按启用态挂载（禁用模块只注册不挂载）
 - 数据模块（skill/tool）支持热重载（模块目录 5s 轮询）；代码模块需二进制重载
 - **启动顺序**：`apply_disabled` 先于挂载——禁用模块启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（门控集合按 `kind` 派生——见 `modules/scope.rs` 的 `KIND_SCOPE`；最终 = 全局启用 ∧ 白名单）；模块宿主由组合根注入为**进程级单例**（全体人格共享）
-- **mount 实化**：可安全逆注册的模块（management.panel / tools.builtin / skills.dir / instance.qq / workspace / subagent）已把组合根装配搬进 mount 闭包，运行期 `ToggleModule` 停/再启对它们有真实运行效果；`instance.qq` 的启动期 mount 不抢跑（wired 标志在模块实例接线完成后才置位），启动受 `[instances.qq].enabled` 与模块状态双重门控；`loop.single` 在 mount 里 `provide` 唯一的 `TurnRunner`，但**注入到人格**依赖 `AgentManager`（注册于挂载之后）——由人格启动循环**回填注入**（见 [Agent 循环](../core/agent-loop.md)「注入与分派」）
-- **运行期热更新**：模块/工具/技能勾选在 `SaveTeam` 保存后**立即生效**，无需重启——工具/技能逐名双向应用（取消勾选即禁用、重新勾选即恢复）；全局 `ToggleModule` 经 mount/unmount 闭包逐 persona 重评估（`reapply_module_gating`：全局启用 ∧ persona 名单，名单外不放开、unmount 对全员生效）；`ToggleTool`/`ToggleSkill` 同样逐 persona 重算（`reapply_tool_gating` / `reapply_skill_gating`：persona 黑名单不被全局启用覆盖）
+- **mount 实化**：可安全逆注册的模块（management.panel / tools.builtin / skills.dir / instance.qq / workspace / subagent）已把组合根装配搬进 mount 闭包，运行期唯一的模块级操作是 `RestartModule`（卸下 → 重新挂载），它走的正是同一对 unmount / mount 闭包，所以对这些模块有真实运行效果；**启停（挂载 / 卸载）在运行期没有命令入口**（命令表里已没有 `ToggleModule`），只能改配置后重启 Core；`instance.qq` 的启动期 mount 不抢跑（wired 标志在模块实例接线完成后才置位），启动受 `[instances.qq].enabled` 与模块状态双重门控；`loop.single` 在 mount 里 `provide` 唯一的 `TurnRunner`，但**注入到人格**依赖 `AgentManager`（注册于挂载之后）——由人格启动循环**回填注入**（见 [Agent 循环](../core/agent-loop.md)「注入与分派」）
+- **运行期热更新**：模块/工具/技能勾选在 `SaveTeam` 保存后**立即生效**，无需重启——工具/技能逐名双向应用（取消勾选即禁用、重新勾选即恢复）；全局挂载集在运行期**不可改**（没有 `ToggleModule`）；`RestartModule` 重挂载后仍经 mount/unmount 闭包逐 persona 重评估（`reapply_module_gating`：全局启用 ∧ persona 名单，名单外不放开、unmount 对全员生效）；`ToggleTool`/`ToggleSkill` 同样逐 persona 重算（`reapply_tool_gating` / `reapply_skill_gating`：persona 黑名单不被全局启用覆盖）
 
 ### 来源与运行形态（两个正交维度）
 
@@ -66,13 +66,66 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 
 - **装载**：`modules_runtime::start_with_specs` 把装载器筛出的每条 `LaunchSpec`（module_id / command / args / env / config）交给独立 `ModuleSupervisor` 拉起，工具与实例贡献再接入 Core；Core 侧对这类模块只保留启停门控，不持有实现
 - **进模块清单**：每个**静态**条目（动态的 QQ 实例 `LaunchSpec` 除外，它们另有实例门控壳）会在模块宿主里注册一个门控壳——`runtime = subprocess` + `builtin = false`，`enabled` 取配置值，启动失败原因填进 `error`。此前它们从不注册，面板的「外部模块」组因此只剩实例壳，用户装的外部模块完全不可见
-- **启停真的停/起子进程**：门控壳的 mount 仍是 no-op，但 `ToggleModule` 对这类条目走**子进程控制面**（独立 trait `SubprocessModuleControl`，经 `ModuleHost::set_subprocess_control` 注入；组合根用 supervisor 的 `ModuleHandle` 实现它）：禁用 = `stop`（排空后进程退出、监督任务留下可重启），启用 = `start`（重新握手、重新申报贡献）。`RestartModule` = `stop` + `start`
+- **运行期只能重启，不能启停**：门控壳的 mount 仍是 no-op。`RestartModule` 对这类条目走**子进程控制面**（独立 trait `SubprocessModuleControl`，经 `ModuleHost::set_subprocess_control` 注入；组合根用 supervisor 的 `ModuleHandle` 实现它）的 `upgrade` = supervisor **热替换**：先拉新进程 + 握手，成功才原子切换流量并排空旧进程，握手失败时旧实例继续服务。`stop` / `start` 仍留在控制面上（`ModuleHost::stop_subprocess` / `start_subprocess`），但**生产路径已无调用者**（只有测试用）——协议里没有 `ToggleModule`，所以「排空退出 / 重新拉起」这两件事现在只能由重启 Core 触发
 - **入站频率限额**（宿主保护）：`Emit` / `Log` 超每秒配额即丢弃并计数，`HostCall` 超限回 `rate_limited` 错误回执（模块能感知背压），`InvokeResult` 永不丢（丢了调用挂死）。缺省 2000 / 500 / 200 每秒——合法模块远够不到，失控循环会被挡住
-- **与可逆停止的区别**：supervisor 的 `Control::Stop` 保留监督任务（可再 `Start`），`Control::Drain` 是终态（任务退出）。前者服务面板启停，后者服务关停/热替换。停止期间调用立刻失败（不排队、不挂死）
+- **与可逆停止的区别**：supervisor 的 `Control::Stop` 保留监督任务（可再 `Start`），`Control::Drain` 是终态（任务退出）。前者曾服务面板的在线启停（该入口已从协议移除，控制面方法目前只有测试在调），后者服务关停 / 热替换。停止期间调用立刻失败（不排队、不挂死）
 - **与来源维度无关**：进程外可以是「manifest 编译内置 + 实现独立进程」（`instance.qq`），也可以是 manifest 与实现都来自外部；判据是 `runtime`，不是 `builtin`
 - **与进程内模块的差别**：进程内 = 实现编译进 Core（挂载/卸载即生效）；进程外 = 独立 PID 与生命周期（崩了不带走 Core，启停经门控）
 - **实例模块贡献什么**：`InstanceContribution`（实例名 / 平台 / 能力位 / 配置 schema / UI 描述符 / 会话标签 / **模型工具声明**）。宿主侧不认识任何平台细节——管理界面按描述符渲染、管理动作经 `invoke_custom(method, payload)` 字符串透传、**模型工具由模块声明**（宿主只做合并 / `account` 寻址 / 出站闸门 / 透传，见 [工具系统](./tools.md)「工具从哪来」）
 - 协议、SDK 与部署方式见 [模块开发指南](./module-authoring.md)（含「实例模块」一节）
+
+### 生命周期可观测性：面板能断言什么、不能断言什么
+
+这一节写的是**证据边界**，不是 UI 规范——面板（以及任何客户端）只能按这里说的推。
+四条事实（2026-11 核实，均有代码依据）：
+
+1. **清单 ≠ 挂载集**。`ModulesList` 由 `emit_modules_list` 下发，它先 `descriptors()` 再
+   `filter(|d| d.enabled)`：清单的语义是「当前**启用**的模块」，禁用即卸载、卸载即从清单消失。
+   所以清单里没有 `enabled = false` 的行，也不该把「在清单里」读成「已挂载成功」
+   （`enabled` 来自注册表的启用态，与挂载成功与否是两件事）。
+2. **`error` 才是失败的证据**。`ModuleRegistry` 的 `errors` 是独立一张表（`set_module_error`
+   写入、`descriptors()` 读出），挂载被跳过时 `enabled` 仍是 true 而 `error` 有值；
+   外部条目启动失败也走这条路（`descriptors()` 只补空位：`if d.error.is_none()`）。
+3. **进程内模块没有运行态**。`ModuleInfo.state` 只有子进程控制面能填
+   （`descriptors()` 里 `control.status(&d.id)` 覆写），进程内实现留空字符串。
+   **空串 = 无从观测，不是「正常」**：它既可能挂好了，也可能刚挂载失败（那会有 `error`）。
+4. **外部条目五个态**：`pending` / `ready` / `draining` / `stopped` / `failed`
+   （`SubprocessStatus`）。没有 handle 的条目由 `SubprocessControl::status` 直接编造两种：
+   启动就失败的报 `failed` + 原因，配置关掉从未启动的报 `stopped`。
+
+由此推得的**能力边界**（面板照此显示，别越界）：
+
+| 想知道的 | 能不能知道 | 依据 |
+| --- | --- | --- |
+| 外部模块在跑吗 | 能（`state = ready`） | 握手成功才置 `ready` |
+| 进程内模块挂好了吗 | **不能直接知道** | `state` 空；只有"没有 `error`"这层间接证据 |
+| 哪个模块挂了 | 能（`error` 非空 / `state = failed`） | 失败原因在 `error` |
+| 外部模块为什么没起来 | 能（`error` = 启动/握手失败原因） | `SubprocessStatus.error` 被补进 `error` |
+| 排空还剩多久 | 不能 | 只有 `draining` 这个状态，没有进度 |
+| 进程内模块最近一次挂载时间 | 不能 | 协议里没有时间戳字段 |
+
+**运行期唯一命令是 `RestartModule`**，且它有自己的边界：
+
+- **管理面拒绝**：`management.panel` 重启 = 先断 management WS（见 [管理面模块](./management-panel.md)「自锁语义」）。
+- **进程内**：走 `ModuleHost::restart` → `ModuleRegistry::restart`（卸下 + 重新挂载），是真路径；
+  挂载失败的原因没修好时重挂仍会失败，但**这条尝试是有效的**，所以 UI 可以给按钮。
+- **外部条目**：走 `upgrade_subprocess` → `SubprocessModuleControl::upgrade`，要求
+  `handles` 里有该 id 的 `ModuleHandle`、`launch_configs` 有启动配置且 supervisor 状态为 `ready`。启动就失败
+  （`failed`）或从未启动（`stopped`）的条目**没有 handle**，只会得到
+  `{id}: 不是已启动的外部模块`——**后端没有可用路径**，UI 不该给能点的按钮，
+  正确做法是改 `modules.toml` 后重启 Core。
+
+**已知限制（都还没有在线恢复路径，写在这里免得反复当 bug 报）**：
+
+1. **没有通用在线启停**：命令表里只有 `RestartModule`，`ToggleModule` 已不存在。
+   开机/停机 = 改 `modules.toml` 的启用位 + 重启 Core。
+   控制面上的 `stop_subprocess` / `start_subprocess` 目前**只有测试在调**。
+2. **外部条目失败后无法在线拉起**：热替换需要一个在跑的子进程，失败条目没有——
+   这类恢复只能重启 Core（这也是为什么面板把按钮置灰而不是发一条注定失败的命令）。
+3. **进程内模块的就绪不可观测**：只能靠「没有 `error`」+ 「它声明的工具/技能是否出现在
+   `ToolsList` / `SkillsList`」间接判断；不要用 `state` 空串推「正常」。
+4. **旧 Core 兼容**：缺 `state` / `runtime` / `tag` / `gating` 字段时面板只能按缺省渲染
+   （进程内 / 未标注 / 未观测），不要把缺字段读成具体结论。
 
 ## 内置模块清单
 
@@ -179,7 +232,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
 
 - **缺省不写内置行 = 全部照旧挂载**。计划里没提到的内置模块按目录顺序追加挂载——现网 `modules.toml` 大多只登记子进程模块，绝不能因为加了一条外部模块就关掉工具集/技能/管理面
 - **写错 id 只告警不致命**（启动日志 `builtin mount plan diagnostic=...`）：未知 id 被忽略，其余照常
-- `enabled = false` 只影响**启动期挂载**，不进 `core.toml` 的持久化状态——要长期生效就留在 `modules.toml` 里；运行期开关仍走 `ToggleModule`（Panel）
+- `enabled = false` 只影响**启动期挂载**，不进 `core.toml` 的持久化状态——要长期生效就留在 `modules.toml` 里；运行期**没有开关**：`RestartModule` 只重挂载、不改启用状态，改 `enabled` 必须重启 Core
 - 每个条目可带 `[module.limits]`（子进程资源限额：CPU / 地址空间 / 单文件 / fd / 进程数，缺省不限制）——见 [模块开发指南](./module-authoring.md)「资源限额」
 - 排查"最终这一行来自哪一层、值是什么"用 `echo-agent-core dump-config`（只合成不启动）
 
@@ -203,12 +256,12 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
 - **其余模块当前生效范围**：
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
   - `instance.qq`：禁用 = 停止 QQ 模块实例进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
-  - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_modules` 移除该 id 后重启 Core）。**防自锁保护**：经 `ToggleModule` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
+  - `management.panel`：卸载 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需在 `modules.toml` 恢复启用后重启 Core）。**防自锁保护**：`RestartModule` 对它直接拒绝（`ModuleOpResult` 明示 `ok = false`，状态不变）——停用与恢复需修改 `modules.toml` 并重启 Core
   - `loop.single`：**唯一循环模块**（`kind = loop`，进程级）——mount 时构造唯一的 agent-module-loop `TurnRunner` 并 `provide` 成 `loop` 服务，卸载撤销该服务；`loop` 服务缺失 = 启动失败。策略只有一条：同一会话的 turn 串行排队（每会话一条时间线），没有模式可切，persona 白名单不参与。详见 [Agent 循环](../core/agent-loop.md)「会话内准入」
   - `provider.llm`：**命令域随模块启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因模块挂载而改变
   - `provider.llm`：**命令域随模块启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因模块挂载而改变
   - `selfupdate`：进程级、`kind = orchestration`（按人格启停是假开关——挂载是进程级的，命令分发不看人格白名单）
-- **优先级**：全局禁用（`ToggleModule` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
+- **优先级**：全局禁用（启动期未挂载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
 - **任务清单的状态所有权**：`agent-module-checklist::ChecklistRuntime` 长期持有每个人格的 `ChecklistStore`，工具只作适配；人格重建复用同一 Arc。持久文件位于配置目录的 `checklists/` 下，按人格隔离，文件内按会话隔离；会话身份优先来自 `ToolContext`，不再由宿主向参数注入 `__session_id`。旧式直接调用的参数退路不用于联邦远程面（checklist 不声明 remote_capable）。
 - **任务清单同步**：模块自己 `Emit("checklist.updated")` 广播单会话投影，面板经通用调用 `InvokeModuleOp{method:"checklist.snapshot"}` 拿权威整人格快照（空结果也必须表达，且带顶层 `epoch`/`revision`——与 `states` 同一次一致读；低 revision 的 full 不得覆盖更高的 live 投影）。投影与版本判定在**模块自己的 panel-ui 扩展**里，按 `(core, team_id, session_id)` 存储；Panel 壳与 Core 协议都**不出现**清单的具名类型。参见[工具系统](./tools.md)。
 - **内置工具包覆盖**：清单随 `tools.builtin` 发布，工具启停控制模型能否修改；停用工具不删除 Store 或前端投影，已有清单可只读展示。清理/归档聊天历史不等于清空任务清单；明确的 `reset_session` 才重置该会话的清单状态。

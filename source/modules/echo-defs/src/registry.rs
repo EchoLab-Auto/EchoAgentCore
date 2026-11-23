@@ -16,6 +16,7 @@
 //!    工具声明的机器字段（[`Tool::snapshot_machine_fields`]：稳定 id /
 //!    epoch / 会话键等）是 schema 而非用户内容，跳过其字符串值，其余键
 //!    一律脱敏（对象键不改写——schema 靠键匹配）。
+//!
 //! **依赖纪律**：只依赖 `echo-defs` + `echo-context` + tokio——不认识任何
 //! 具体工具实现（内置工具集在 `echo-agent` 的 `packages/tools_builtin`）。
 

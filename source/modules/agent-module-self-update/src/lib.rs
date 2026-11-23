@@ -31,10 +31,10 @@ pub mod commands;
 /// 自更新命令域（`RequestSelfUpdate` / `RequestSelfUpdateStatus`）。
 pub mod host_keys;
 
-/// 模块 id（`modules.toml` / Panel 模块清单同一口径）。
 /// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
 pub const MANIFEST_TOML: &str = include_str!("../module.toml");
 
+/// 模块 id（`modules.toml` / Panel 模块清单同一口径）。
 pub const MODULE_ID: &str = "echo-agent.selfupdate";
 
 /// 构造模块：认领两条自更新命令。
@@ -43,7 +43,7 @@ pub const MODULE_ID: &str = "echo-agent.selfupdate";
 /// （[`host_keys::EVENTS`]）。updater 单元名与状态文件布局都在本 crate 里
 /// ——组合根不认识它们。
 pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
-    use echo_module::{BuiltinModule, Inject, ModuleManifest, ServiceSlot};
+    use echo_module::{BuiltinModule, ModuleManifest, ServiceSlot};
 
     let events = ServiceSlot::<
         Arc<dyn Fn(agent_module_management::protocol::BackendEvent) + Send + Sync>,

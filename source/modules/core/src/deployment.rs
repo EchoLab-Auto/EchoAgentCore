@@ -2007,10 +2007,9 @@ mod tests {
             &self,
             timeout: Duration,
         ) -> Option<OwnedRwLockWriteGuard<()>> {
-            match tokio::time::timeout(timeout, self.writers.clone().write_owned()).await {
-                Ok(guard) => Some(guard),
-                Err(_) => None,
-            }
+            tokio::time::timeout(timeout, self.writers.clone().write_owned())
+                .await
+                .ok()
         }
 
         async fn cancel_upgrade(&self, generation: u64) -> Result<CancelRelease, CancelFailure> {

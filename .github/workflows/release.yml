@@ -39,10 +39,18 @@
 # `--locked` + Cargo.lock 里 pin 住的 git 依赖 commit：同一个 tag 必须构建出
 # 相同内容，否则"v0.1.0 的二进制"就不是一个确定的东西。web 侧同理——panel
 # 仓的 commit 从 Cargo.lock 里解析，不用 `branch = main` 的浮动引用。
+#
+# 外置模块（任务清单）是唯一不受 Cargo.lock 管辖的部分：它们住在各自的仓里，
+# 走 `packaging/external-modules.lock`（完整 40 位 SHA）——**与正式镜像同一份
+# 表**。旧写法 `git clone --depth 1 <repo>` 跟默认分支 HEAD 走，同一个 tag
+# 重跑会拿到不同提交；现在拉取按 SHA、匿名、失败即失败，产出的 manifest.json
+# 里记录实际使用的提交。
 
 on:
   push:
     tags: ["v*"]
+    # 验收只上传工作流产物；publish 仍严格限版本标签。
+    branches: ["verification/wave2-*"]
   workflow_dispatch:
 
 env:
@@ -62,6 +70,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       panel_revision: ${{ steps.pin.outputs.panel_revision }}
+      protocol_sha256: ${{ steps.protocol.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -93,6 +102,21 @@ jobs:
           repository: EchoLab-Auto/EchoAgentPanel
           ref: ${{ steps.pin.outputs.panel_revision }}
           path: panel
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify the pinned Panel binding against the release Core
+        id: protocol
+        run: |
+          set -euo pipefail
+          binding=$(mktemp)
+          trap 'rm -f -- "$binding"' EXIT
+          cargo run --quiet --locked -p echo-protocol --features ts-bindings \
+            --example protocol_contract_ts > "$binding"
+          bash scripts/check-panel-protocol.sh "$binding" panel/web/src/protocol.generated.ts
+          echo "sha256=$(sha256sum "$binding" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
         with:
@@ -110,6 +134,41 @@ jobs:
         with:
           name: panel-web
           path: panel/web/dist
+          if-no-files-found: error
+
+  protocol-contract:
+    name: versioned management protocol contract
+    runs-on: ubuntu-24.04
+    needs: web
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and verify the contract from this Core commit
+        env:
+          EXPECTED_TS_SHA256: ${{ needs.web.outputs.protocol_sha256 }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/protocol-release"
+          version=$(scripts/bump-version.sh --print)
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          python3 scripts/build-protocol-contract.py --out "$out" --commit "$GITHUB_SHA" \
+            --expect-ts-sha256 "$EXPECTED_TS_SHA256" --target-dir "$GITHUB_WORKSPACE/target"
+          name="protocol-contract-$version"
+          python3 scripts/verify-protocol-contract.py "$out/$name" \
+            --expect-ts-sha256 "$EXPECTED_TS_SHA256" --expect-commit "$GITHUB_SHA" --require-fixtures 8
+          cd "$out"
+          tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
+            -cf - "$name" | gzip -n > "$name.tar.gz"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-protocol-contract
+          path: ${{ runner.temp }}/protocol-release/protocol-contract-*.tar.gz*
           if-no-files-found: error
 
   # ── 二进制（每个架构一个原生 runner）──────────────────────────────
@@ -146,6 +205,7 @@ jobs:
       # version 字段、面板模块清单读的都是 `CARGO_PKG_VERSION`，也就是
       # Cargo.toml 里的那个数。三者不一致的产物不该存在，宁可没有。
       - name: Verify tag matches Cargo.toml version
+        if: github.ref_type == 'tag'
         run: |
           set -euo pipefail
           tag_version=${GITHUB_REF_NAME#v}
@@ -168,27 +228,55 @@ jobs:
           # 下一步单独克隆 + 构建，两边互不参与对方的编译期。
           cargo build --release --locked -p echo-agent-core
 
-      # 外部模块：**独立 workspace** 构建。
+      # 外部模块：**独立 workspace** 构建，提交来自唯一锁定表。
       #
-      # 这一步同时是那条设计的验收：Core 的编译期完全不需要这个仓存在。
-      # `--locked` 用的是该仓自己的 Cargo.lock（与 Core 的依赖图无关），
-      # 版本演进的耦合点只剩"它 pin 的 echo-fabric-arch tag 与 Core 一致"。
-      - name: Build external modules
-        env:
-          CHECKLIST_REPO: https://github.com/EchoLab-Auto/agent-module-checklist
+      # 这一步同时是那条设计的验收：Core 的编译期完全不需要这些仓存在。
+      # `--locked` 用的是各仓自己的 Cargo.lock（与 Core 的依赖图无关）。
+      #
+      # **提交来源是 `packaging/external-modules.lock`（完整 40 位 SHA）**，
+      # 与正式镜像（Dockerfile 的 modules-official 阶段）共用同一份表：
+      #   - 不再 `git clone --depth 1 <repo>`（那等于跟默认分支 HEAD 走，
+      #     同一个 tag 重跑会得到不同产物）；
+      #   - 表里只允许完整 SHA，tag / 分支名由 helper 的 validate 直接拒绝；
+      #   - 拉取是匿名的，拉不到就失败——这同时证明"该提交公开可取"。
+      - name: Resolve external module lock
+        id: modules
         run: |
           set -euo pipefail
-          checkout="${RUNNER_TEMP}/agent-module-checklist"
-          git clone --depth 1 "${CHECKLIST_REPO}" "${checkout}"
-          cargo build --release --locked --manifest-path "${checkout}/Cargo.toml"
-          # 产物自检：二进制要真的存在，而且能自报版本（`--help` 会走
-          # `serve_stdio` 的初始化路径并打印用法）。少了这条，COPY 阶段的
-          # 失败会推到装配 tar 时才暴露。
-          test -x "${checkout}/target/release/agent-module-checklist"
-          "${checkout}/target/release/agent-module-checklist" --help >/dev/null
+          script=scripts/release/external-modules.sh
+          bash "$script" validate
+          {
+            echo "json<<__EOF__"
+            bash "$script" manifest-json tarball
+            echo "__EOF__"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Build external modules (locked)
+        run: |
+          set -euo pipefail
+          script=scripts/release/external-modules.sh
+          bash "$script" validate
           install -d -m 755 modules-out
-          install -m 755 "${checkout}/target/release/agent-module-checklist" \
-            modules-out/agent-module-checklist
+          # 只构建进 tarball 的模块（表里 targets 含 tarball 的）。镜像专用
+          # 模块（QQ 适配器）在这里编了也用不上，白等一轮编译。
+          for key in $(bash "$script" list-keys tarball); do
+            crate="$(bash "$script" field "$key" crate)"
+            src="${RUNNER_TEMP}/modules/${key}"
+            bash "$script" fetch "$key" "$src"
+            # 双保险：fetch 内部已核对过 HEAD，这里再确认一次并检查该提交
+            # 自带 Cargo.lock（没有 lock 就没有可锁定构建）。
+            bash "$script" verify "$key" "$src"
+            cargo build --release --locked \
+              --manifest-path "${src}/Cargo.toml" \
+              -p "${crate}" --target-dir "${RUNNER_TEMP}/modules-target/${key}"
+            # 产物自检：源提交对了，不代表产物编出来了——COPY / 打包阶段的
+            # 失败要在这里暴露，而不是推到用户装完之后。
+            test -x "${RUNNER_TEMP}/modules-target/${key}/release/${crate}"
+            install -m 755 "${RUNNER_TEMP}/modules-target/${key}/release/${crate}" \
+              "modules-out/${crate}"
+            echo "built ${key} (${crate}) from $(bash "$script" field "$key" commit)"
+          done
+          ls -l modules-out
 
       # 产物自检：二进制自报的版本必须与 tag 一致。上面的 Cargo.toml 检查是
       # "声明的版本对"，这一条是"编出来的东西真的是那一版"——防止 build.rs /
@@ -196,18 +284,24 @@ jobs:
       - name: Verify the built binary reports the tagged version
         run: |
           set -euo pipefail
-          tag_version=${GITHUB_REF_NAME#v}
+          expected_version=$(scripts/bump-version.sh --print)
           reported=$(target/release/echo-agent-core --version | awk '{print $2}')
-          if [[ "$reported" != "$tag_version" ]]; then
-            echo "::error::built binary reports $reported, expected $tag_version"
+          if [[ "$reported" != "$expected_version" ]]; then
+            echo "::error::built binary reports $reported, expected $expected_version"
             exit 1
           fi
           echo "built binary reports $reported"
+
+      - name: Verify Workspace cold restart on this architecture
+        run: bash tests/smoke-workspace-restart.sh --core-bin target/release/echo-agent-core
 
       - name: Assemble release tarball
         env:
           ARCH: ${{ matrix.arch }}
           PANEL_REVISION: ${{ needs.web.outputs.panel_revision }}
+          # 产物清单里带模块的完整提交（不是 tag），事后能定位"这一版里
+          # 清单模块是哪个提交编的"，与镜像的 OCI 标签同源同值。
+          EXTERNAL_MODULES_JSON: ${{ steps.modules.outputs.json }}
         run: |
           set -euo pipefail
 
@@ -264,6 +358,8 @@ jobs:
             "arch": "$ARCH",
             "revision": "$GITHUB_SHA",
             "panel_revision": "$PANEL_REVISION",
+            "external_modules_lock": "packaging/external-modules.lock",
+            "external_modules": ${EXTERNAL_MODULES_JSON},
             "glibc_min": "$glibc_min",
             "rustc": "$rustc_version",
             "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -290,8 +386,8 @@ jobs:
   # ── 汇总成一个 Release ─────────────────────────────────────────────
   publish:
     name: publish release
-    needs: build
-    if: github.ref_type == 'tag'
+    needs: [build, protocol-contract]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -309,6 +405,8 @@ jobs:
           files: |
             echo-agent-core-*.tar.gz
             echo-agent-core-*.tar.gz.sha256
+            protocol-contract-*.tar.gz
+            protocol-contract-*.tar.gz.sha256
           draft: false
           # 已存在的 tag 重跑时更新资产，而不是因冲突整体失败（重发版本的
           # 常见场景：某个架构构建挂了、只补一个）。

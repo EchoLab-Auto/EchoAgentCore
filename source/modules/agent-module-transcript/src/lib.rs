@@ -36,15 +36,15 @@
 use std::sync::Arc;
 
 use echo_context::ServiceKey;
-use echo_module::{BuiltinModule, Inject, Module, ModuleManifest, ServiceSlot};
+use echo_module::{BuiltinModule, Module, ModuleManifest, ServiceSlot};
 
 pub mod session_view;
 pub mod timeline;
 
-/// 模块 id。
 /// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
 pub const MANIFEST_TOML: &str = include_str!("../module.toml");
 
+/// 模块 id。
 pub const MODULE_ID: &str = "echo-agent.transcript";
 
 /// 会话视图宿主接缝的服务键（与 management 期保持一致：`echo-agent.host.session_view`）。

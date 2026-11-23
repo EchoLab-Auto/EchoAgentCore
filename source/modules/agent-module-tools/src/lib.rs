@@ -43,6 +43,9 @@ pub mod instance_ops;
 pub mod list_api_profiles;
 pub mod module;
 pub use echo_defs::registry;
+pub use registry::{
+    ModuleTool, ModuleToolRegistration, Tool, ToolDefinition, ToolError, ToolRegistry, ToolResult,
+};
 pub mod deepseek_search;
 pub mod session;
 pub mod tool_commands;
@@ -153,7 +156,3 @@ mod tests {
         }
     }
 }
-
-pub use registry::{
-    ModuleTool, ModuleToolRegistration, Tool, ToolDefinition, ToolError, ToolRegistry, ToolResult,
-};

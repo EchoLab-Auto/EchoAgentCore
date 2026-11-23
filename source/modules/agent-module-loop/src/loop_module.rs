@@ -51,7 +51,7 @@ pub fn modules(version: &str) -> Vec<Arc<dyn Module>> {
     // 键来自**定义层**（宿主 ↔ 模块契约，`scripts/deps-policy.txt` 不允许
     // 本 crate 依赖 provider 模块）。此前这里是字面量 `"llm"`，与模块侧那个
     // 名不副实的 `SERVICE_KEY` 各写一遍——改名一侧就静默少一个依赖。
-    let inject = Inject::new([echo_defs::llm::LLM_PROVIDER_SERVICE_KEY]);
+    let _inject = Inject::new([echo_defs::llm::LLM_PROVIDER_SERVICE_KEY]);
     declarations()
         .into_iter()
         .map(|(id, name, description)| {

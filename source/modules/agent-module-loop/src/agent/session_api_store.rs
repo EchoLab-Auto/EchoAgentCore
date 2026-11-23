@@ -39,7 +39,7 @@
 //! 半截内容。原子 rename 让"文件存在"恒等于"内容完整"。
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::RwLock;
 
 use agent_module_management::protocol::SessionApiOverrideEntry;

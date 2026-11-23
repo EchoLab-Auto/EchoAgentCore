@@ -40,7 +40,7 @@ impl ModuleHandleSkills for ModuleHandle {
             .into_iter()
             .filter_map(|contribution| skill_from_custom(&contribution).map(into_skill))
             .collect();
-        (owner_of(&self.module_id().to_string(), &skills), skills)
+        (owner_of(self.module_id(), &skills), skills)
     }
 }
 

@@ -1,0 +1,13 @@
+{
+  "type": "command",
+  "payload": {
+    "InvokeModuleOp": {
+      "module": "vendor.demo.todo",
+      "method": "todo.list",
+      "payload": {
+        "team_id": "persona-demo",
+        "scope": "today"
+      }
+    }
+  }
+}

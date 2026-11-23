@@ -27,10 +27,8 @@ fn management_url(address: &str) -> String {
         .strip_prefix("0.0.0.0:")
         .map(|port| format!("127.0.0.1:{port}"))
         .unwrap_or_else(|| address.to_string());
-    if let Some(rest) = address.strip_prefix('[') {
-        if rest.starts_with("::]:") {
-            return format!("ws://[::1]:{}", &rest[4..]);
-        }
+    if let Some(port) = address.strip_prefix("[::]:") {
+        return format!("ws://[::1]:{port}");
     }
     if address.starts_with("ws://") || address.starts_with("wss://") {
         address
@@ -111,7 +109,7 @@ pub async fn run(
             bail!("failed to serialize RestartModule");
         }
         socket
-            .send(Message::Text(command.into()))
+            .send(Message::Text(command))
             .await
             .context("send RestartModule")?;
 

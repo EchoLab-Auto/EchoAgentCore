@@ -1,0 +1,21 @@
+{
+  "type": "event",
+  "seq": 130,
+  "payload": {
+    "ModuleInvokeResult": {
+      "module": "vendor.demo.todo",
+      "method": "todo.list",
+      "ok": true,
+      "data": {
+        "items": [
+          {
+            "id": "t-1",
+            "title": "写周报",
+            "done": false
+          }
+        ],
+        "total": 1
+      }
+    }
+  }
+}

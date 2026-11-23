@@ -725,7 +725,7 @@ impl Agent {
             .filter(|d| d.enabled)
             .map(|d| {
                 // id 在 move 进 ModuleInfo 之前取一份，用于查 provides 映射。
-                let id = d.id.clone();
+                let _id = d.id.clone();
                 // 作用域由 kind 派生（Core 是唯一计算方，Panel 只显示）。
                 // 在 move 掉 `d.kind` 之前算好。
                 let gating = crate::modules::scope_of_kind(&d.kind).as_str().to_string();
@@ -916,8 +916,13 @@ pub(crate) fn save_pending_file(
 ///
 /// cargo test 默认多线程：两个用例同时设置/清除这个变量，会互相把对方的
 /// 落盘目录换掉——失败形态是"文件找不到了"，而且只在特定调度下复现。
+///
+/// 用 `tokio::sync::Mutex`（异步感知）而非 `std::sync::Mutex`：端到端用例的
+/// 临界区要跨 `apply_command` 的 `.await`，守卫必须活得比 await 长，而
+/// `std` 守卫跨 await 既不安全也不是 `Send`。同步用例用 `blocking_lock()`
+/// 拿同一把锁，互斥语义不变。
 #[cfg(test)]
-pub(crate) static ATTACHMENT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static ATTACHMENT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
 mod save_pending_file_tests {
@@ -940,9 +945,7 @@ mod save_pending_file_tests {
     /// 落盘成功：返回的是**可读的绝对路径**——这是 agent 唯一依赖的东西。
     #[test]
     fn saves_and_reports_absolute_path() {
-        let _guard = super::ATTACHMENT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = super::ATTACHMENT_ENV_LOCK.blocking_lock();
         let root = temp_dir("ok");
         // ECHO_ATTACHMENT_DIR 是进程级环境变量：这里直接调 `_in` 版本会绕过
         // `save_pending_file`（它读默认目录），所以改环境变量并串到同一测试内
@@ -971,9 +974,7 @@ mod save_pending_file_tests {
     /// 让整条消息因为一个附件存不下而失败，用户拿不到任何解释。
     #[test]
     fn reports_failure_instead_of_dropping_message() {
-        let _guard = super::ATTACHMENT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = super::ATTACHMENT_ENV_LOCK.blocking_lock();
         let file = PendingFile {
             name: "../../etc/passwd".into(),
             data: "!!!not base64!!!".into(),

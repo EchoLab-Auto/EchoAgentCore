@@ -1,0 +1,43 @@
+{
+  "type": "event",
+  "seq": 128,
+  "payload": {
+    "TrunkTimeline": {
+      "messages": [
+        {
+          "kind": "user",
+          "content": "这周的待办还剩哪些？",
+          "session_id": "demo:group:20002:10001",
+          "time": 1735689600,
+          "source": {
+            "instance_name": "demo-bot",
+            "platform": "demo",
+            "user_id": "10001",
+            "user_name": "阿演示",
+            "channel": "group:20002",
+            "group_name": "演示群",
+            "received_at_ms": 1735689600123,
+            "message_sequence": 7
+          },
+          "seq": 38,
+          "ord": 11
+        },
+        {
+          "kind": "backend",
+          "content": "我先读一遍清单再回答。",
+          "session_id": "demo:group:20002:10001",
+          "time": 1735689605,
+          "reasoning": [
+            "先调用 todo.list 看未完成项"
+          ],
+          "seq": 41,
+          "ord": 12
+        }
+      ],
+      "seq": 41,
+      "team_id": "persona-demo",
+      "full": true,
+      "has_more": true
+    }
+  }
+}

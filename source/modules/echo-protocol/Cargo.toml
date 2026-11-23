@@ -1,6 +1,6 @@
 [package]
 name = "echo-protocol"
-description = "Compatibility facade for the management protocol"
+description = "管理面线契约：命令 / 事件 / 信封的 serde 形状与 TypeScript 绑定（纯 wire：无监听、无通道、无领域逻辑）"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,4 +8,29 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-agent-module-management = { path = "../agent-module-management" }
+# 线格式里出现的策略枚举（ThinkingMode / ReasoningEffort）与共享载荷（IncomingFile）。
+echo-defs = { workspace = true }
+# `impl echo_context::Event for BackendEvent` 是 marker trait：类型在本 crate、
+# trait 在 echo-context，按孤儿规则只能在本 crate 补这个 impl。
+# 它不引入任何运行时（无通道、无任务）。
+echo-context = { workspace = true }
+serde.workspace = true
+serde_json = { workspace = true }
+# 序列化失败要留痕（原先在 bridge 里，随信封一起搬来）。
+tracing = { workspace = true }
+
+# TypeScript 绑定生成（可选）：只有 `dump-protocol-ts` 子命令需要它。
+# 默认关闭——生产构建不引入这个依赖，也不因为它的升级而受影响。
+ts-rs = { version = "12", features = ["serde-json-impl"], optional = true }
+
+[features]
+# 打开后线格式类型获得 `TS` derive，`ts_bindings::declarations()` 才能导出
+# TypeScript。Panel 仓的 `protocol.generated.ts` 由它产出。
+# 定义层里也出现在线格式中的枚举（echo-defs）要一起打开。
+ts-bindings = ["dep:ts-rs", "echo-defs/ts-bindings"]
+
+# 契约产物生成入口（B3）：只在 `ts-bindings` 打开时才有内容可导，
+# 因此声明 required-features——默认 `cargo build/test` 不编译它。
+[[example]]
+name = "protocol_contract_ts"
+required-features = ["ts-bindings"]

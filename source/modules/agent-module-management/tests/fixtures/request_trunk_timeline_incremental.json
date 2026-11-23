@@ -1,0 +1,10 @@
+{
+  "type": "command",
+  "payload": {
+    "RequestTrunkTimeline": {
+      "team_id": "persona-demo",
+      "since_seq": 38,
+      "limit": 200
+    }
+  }
+}

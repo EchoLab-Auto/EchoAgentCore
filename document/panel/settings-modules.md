@@ -15,7 +15,7 @@ y: 552
 模块工作台回答三件事：在哪个 Core 上管理、这条模块的实现在不在 Core 进程内、它门控了什么——第一个决定列表内容，第二个是默认分组维度，第三个是可切换的语义维度。
 
 - **管理节点**（筛选栏首项，`NeumorphismSelect`，`aria-label="管理节点"`）：选项 = 已接入上游名 ∪ 人格归属 core ∪ `state.modulesByCore` 的键 ∪ `activeRegion`（`moduleCoreOptions`），标签经 `state.ts::regionLabel`（区域显示名，缺失回落节点 id）；切换即清空选中并定向 `RequestModulesList`（带目标 core）
-- **显示的 = 请求的 = 修改的**：列表、筛选计数、副标题统计、行内快速启停与 `ToggleModule` 的目标 core 统一取 `moduleCoreEffective`
+- **显示的 = 请求的 = 修改的**：列表、筛选计数、副标题统计和 `RestartModule` 的目标 Core 统一取 `moduleCoreEffective`。
 - **按节点归档的清单**（`state.modulesByCore` / `moduleCatalog`）：各节点回推的模块按上游名归档（中继不加信封的单上游场景键为空串）；`moduleCatalog` 的取数顺位 = 显式选定 / `activeRegion` 的归档 → **唯一来源**（键对不上但只有一份数据）→ `state.modules`（管理目标兼容视图）；多来源且该节点尚未回推时给空列表，**绝不回退**（否则串显别个节点）
 
 ## 分组维度
@@ -31,25 +31,24 @@ y: 552
 | 包维度门控 | Core 下发 `ModuleInfo.gating === "persona"`（`kind ∈ {tool, skill, instance}`） | 禁用 = 该 persona 下其包内全部工具/技能不可见（`enabled_modules` 白名单） |
 | 进程级（只读展示） | `gating === "process"` 且 `kind ∈ {management, interaction}` | 恒定生效、勾不动；显示成置灰项 + 「· 进程级」标签，避免"这能力不存在"的误读 |
 | 平台通道 | `kind ∈ {instance, management}` | 平台连接与管理通道；管理面禁用会切断 Panel 通信（受保护） |
-| 模式模块（互斥） | `kind === 'loop'` | 每智能体的循环模式在「智能体」配置里选；此处全局停用 = 卸载 agent-module-loop 驱动 |
+| 模式模块（互斥） | `kind === 'loop'` | 循环驱动是进程级运行能力，不能靠人格白名单切换 |
 | 其它 | 其余（如 provider.llm） | — |
 
 ## 行卡与受保护模块
 
 - **行卡标记**：`独立进程`（`moduleIsSubprocess`，与外部组等价）· 包规模徽标（`N 工具 · M 技能`，经 `moduleMembers` → `packageMembers` 从 `state.modules` 与 `state.tools`/`state.skills` 反查——这两份是单份状态、只随管理目标节点更新，故切到非管理目标节点时徽标仍按管理目标口径统计）· `🔒 受保护`（management.panel，**行内渲染锁标记而不给开关**）· `模式`（loop.*）
-- **副标题随分组维度**：按来源 = `共 N 项 · E 外部模块 · I 内部模块 · D 已禁用`；语义分组 = `共 N 项 · G 包维度门控 · M 模式模块 · D 已禁用`
-- **启停**：`ToggleModule` 禁用即卸载注册；在选定管理节点上全局生效；**「管理面」模块禁用被保护**——core 拒绝 + UI 明示且行内不给开关，防 Panel 自锁断连。**包级聚合**：包内工具与技能随包一起启停（见[模块化设计](../modules/modules.md)「Package」）
-- **运行态可见**：`ModuleInfo.state`（`pending` / `ready` / `draining` / `stopped` / `failed`）+ `restarts` + `generation`。行卡只在**异常态**出徽标（`失败`红 / `启动中`/`停止中`中性，`ready` 不喊）；技术信息给出「运行态 · 已自动重启 N 次 · 代际 M」。这条与 `enabled` 正交：`enabled = true` + `state = failed` 是「配置开了、进程起不来」
-- **操作回执**：`ModuleOpResult { id, op, ok, message }`——启停与重启的成功/失败按 `ok` 分流成 success / error toast。此前两者都走 `Error { message }`，界面只能靠文案猜
-- **重启**：`RestartModule`（卸下 → 重新挂载）——**不改启用状态、不写 `disabled_modules`**，纯粹让模块按最新配置/外部状态重新初始化。行内是一个 hover 才出现的图标按钮（开关左侧），详情头部另有文字按钮；只对**已启用且不受保护**的模块出现（未挂载没有可重载的实例；管理面重启 = 先断 management WS，同禁用一样被拒）
-- **装配失败可见**：`ModuleInfo.error` 非空 = 该模块挂载被跳过（command 不存在 / 握手失败），行卡出红色「失败」徽标、详情出失败原因块。与「用户主动禁用」区分开——两者 `enabled` 都是 false，但前者要人去修配置
-- **外部条目现在真的在清单里**：`modules.toml` 里 `kind = "stdio"` 的条目由 Core 启动期拉起子进程，此前**从不注册进模块宿主**，于是「外部模块」组里只有实例门控壳、用户装的外部模块完全不可见。现在每个静态条目都会注册一个门控壳（`runtime = "subprocess"` + `builtin = false`）：`enabled = false` 的显示为已禁用（不消失）、启动失败的带 `error`。启停走**子进程控制面**（`ModuleHost::SubprocessModuleControl`）：禁用 = 排空并退出该模块进程、启用 = 重新拉起并握手，**立即生效**；重启 = stop + start。改 `command` / 换二进制仍需重启 Core（配置在启动期读取）
+- **状态筛选**：全部、就绪、未确认、失败；状态计数来自当前节点的同一份模块清单。
+- **通用在线启停不存在**：没有 `ToggleModule`。修改 `modules.toml` 后重启 Core；人格白名单是能力授权，不是模块进程开关。
+- **运行态证据**：外部进程 `ready` 表示就绪；`pending` / `draining` / `stopped` 表示未就绪。`error` 或 `failed` 显示失败；缺少运行态只表示未观测。Core 不下发禁用条目，但条目出现也不证明挂载成功。
+- **操作回执**：`ModuleOpResult { id, op, ok, message }` 区分重启是否成功。
+- **重启**：`RestartModule` 不改变启用配置。进程内重启为重新挂载；静态外部条目要求 `ready`，走热替换。管理入口受保护，不允许在线重启。
+- **排障**：静态外部条目在未就绪时不能热替换；排除启动配置错误后，可通过重启 Core 恢复。
 
 ## 详情分区
 
 1. **这个模块带来什么**：包内**工具 / 技能 chips，点击跳转到对应分类并选中**
 2. **被谁使用**：`enabled_modules` 白名单反查（「已启用」/「未列入白名单」）
-3. **启停影响**：按门控语义分派文案；受保护模块为警示色说明如何在 core.toml 真正禁用
+3. **卸载 / 重启影响**：按门控语义展示；管理入口会切断当前连接，不能在线重启
 4. **技术信息**（**折叠**）：承载 ID / Package / kind·版本 / Entry / **运行形态** / Author / **配置来源**（`config_origin`：`modules.toml` 或 `base.toml · layer 0`；空 = 配置未声明，即编译内置的缺省行为）
 
 头部左侧是语义标签（`MODULE_SEMANTIC_LABELS`），外部模块另加 `外部模块 · 独立进程` 标签。`MODULE_KIND_LABELS.loop` 为「循环驱动」（全站统一的中文 kind 名）。
@@ -66,7 +65,7 @@ y: 552
 | --- | --- | --- |
 | `error` | 挂载失败原因（`ModuleDescriptor::error`） | 行卡「失败」徽标 + 详情失败块 |
 | `config_origin` | 声明该模块的配置层（来自 Core 的分层合成，与 `dump-config` 同源） | 技术信息「配置来源」 |
-| `state` / `restarts` / `generation` | 子进程运行态（空 = 进程内实现） | 行卡异常态徽标 + 技术信息「运行态」行 |
+| `state` / `restarts` / `generation` | 子进程运行态（空 = 未观测） | 行卡异常态徽标 + 技术信息「运行态」行 |
 | `source_path` / `command` / `args` / `env_keys` | 定义文件与启动方式（env 只给键名） | 技术信息「定义文件 / 启动命令 / 环境变量」 |
 | — | `RestartModule { id }` 命令（**写命令**，不进可广播只读清单） | 行内图标按钮 / 详情按钮 |
 | — | `ModuleOpResult { id, op, ok, message }` 事件（操作回执） | toast（success / error 分流） |

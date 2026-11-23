@@ -1,8 +1,9 @@
 # 协议（kernel.protocol）—— 模块声明（**单一真值**：身份）
 #
-# 与 `module.toml`（管理面）是两个模块：协议是**线契约**（命令/事件的 serde
-# 形状 + 帧），管理面是 WS 桥接。放在同一个 crate 里是因为它们共享同一份
-# 协议定义，但挂载单元是两个。
+# 与 `agent-module-management` 的 `module.toml`（管理面）是两个模块：协议是
+# **线契约**（命令/事件的 serde 形状 + 帧 + TS 绑定），管理面是 WS 桥接。
+# 2026-11 B2 反转后两者分属不同 crate（本文件随协议一起搬到 `echo-protocol`），
+# 挂载单元仍是两个。
 #
 # 由组合根解析成 manifest（`source/modules/core/src/builtin_modules.rs`）。
 

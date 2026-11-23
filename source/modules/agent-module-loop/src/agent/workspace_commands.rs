@@ -14,9 +14,20 @@
 //! [`Agent::apply_workspace_snapshot`]。宿主只读镜像，永不写 store——单向数据流，
 //! 不给"两份状态分叉"留缝。
 //!
+//! **冷启动怎么恢复（C3c）**：`workspace.changed` 只在变更时发，重启后镜像必然
+//! 是空的（磁盘上有激活会话，却没有任何事件）。恢复复用具成的读命令
+//! `RequestWorkspaceSessions`——模块从**权威 store** 读快照，以
+//! `workspace.backend_event` 回执。回执经 [`Agent::adopt_workspace_sessions`]
+//! 补种镜像（只补一次，见 `WorkspaceMirror::seed_if_unseeded`），随后走的就是
+//! 下面这条既有的一半（通道注册 + 广播）。触发点两个：组合根启动时逐人格拉
+//! 一次、面板任何时候重发 `RequestWorkspaceSessions`。
+//!
 //! 历史：早先这里还有 565 行命令 match（Phase 3 ⑤ 迁进内置模块），2026-11 随
 //! 模块独立成仓，命令域与 store 一起离开 Core；此处只剩会话通道这一半。
 
+use std::sync::Arc;
+
+use crate::agent::workspace_mirror::WorkspaceSnapshot;
 use crate::agent::Agent;
 use crate::event::BackendEvent;
 
@@ -69,6 +80,80 @@ impl Agent {
             });
         }
         self.emit_workspace_sessions();
+    }
+
+    /// **冷启动恢复**：把模块的 `WorkspaceSessions` 回执补种进镜像，再跑
+    /// [`Self::workspace_after_change`] 那半段（通道注册 + `SessionUpdated` +
+    /// 广播）。返回是否真的补种了（`false` = 忽略，不是失败）。
+    ///
+    /// 为什么是"回执"而不是自己读 store：store 归模块所有（见模块仓文档），
+    /// 宿主唯一合法的读法就是这条既有命令——`RequestWorkspaceSessions` 由模块
+    /// 从权威 store 读快照并以 `workspace.backend_event` 回执，面板本来就在用
+    /// 它。恢复因此**不加命令、不加权限、不改线格式**。
+    ///
+    /// 三道闸（任一不满足就保持镜像原样，绝不覆盖合法状态）：
+    ///
+    /// 1. **人格归属**：回执必须指名本人格。组合根已按 `team_id` 路由过一遍，
+    ///    这里是第二道——镜像一旦被别人的数据种子化，这次运行就再也没有第二
+    ///    次补种机会；
+    /// 2. **载荷合法**：走严格解析（[`WorkspaceSnapshot::try_from_event_payload`]），
+    ///    坏载荷只记日志。宽松解析会把"线格式漂移"变成空快照，在恢复路径上
+    ///    等于抹掉合法状态；
+    /// 3. **只补一次**：镜像已有来源（变更事件或首次补种）就不接受回执——
+    ///    `WorkspaceSessions` 与 `workspace.changed` 都**没有版本/序号**，宿主
+    ///    无法区分"迟到的回执"与"更新的变更事件"，所以只承诺这条可验证的
+    ///    子集（详见 [`WorkspaceMirror::seed_if_unseeded`]）。
+    pub fn adopt_workspace_sessions(self: &Arc<Self>, reply: &serde_json::Value) -> bool {
+        // 1) 人格归属：回执里的 team_id 必须与本人格一致。
+        let claimed = reply
+            .get("team_id")
+            .and_then(|value| value.as_str())
+            .filter(|id| !id.is_empty());
+        let own = self.team_id();
+        if claimed.is_none() || claimed != own.as_deref() {
+            tracing::debug!(
+                claimed = ?claimed,
+                own = ?own,
+                "workspace 会话回执不属于本人格，忽略（镜像保持原样）"
+            );
+            return false;
+        }
+        let Some(mirror) = self.workspace_mirror() else {
+            return false;
+        };
+        // 2) 载荷合法：严格解析，坏载荷不写镜像。
+        let snapshot = match WorkspaceSnapshot::try_from_event_payload(reply) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "workspace 会话回执载荷不合法，忽略（镜像保持原样；模块与宿主线格式漂移？）"
+                );
+                return false;
+            }
+        };
+        // 3) 只补一次：已有来源就不覆盖。
+        if !mirror.seed_if_unseeded(snapshot) {
+            tracing::debug!("workspace 镜像已有来源，忽略重复/迟到的会话回执");
+            return false;
+        }
+        tracing::info!(
+            team_id = own.as_deref().unwrap_or_default(),
+            active = ?mirror.snapshot().active,
+            sessions = mirror.snapshot().sessions.len(),
+            "workspace 镜像已由会话回执补种（冷启动恢复）"
+        );
+        // 宿主那半段：与 `workspace.changed` 走同一条路径（通道注册 + 会话级
+        // API 覆盖 + 两个广播）。事件桥是同步闭包，而续接 provider 需要 await。
+        let agent = Arc::clone(self);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                agent.workspace_after_change().await;
+            });
+        } else {
+            tracing::debug!("no tokio runtime; workspace recovery broadcast skipped");
+        }
+        true
     }
 
     /// Emit the current workspace session list snapshot（读镜像，不读 store）。

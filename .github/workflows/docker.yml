@@ -2,6 +2,22 @@
 #
 # 触发：PR 只构建（守护 Dockerfile）；main 推送 latest；版本 tag（v*）推送对应版本 tag。
 # 镜像被 npm 部署 CLI 使用（npm/echo-agent 的 compose 模板默认引用本镜像）。
+#
+# ## 正式性：CI 一律走 MODULE_SOURCE=official
+#
+# 镜像里的外置模块（QQ 适配器、任务清单）是**外部仓**，不受 Core 的 Cargo.lock
+# 管辖。这里强制 official 入口：模块提交只能来自 `packaging/external-modules.lock`
+# （完整 40 位 SHA，与 native tarball 同一份表），按 SHA 匿名拉取、`--locked`
+# 构建、SHA 不符即失败。本地 `docker build .` 的 dev 入口（跟 main、允许无锁
+# 兜底）不会产出可发布镜像——它连模块摘要标签都写不出来（写的是 unlocked-dev）。
+#
+# ## 可追溯：记 digest，不记 tag
+#
+# tag（v0.3.0 / latest）是**会移动的指针**，不是身份；同一个 tag 可以被重新
+# 推送，指向完全不同的内容。真正的身份是 manifest digest（`sha256:...`）。
+# 所以每次推送都把 `镜像@sha256:...` 连同模块 SHA 写进 image-digest.json
+# artifact 与 job summary：事后要回答"线上这个 tag 当时是哪个 digest、里面是
+# 哪个模块提交"，看的是这个文件，不是 tag 名。
 name: Docker
 
 on:
@@ -22,6 +38,18 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # 锁定表是镜像的唯一模块来源：先校验结构（只允许完整 SHA），
+      # 再把摘要传给构建——Dockerfile 的 official 阶段会与表逐字比对。
+      - name: 解析外置模块锁定表
+        id: modules
+        run: |
+          set -euo pipefail
+          script=scripts/release/external-modules.sh
+          bash "$script" validate
+          summary="$(bash "$script" oci-summary image)"
+          echo "summary=$summary" >>"$GITHUB_OUTPUT"
+          echo "模块来源（完整 SHA）：$summary"
+
       - name: 登录 GHCR（仅推送时）
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -40,7 +68,8 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           # 先只出 amd64：arm64 在 QEMU 下编译 Rust release 极慢，
@@ -49,5 +78,72 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            MODULE_SOURCE=official
+            EXTERNAL_MODULES_SUMMARY=${{ steps.modules.outputs.summary }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 只有真的推送了才有 digest；PR 构建没有可追溯身份，故跳过。
+      - name: 记录镜像 digest（身份不是 tag）
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          MODULE_SUMMARY: ${{ steps.modules.outputs.summary }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DIGEST}" ]]; then
+            echo "::error::build-push-action 没有返回 digest，无法记录可追溯身份"
+            exit 1
+          fi
+          python3 >image-digest.json <<'PY'
+          import json, os, sys
+
+          image = "ghcr.io/echolab-auto/echo-agent-core"
+          digest = os.environ["DIGEST"]
+          # tag 只是别名（会移动）；digest 才是可以拿去 pin 的身份。
+          tags = [t.strip() for t in os.environ.get("TAGS", "").splitlines() if t.strip()]
+          modules = [
+              {"key": key, "commit": commit}
+              for key, _sep, commit in (
+                  part.partition("@")
+                  for part in os.environ.get("MODULE_SUMMARY", "").split(",")
+                  if part
+              )
+          ]
+          json.dump(
+              {
+                  "image": image,
+                  # 可 pin 的引用：registry 路径 + digest，与 tag 无关
+                  "pinned": f"{image}@{digest}",
+                  "digest": digest,
+                  "tags": tags,
+                  "source_revision": os.environ["GITHUB_SHA"],
+                  "source_ref": os.environ["GITHUB_REF_NAME"],
+                  "external_modules": modules,
+                  "external_modules_lock": "packaging/external-modules.lock",
+              },
+              sys.stdout,
+              indent=2,
+              ensure_ascii=False,
+          )
+          sys.stdout.write("\n")
+          PY
+          cat image-digest.json
+          {
+            echo "### 镜像身份（digest，不是 tag）"
+            echo
+            echo '```'
+            echo "ghcr.io/echolab-auto/echo-agent-core@${DIGEST}"
+            echo '```'
+            echo
+            echo "外置模块：${MODULE_SUMMARY}"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: image-digest
+          path: image-digest.json
+          if-no-files-found: error

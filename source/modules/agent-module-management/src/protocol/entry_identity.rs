@@ -45,7 +45,7 @@
 
 use std::collections::HashMap;
 
-use crate::event::BackendEvent;
+use echo_protocol::event::BackendEvent;
 
 const KIND_BACKEND: &str = "backend";
 const KIND_REASONING: &str = "reasoning";

@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(compacted, vec![a]);
         let b_events: Vec<_> = events
             .iter()
-            .filter(|event| event.session().as_deref() == Some(b))
+            .filter(|event| event.session() == Some(b))
             .collect();
         assert_eq!(b_events.len(), 6, "B 的原始事件必须全部保留");
         assert!(!b_events

@@ -11,27 +11,29 @@ y: 3440
 > **定位**：本文是前后端线协议（management WebSocket 契约）的参考——契约归属与兼容规则、传输与信封（含事件扇出序号、Bootstrap、共享枚举）、命令、事件（含时间线增量同步）、归属与路由、管理通道与快照。读者：Core / Panel 双端开发者与协议维护者。
 > 相关文档：[架构总览](../overview/architecture.md)、[Panel 交互定义](../panel/interaction.md)、[桌面端布局](../panel/desktop-layout.md)、[联邦](../federation/federation.md)、[部署与自更新](../ops/deploy.md)。
 
-前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。令牌缺失/不匹配时在握手阶段返回**标准 HTTP 401**（客户端据此归类为认证失败并提示排查令牌——此前该拒绝路径因响应状态默认 200 被 tungstenite 静默丢弃，客户端只能看到「握手未完成」，令牌问题极难排查）。命令与事件定义在 `source/modules/agent-module-management`（Core 侧直接使用该 crate；Panel 侧的类型是**它的生成物**，见下「TypeScript 绑定」）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
+前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。令牌缺失/不匹配时在握手阶段返回**标准 HTTP 401**（客户端据此归类为认证失败并提示排查令牌——此前该拒绝路径因响应状态默认 200 被 tungstenite 静默丢弃，客户端只能看到「握手未完成」，令牌问题极难排查）。命令、事件和信封定义在 `source/modules/echo-protocol`；Panel 的 TypeScript 类型由它生成。
 
 ## 仓库拆分与契约归属
 
-- 仓库拆分为 **EchoAgentCore**（后端 agent 服务）与 **EchoAgentPanel**（前端）两个独立仓库，两端可独立构建、发布、演进，仅通过 `agent-module-management` 契约耦合
-- `agent-module-management` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`ThinkingMode` / `ReasoningEffort`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
+- 仓库拆分为 **EchoAgentCore**（后端 agent 服务）与 **EchoAgentPanel**（前端）两个独立仓库，两端可独立构建、发布、演进，通过 `echo-protocol` 的线契约配对
+- `echo-protocol` 持有 `BackendCommand` / `BackendEvent` / `WsMessage`、线格式编解码和 TS 生成；不依赖管理服务或联邦运行时。`agent-module-management` 持有 WS 服务、桥接、准入与扇出，并兼容再导出原有 Rust 路径。serde 表示即线格式。
 - Panel 是纯粹的「协议客户端」：不包含任何 agent 或 QQ 逻辑（Rust 中继按原文转发帧、不解析负载；线格式是生成物）；后端各 crate 通过 re-export 保持 `echo_agent::…` 路径兼容
 - 协议演进只服务 Panel ⇄ Core 两端；**全网同步更新（不做旧版本兼容）**——语义变更单侧收紧亦可，两端同版本部署（见 §兼容性规则）
 
 ### TypeScript 绑定：生成，不手抄
 
-Panel 的线格式类型**不再手写**。`agent-module-management` 的协议类型带
+Panel 的线格式类型**不再手写**。`echo-protocol` 的协议类型带
 `#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]`，由 Core 的
-`dump-protocol-ts` 子命令导出成 `web/src/protocol.generated.ts`：
+`dump-protocol-ts` 子命令或 `echo-protocol` 的 `protocol_contract_ts` 示例导出成 `web/src/protocol.generated.ts`：
 
 ```bash
 # Panel 仓
 npm run sync-protocol     # 生成（默认读 ~/.local/share/echo-agent-core/source）
-npm run check-protocol    # 只校验；build 前置，不一致拒绝构建
+npm run check-protocol    # 本地校验；缺 Core 源码时可独立构建
+npm run check-protocol:strict # Panel CI 用固定版本，不静默跳过
 ```
 
+- 原生发布会先对照 `Cargo.lock` 锁定的 Panel 绑定做字节检查，并生成可脱离 Core 源码核验的[版本化契约归档](contract-artifact.md)。
 - **feature 默认关闭**：生产二进制不引入 `ts-rs`（`cargo tree` 可验）
 - 生成约定：`u64/i64` 生成为 `number`（走 JSON，`JSON.parse` 只产出 number）、
   `serde_json::Value` 生成为 `unknown`（Core 不约束形状，消费方必须显式断言）
@@ -189,11 +191,11 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 - Panel 前端以 `broadcast: true` 信封发送发现类命令（`RequestState` / `RequestTeamsList` 等），中继见该标志即转发给**全部在线上游**；不带标志的命令按信封/会话归属路由到单一目标节点，不会扇出。
 - 中继侧实现见 `echo-web-server/src/proxy.rs`（`{"broadcast": true, "frame": …}` 分支）与 `web/src/connection.ts`（`broadcastEnvelope`）。**中继端当前不维护只读白名单**——判断权在前端调用方；新增可广播命令只需在前端用该信封发送，中继零改动。
-- Core 侧 `BROADCAST_READONLY_COMMANDS` / `is_broadcast_readonly()`（`agent-module-management/src/command.rs`）保留为**命令分类的语义快照**（供测试与文档引用），不再是中继的运行时开关。
+- Core 侧 `BROADCAST_READONLY_COMMANDS` / `is_broadcast_readonly()`（`source/modules/agent-module-management/src/protocol/command.rs`）保留为**命令分类的语义快照**（供测试与文档引用），不再是中继的运行时开关。
 
 ### 完整变体清单
 
-按功能域列出全部 `BackendCommand` 变体（载荷字段见 `agent-module-management/src/command.rs`）：
+按功能域列出全部 `BackendCommand` 变体（载荷字段见 `source/modules/echo-protocol/src/command.rs`）：
 
 | 域 | 变体 |
 |---|---|
@@ -228,7 +230,7 @@ graph LR
 
 > 没有任何「分支可见性」事件：`ReplyBranchStarted` / `ReplyBranchContent` / `ReplyBranchCompleted` 与 `ActiveBranchInfo` 已随并行多会话模式（2026-11）删除，Core 只发这条单线事件流 `MessageReceived → … → AgentOutput → AgentCompleted`。每个 turn 仍带 `branch_id`（turn 标识），用于事件归属与流式对账，但同一条会话的 turn 是串行排队的（见 [Agent 循环](../core/agent-loop.md)§会话内准入）。
 
-其他事件分组（字段详见 `agent-module-management/src/event.rs`）：
+其他事件分组（字段详见 `source/modules/echo-protocol/src/event.rs`）：
 
 - **模块实例生命周期与管理**：`InstanceStateChanged`（连接态）、`InstanceList`（实例/能力/UI 描述符快照）、`InstanceOpResult`（`InvokeInstanceOp` 响应）、`InstanceState`（状态文档推送）
 - **编排**：`SubagentStarted/Completed`、`AgentCompleted`（turn 收尾——含空输出的完成信号）；**推理有两条通路**：实时 `AgentReasoning`（及 `AgentReasoningDelta` 流式）之外，正文同时以 `SessionEvent::Reasoning` 落会话事件日志（**模型不可见**）——历史回填与实时投影形状因此一致，思考条目不会在刷新后被重排（见 [会话记忆](../core/memory.md)§可见性边界）
@@ -252,7 +254,7 @@ graph LR
 
 ### 完整变体清单
 
-按功能域列出全部 `BackendEvent` 变体（字段见 `agent-module-management/src/event.rs`）：
+按功能域列出全部 `BackendEvent` 变体（字段见 `source/modules/echo-protocol/src/event.rs`）：
 
 | 域 | 变体 |
 |---|---|

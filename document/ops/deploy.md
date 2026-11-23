@@ -226,6 +226,64 @@ ECHO_DOWNLOAD_MIRROR=https://ghfast.top/https://github.com ./scripts/install-bin
 - 与宿主安装**不要同时跑**：容器名（`napcat`）与端口（8080/6099）冲突，
   `echo-agent doctor` 会检测并提示
 
+### 外置模块来源：`packaging/external-modules.lock`（唯一真值）
+
+QQ 适配器与任务清单是**外部仓**（各自独立 workspace + Cargo.lock），Core 的
+`Cargo.lock` 管不到它们。两个正式产物——原生 tarball（`release.yml`）与版本
+tag 的容器镜像（`docker.yml` → Dockerfile 的 `modules-official` 阶段）——**共用
+同一张锁定表**，表里只写完整 40 位提交 SHA：
+
+```
+module checklist  https://github.com/EchoLab-Auto/agent-module-checklist  9ec7aad…  agent-module-checklist  image,tarball
+module adapter-qq https://github.com/EchoLab-Auto/agent-module-adapter-qq bf7733f…  agent-module-adapter-qq image
+```
+
+- **为什么不能写 tag / 分支名**：两者都会移动。`main` 的 HEAD 每天都在变，
+  tag 也能被强推；写它们等于"同一个 v0.3.0 重跑会得到不同产物"，而"v0.3.0
+  的产物"必须是一个确定的东西。`scripts/release/external-modules.sh validate`
+  会直接拒绝非 40 位 SHA 的条目。
+- **为什么必须是公开可取且可锁定构建的提交**：正式路径按匿名 https 浅拉取
+  该 SHA、就地 `cargo build --locked`。本地未推送的提交 CI 拉不到；该提交
+  缺 `Cargo.lock` 或 lock 已过期，构建会失败。
+  `scripts/release/test-external-modules.sh --remote` 验证提交可匿名获取且包含锁文件；
+  锁文件是否有效由正式路径的 `cargo build --locked` 验证。
+- **改一个模块版本**：改表里的 SHA → 提交 → 跑一次上面那条命令。正式入口
+  在动手前都会 `validate`，Dockerfile 还会把传入的摘要与表逐字比对（不一致
+  直接构建失败，避免标签与镜像内容对不上）。
+
+### 可追溯：记 SHA / 记 digest，不记 tag
+
+| 产物 | 记录位置 | 内容 |
+| --- | --- | --- |
+| 原生 tarball | `manifest.json` 的 `external_modules` | 每个模块的 `repo` + 完整 `commit` |
+| 容器镜像 | OCI 标签 `io.echo.external-modules.revisions` | `key@<40 位 SHA>,…` |
+| 容器镜像（可离线查） | 镜像内 `/usr/local/share/echo-agent-core/external-modules.txt` | 同上（registry 标签进不去时仍可核对） |
+| 容器镜像身份 | `docker.yml` 的 `image-digest` artifact | `ghcr.io/…@sha256:…` + 模块 SHA + 源 revision |
+
+镜像的**身份是 digest，不是 tag**：`latest` / `v0.3.0` 都是会移动的别名，
+同一个 tag 可以被重新推送指向完全不同的内容。要 pin 一个镜像，用
+`ghcr.io/echolab-auto/echo-agent-core@sha256:…`（见 `image-digest.json`）。
+`npm` 的 compose 模板当前仍默认 `:latest`——改用 digest 需要"已发布且验证过的
+真实 digest"，是独立的一步，不在本表的能力范围内。
+
+### 开发入口（本地 `docker build .`）与正式入口的隔离
+
+本地直接 `docker build .` 仍是旧行为：`ADAPTER_REF` / `CHECKLIST_REF` 默认
+`main`，`--locked` 失败退化为无锁构建——方便跟上上游主线联调，但同一份源码
+重跑可能得到不同模块。这条路径**不是发布路径**：它写不出模块摘要标签（标签
+值是 `unlocked-dev`），CI 也从不使用它。正式构建必须显式：
+
+```bash
+docker build \
+  --build-arg MODULE_SOURCE=official \
+  --build-arg EXTERNAL_MODULES_SUMMARY="$(bash scripts/release/external-modules.sh oci-summary image)" \
+  -t echo-agent-core:local .
+```
+
+结构上两者是**不同的构建阶段**（`modules-dev` / `modules-official`）：未选中的
+阶段根本不会执行，开发路径的"退回 main / 退回无锁"在正式构建里连跑的机会
+都没有。
+
 ## 更新流程（update.sh）
 
 - `--local`（默认）：构建当前源码树（含未提交改动，记为 `+dirty`）；`--remote`：先 fetch + fast-forward 再构建（工作树有改动/游离 HEAD/非快进则拒绝）

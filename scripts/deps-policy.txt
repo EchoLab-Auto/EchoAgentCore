@@ -35,8 +35,8 @@ modules/echo-defs                         echo-context
 
 # ── kernel 模块（只依赖底座）────────────────────────────────────────────────
 modules/echo-session                        echo-defs echo-module
-modules/echo-protocol                    agent-module-management
-modules/agent-module-management              echo-module echo-context echo-defs agent-module-federation echo-session
+modules/echo-protocol                    echo-context echo-defs
+modules/agent-module-management              echo-module echo-context echo-defs echo-protocol agent-module-federation echo-session
 modules/echo-config
 modules/agent-module-tools echo-config echo-context echo-defs echo-module agent-module-management echo-test-utils
 modules/agent-module-shell                   echo-context echo-defs echo-module agent-module-management agent-module-tools
@@ -51,7 +51,7 @@ test/utils                                echo-defs
 modules/agent-module-provider-llm echo-config echo-context echo-defs echo-module agent-module-management
 modules/agent-module-skills                  echo-defs echo-context echo-module agent-module-management
 modules/agent-module-self-update             echo-context echo-module agent-module-management
-modules/agent-module-federation              echo-defs echo-context echo-module agent-module-management agent-module-tools
+modules/agent-module-federation              echo-defs echo-context echo-module echo-protocol agent-module-management agent-module-tools
 modules/agent-module-loop                    echo-config echo-context echo-defs echo-module echo-module-api agent-module-federation agent-module-management agent-module-provider-llm agent-module-sanitize agent-module-self-update agent-module-session agent-module-shell agent-module-skills agent-module-subagent agent-module-tools agent-module-transcript agent-module-workspace echo-session echo-test-utils echo-module-host agent-module-prodoc
 modules/agent-module-session                 echo-context echo-defs echo-module agent-module-management echo-session
 modules/agent-module-sanitize                echo-context echo-defs echo-module

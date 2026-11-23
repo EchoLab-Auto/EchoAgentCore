@@ -233,11 +233,23 @@ docker run -v ./config:/config -v ./data:/data -p 3131:3131 -p 3132:3132 echo-ag
 镜像**自带 QQ 适配器模块**（`echo-adapter-qq`）：适配器自 2026-10 起是进程外模块
 （独立仓 [`agent-module-adapter-qq`](https://github.com/EchoLab-Auto/agent-module-adapter-qq)），
 Core 按平台名派生去 PATH 里找它，装成派生名后容器模板不需要写 `module.command`。
-需要可复现构建时固定适配器版本：
+外置模块（QQ 适配器 + 任务清单）默认跟上游 `main`，那是**本地开发入口**：
+`--locked` 失败会退化为无锁构建，同一份源码重跑可能拿到不同模块。
+
+正式构建（版本 tag 的镜像就走这条）从唯一锁定表
+[`packaging/external-modules.lock`](packaging/external-modules.lock) 取**完整
+提交 SHA**，`--locked` 构建且无兜底，并把实际 SHA 写进 OCI 标签与镜像内文件：
 
 ```bash
-docker build --build-arg ADAPTER_REF=<commit-or-tag> -t echo-agent-core:local .
+# 本地想复现正式镜像
+docker build \
+  --build-arg MODULE_SOURCE=official \
+  --build-arg EXTERNAL_MODULES_SUMMARY="$(bash scripts/release/external-modules.sh oci-summary)" \
+  -t echo-agent-core:local .
 ```
+
+口径与追溯方式（含"镜像身份是 digest 不是 tag"）见
+[部署文档](document/ops/deploy.md#外置模块来源packagingexternal-moduleslock唯一真值)。
 
 ---
 

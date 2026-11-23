@@ -221,6 +221,10 @@ pub struct Federation<A: Frame> {
 impl<A: Frame> Federation<A> {
     /// 创建管理器；`event_tx` 由调用方提供（缓冲即背压边界）。
     /// `advertise` = 本机对外可拨地址（`ws://host:port`；None = 不宣告）。
+    ///
+    /// 8 个参数各自是一次装配输入（身份、能力、peers、两个异步出口），
+    /// 合并成结构体既会破坏已发布的调用方，也会把"构造即完整"变得含糊。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         node_id: String,
         node_name: Option<String>,
@@ -1074,46 +1078,48 @@ async fn accept_with_auth(
     let tokens = tokens.to_vec();
     let presented = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let presented2 = presented.clone();
-    let ws = tokio_tungstenite::accept_hdr_async(
-        stream,
-        move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-            // 观测地址（2026-11）：对端拨号用的 `Host` 就是「它眼中的我」，
-            // 比本机推导的 advertise 更接近真相（NAT/端口映射下尤其如此）。
-            if let Some(host) = request.headers().get("host").and_then(|v| v.to_str().ok()) {
-                let cap = OBSERVED_HOST_CAP;
-                crate::connection::invite::note_observed(
-                    &mut observed_hosts
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                    host,
-                    cap,
-                );
-            }
-            let token = request
-                .headers()
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "))
-                .map(str::to_string);
-            let ok = token
-                .as_ref()
-                .map(|t| {
-                    tokens
-                        .iter()
-                        .any(|known| !known.is_empty() && constant_time_eq(known, t))
-                })
-                .unwrap_or(false);
-            if ok {
-                *presented2
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = token.unwrap_or_default();
-                Ok(response)
-            } else {
-                Err(unauthorized_response())
-            }
-        },
-    )
-    .await?;
+    // 回调签名由 tokio-tungstenite 的 `accept_hdr_async` 固定：Err 侧是库的
+    // `ErrorResponse`（`http::Response<Option<String>>`），无法装箱缩小。
+    // 允许范围只覆盖这个回调本身，不扩散到 `accept_with_auth`。
+    #[allow(clippy::result_large_err)]
+    let on_request = move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                           response| {
+        // 观测地址（2026-11）：对端拨号用的 `Host` 就是「它眼中的我」，
+        // 比本机推导的 advertise 更接近真相（NAT/端口映射下尤其如此）。
+        if let Some(host) = request.headers().get("host").and_then(|v| v.to_str().ok()) {
+            let cap = OBSERVED_HOST_CAP;
+            crate::connection::invite::note_observed(
+                &mut observed_hosts
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                host,
+                cap,
+            );
+        }
+        let token = request
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::to_string);
+        let ok = token
+            .as_ref()
+            .map(|t| {
+                tokens
+                    .iter()
+                    .any(|known| !known.is_empty() && constant_time_eq(known, t))
+            })
+            .unwrap_or(false);
+        if ok {
+            *presented2
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = token.unwrap_or_default();
+            Ok(response)
+        } else {
+            Err(unauthorized_response())
+        }
+    };
+    let ws = tokio_tungstenite::accept_hdr_async(stream, on_request).await?;
     let token = presented
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

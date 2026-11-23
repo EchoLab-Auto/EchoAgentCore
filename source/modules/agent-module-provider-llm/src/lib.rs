@@ -59,10 +59,10 @@ mod redacting;
 pub use metering::{wrap_metering, UsageRecorder};
 pub use redacting::wrap_redacting;
 
-/// 模块 id（`modules.toml` / Panel 模块清单同一口径）。
 /// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
 pub const MANIFEST_TOML: &str = include_str!("../module.toml");
 
+/// 模块 id（`modules.toml` / Panel 模块清单同一口径）。
 pub const MODULE_ID: &str = "echo-agent.provider.llm";
 
 /// provider 实例的服务键（**别名**，真源在定义层）。

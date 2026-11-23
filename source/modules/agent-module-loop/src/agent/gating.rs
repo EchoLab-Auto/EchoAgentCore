@@ -429,12 +429,6 @@ fn persona_tool_allowed(profile: &crate::config::AgentProfile, name: &str) -> bo
         && !profile.disabled_tools.iter().any(|t| t == name)
 }
 
-/// persona 名单对某技能是否允许（语义同 [`persona_tool_allowed`]）。
-fn persona_skill_allowed(profile: &crate::config::AgentProfile, name: &str) -> bool {
-    (profile.enabled_skills.is_empty() || profile.enabled_skills.iter().any(|s| s == name))
-        && !profile.disabled_skills.iter().any(|s| s == name)
-}
-
 /// 从注册表快照派生 persona 门控 id 集合。
 ///
 /// `registered` 是 `(模块 id, kind 标签)`。判定规则只有一条：**该 kind 的

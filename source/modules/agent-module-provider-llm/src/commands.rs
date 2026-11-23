@@ -53,6 +53,12 @@ pub const COMMANDS: [&str; 17] = [
 /// 自己拼 `Pin<Box<dyn Future<Output = ()> + Send + 'a>>` 容易写错生命周期。
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// 远端 profile 池查询的应答载荷：`(active, profiles)`，两项都是**对端原样
+/// JSON**（形状由应答方的联邦查询处理器决定，本模块不解析、不重建类型）。
+///
+/// 别名只为压短 [`ProviderCommandHost::remote_api_profiles`] 的返回签名。
+pub type RemoteApiProfilesPayload = (Option<serde_json::Value>, Vec<serde_json::Value>);
+
 /// `UpdateApiConfig` 的参数包。
 ///
 /// 七个位置参数会让调用点读不懂（宿主侧同名方法的既有形状保留），所以命令面
@@ -105,7 +111,7 @@ pub trait ProviderCommandHost: Send + Sync {
     fn remote_api_profiles<'a>(
         &'a self,
         peer: &'a str,
-    ) -> BoxFuture<'a, Result<(Option<serde_json::Value>, Vec<serde_json::Value>), String>>;
+    ) -> BoxFuture<'a, Result<RemoteApiProfilesPayload, String>>;
     /// 连通性自测（回 `ApiTestResult` 事件）。
     fn test_api<'a>(&'a self, name: &'a str) -> BoxFuture<'a, ()>;
     /// 账户余额（回 `ApiBalanceResult`）。
@@ -518,7 +524,7 @@ mod tests {
     struct FakeHost {
         calls: Mutex<Vec<String>>,
         events: Mutex<Vec<BackendEvent>>,
-        remote: Mutex<Option<Result<(Option<serde_json::Value>, Vec<serde_json::Value>), String>>>,
+        remote: Mutex<Option<Result<RemoteApiProfilesPayload, String>>>,
     }
 
     impl FakeHost {

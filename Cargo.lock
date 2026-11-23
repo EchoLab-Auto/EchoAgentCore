@@ -55,6 +55,7 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
+ "echo-protocol",
  "futures-util",
  "serde",
  "serde_json",
@@ -62,7 +63,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tracing",
- "ts-rs",
  "uuid",
 ]
 
@@ -122,6 +122,7 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
+ "echo-protocol",
  "futures-util",
  "serde",
  "serde_json",
@@ -129,13 +130,12 @@ dependencies = [
  "tokio-tungstenite 0.24.0",
  "tokio-util",
  "tracing",
- "ts-rs",
 ]
 
 [[package]]
 name = "agent-module-panel"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#d165a9e1a9d14a59e6d7c928d7d70239b564c282"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?rev=180d35999c120944ec95d2da66ba0c9c095f629c#180d35999c120944ec95d2da66ba0c9c095f629c"
 dependencies = [
  "anyhow",
  "echo-context",
@@ -218,7 +218,6 @@ dependencies = [
  "echo-defs",
  "echo-module",
  "echo-session",
- "filetime",
  "parking_lot",
  "proptest",
  "serde",
@@ -326,7 +325,7 @@ dependencies = [
 [[package]]
 name = "agent-module-workspace"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#3f9c7fd4e5ddf8c3bc08b99b6eba9b7607972aee"
+source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?rev=9bbced476c3cdd5b3712edf1252e63f395a78548#9bbced476c3cdd5b3712edf1252e63f395a78548"
 dependencies = [
  "echo-context",
  "echo-module",
@@ -1195,7 +1194,12 @@ dependencies = [
 name = "echo-protocol"
 version = "0.3.1"
 dependencies = [
- "agent-module-management",
+ "echo-context",
+ "echo-defs",
+ "serde",
+ "serde_json",
+ "tracing",
+ "ts-rs",
 ]
 
 [[package]]
@@ -1226,7 +1230,7 @@ dependencies = [
 [[package]]
 name = "echo-web-server"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#d165a9e1a9d14a59e6d7c928d7d70239b564c282"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?rev=180d35999c120944ec95d2da66ba0c9c095f629c#180d35999c120944ec95d2da66ba0c9c095f629c"
 dependencies = [
  "anyhow",
  "axum",
@@ -1316,7 +1320,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2472,7 +2476,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2832,7 +2836,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3310,7 +3314,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3966,7 +3970,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -18,14 +18,23 @@
 //!
 //! 这是**单向**数据流的落点：模块是唯一写者，宿主只读。宿主从此不可能与模块
 //! 的持久化状态分叉（此前两份 store 实例靠"不要同时写"的纪律维持一致）。
+//!
+//! ## 冷启动的空窗（C3c）
+//!
+//! 镜像**只**消费 `workspace.changed`，而那是"变更时才有"的事件。进程重启后
+//! 磁盘上明明存着激活会话，但没有任何变更发生 → 镜像停在空态：项目对话通道
+//! 不注册、`SessionUpdated` 不广播，直到用户手动改一次工作区。恢复办法见
+//! [`WorkspaceMirror::seed_if_unseeded`]（复用具成的读命令
+//! `RequestWorkspaceSessions` 作拉取来源）。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
 use agent_module_workspace::wire::{WorkspaceConversationInfo, WorkspaceSessionInfo};
 
-/// `workspace.changed` 事件携带的状态快照。
+/// `workspace.changed` 事件携带的状态快照（也是 `WorkspaceSessions` 回执的
+/// 同名三字段）。
 #[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(default)]
 pub struct WorkspaceSnapshot {
     /// 激活的工作区 id（`None` = 未激活）。
     pub active: Option<String>,
@@ -36,21 +45,9 @@ pub struct WorkspaceSnapshot {
 }
 
 impl WorkspaceSnapshot {
-    /// 从模块事件载荷解析（`{team_id, active, active_conversation, sessions}`）。
-    ///
-    /// 解析失败 = 模块与宿主的线格式漂移，记日志后按"空快照"处理——绝不 panic
-    /// （模块事件在进程级出口上，一条坏载荷不能带崩宿主）。
-    pub fn from_event_payload(payload: &serde_json::Value) -> Self {
-        match serde_json::from_value::<Self>(payload.clone()) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "workspace.changed 载荷解析失败，按空快照处理（模块与宿主线格式不一致？）"
-                );
-                Self::default()
-            }
-        }
+    /// 解析模块的全量快照。`sessions` 必须显式提供；合法空列表与坏载荷不可混淆。
+    pub fn try_from_event_payload(payload: &serde_json::Value) -> Result<Self, serde_json::Error> {
+        serde_json::from_value::<Self>(payload.clone())
     }
 
     /// 激活的 `(工作区, 对话)`（读取期惰性补位：`active_conversation` 无效时
@@ -75,9 +72,13 @@ impl WorkspaceSnapshot {
 }
 
 /// 只读镜像槽（克隆共享；模块变更是唯一写者）。
+///
+/// `seeded` = "镜像已经有过来源"（一次变更事件，或一次冷启动补种）。它只用来
+/// 判 [`Self::seed_if_unseeded`] 该不该收下补种，不参与读路径。
 #[derive(Debug, Default)]
 pub struct WorkspaceMirror {
     snapshot: RwLock<WorkspaceSnapshot>,
+    seeded: AtomicBool,
 }
 
 impl WorkspaceMirror {
@@ -96,7 +97,36 @@ impl WorkspaceMirror {
 
     /// 用模块推来的快照整体替换（事件即全量，无增量语义）。
     pub fn replace(&self, snapshot: WorkspaceSnapshot) {
-        *self.snapshot.write().unwrap_or_else(|e| e.into_inner()) = snapshot;
+        let mut slot = self.snapshot.write().unwrap_or_else(|e| e.into_inner());
+        *slot = snapshot;
+        // 变更事件是权威写入：此后不再接受"补种"（见 `seed_if_unseeded`）。
+        self.seeded.store(true, Ordering::Release);
+    }
+
+    /// **冷启动补种**：只在镜像还没有任何来源时收下快照，返回是否写入。
+    ///
+    /// 用途：进程重启后镜像是空的（没有 `workspace.changed` 可消费），宿主
+    /// 用模块的 `RequestWorkspaceSessions` 回执补一次。
+    ///
+    /// 为什么是"只补一次"而不是"来了就盖"：现有事件与回执**都没有版本/序号**
+    /// （`WorkspaceSessions` 与 `workspace.changed` 都只带快照本身），一条迟到的
+    /// 回执与"更新的变更事件"在宿主侧无法区分先后。因此这里只承诺**可验证的
+    /// 子集**：镜像尚未有来源时接受补种；一旦有来源（变更事件或首次补种），
+    /// 后续回执一律不覆盖 —— 宁可留下旧快照等下一次变更事件，也不让一条乱序
+    /// 回执把合法状态改回去。
+    pub fn seed_if_unseeded(&self, snapshot: WorkspaceSnapshot) -> bool {
+        let mut slot = self.snapshot.write().unwrap_or_else(|e| e.into_inner());
+        if self.seeded.load(Ordering::Acquire) {
+            return false;
+        }
+        *slot = snapshot;
+        self.seeded.store(true, Ordering::Release);
+        true
+    }
+
+    /// 是否已收到过任何模块事件/补种（诊断/测试用）。
+    pub fn is_seeded(&self) -> bool {
+        self.seeded.load(Ordering::Acquire)
     }
 
     /// 是否已收到过任何模块事件（诊断/测试用）。
@@ -125,7 +155,7 @@ mod tests {
                 "directories": ["/srv/a"]
             }]
         });
-        let snapshot = WorkspaceSnapshot::from_event_payload(&payload);
+        let snapshot = WorkspaceSnapshot::try_from_event_payload(&payload).unwrap();
         assert_eq!(snapshot.active.as_deref(), Some("proj"));
         let (session, conversation) = snapshot.active_pair().expect("active pair");
         assert_eq!(session.id, "proj");
@@ -164,8 +194,7 @@ mod tests {
         assert!(mirror.is_empty());
         assert!(mirror.snapshot().active_pair().is_none());
     }
-
-    /// 镜像替换是全量语义：旧会话不残留。
+    /// 镜像替换是全量语义：旧会话不残留，并且算"有来源"。
     #[test]
     fn replace_is_wholesale() {
         let mirror = WorkspaceMirror::new();
@@ -179,7 +208,72 @@ mod tests {
             }],
         });
         assert_eq!(mirror.snapshot().sessions.len(), 1);
+        assert!(mirror.is_seeded(), "变更事件也是来源");
         mirror.replace(WorkspaceSnapshot::default());
         assert!(mirror.snapshot().sessions.is_empty());
+    }
+
+    #[test]
+    fn strict_parse_rejects_malformed_payload() {
+        for payload in [
+            serde_json::json!({ "sessions": "not-a-list" }),
+            serde_json::json!({ "team_id": "t" }),
+        ] {
+            assert!(WorkspaceSnapshot::try_from_event_payload(&payload).is_err());
+        }
+        let empty = WorkspaceSnapshot::try_from_event_payload(&serde_json::json!({
+            "sessions": [],
+        }))
+        .unwrap();
+        assert!(empty.sessions.is_empty() && empty.active.is_none());
+    }
+
+    /// 冷启动补种：只有第一次生效；此后回执不覆盖已有状态。
+    #[test]
+    fn seed_applies_once_then_stops() {
+        let mirror = WorkspaceMirror::new();
+        assert!(!mirror.is_seeded());
+        let first = WorkspaceSnapshot {
+            active: Some("proj".into()),
+            active_conversation: Some("main".into()),
+            sessions: vec![WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                ..Default::default()
+            }],
+        };
+        assert!(mirror.seed_if_unseeded(first.clone()), "空镜像接受补种");
+        assert_eq!(mirror.snapshot().active.as_deref(), Some("proj"));
+
+        // 迟到的/重复的回执：不覆盖。
+        let late = WorkspaceSnapshot {
+            active: Some("ghost".into()),
+            ..Default::default()
+        };
+        assert!(!mirror.seed_if_unseeded(late));
+        assert_eq!(mirror.snapshot().active.as_deref(), Some("proj"));
+    }
+
+    /// 变更事件先到 → 补种一律不生效（乱序回执不覆盖较新的变更）。
+    #[test]
+    fn change_event_wins_over_late_seed() {
+        let mirror = WorkspaceMirror::new();
+        mirror.replace(WorkspaceSnapshot {
+            active: Some("docs".into()),
+            active_conversation: None,
+            sessions: vec![WorkspaceSessionInfo {
+                id: "docs".into(),
+                name: "Docs".into(),
+                ..Default::default()
+            }],
+        });
+        assert!(
+            !mirror.seed_if_unseeded(WorkspaceSnapshot {
+                active: Some("proj".into()),
+                ..Default::default()
+            }),
+            "已有来源时补种被拒绝"
+        );
+        assert_eq!(mirror.snapshot().active.as_deref(), Some("docs"));
     }
 }

@@ -51,7 +51,8 @@ y: 216
 这是本模块最需要知道的一条：**禁用管理面 = 关掉 Panel 通道本身**。
 
 - 关掉之后没有任何 UI 能再把它打开（Panel 连不上）
-- 因此 `ToggleModule` 对它**专门拒绝**，`RestartModule` 同样不适用——重启的指令也得经这条通道送达
+- 因此 `RestartModule` 对它**专门拒绝**（`ModuleOpResult { ok: false }` 明示理由）——重启的指令也得经这条通道送达，先断通道 = 自己把自己锁在门外
+- 协议里**没有 `ToggleModule`**（2026-11 核实，命令表只剩 `RestartModule`）：在线停机根本不存在，停用只能在 `modules.toml` 配置该模块 `enabled = false` 后重启 Core
 - 这条语义是模块自己的（「我的能力是提供通道，关我就没人能开」），不是宿主的特例分支
 
 ## 它与显示层的分工

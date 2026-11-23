@@ -3828,9 +3828,7 @@ async fn send_message_with_files_saves_and_tells_agent() {
     use crate::agent::commands::ATTACHMENT_ENV_LOCK;
     use agent_module_management::protocol::{BackendCommand, PendingFile};
 
-    let _guard = ATTACHMENT_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _guard = ATTACHMENT_ENV_LOCK.lock().await;
     let root = std::env::temp_dir().join(format!(
         "echo-attach-e2e-{}-{}",
         std::process::id(),
@@ -4219,15 +4217,22 @@ fn mount_workspace_module(
             match event.name.as_str() {
                 agent_module_workspace::events::CHANGED => {
                     let snapshot =
-                        crate::agent::workspace_mirror::WorkspaceSnapshot::from_event_payload(
+                        crate::agent::workspace_mirror::WorkspaceSnapshot::try_from_event_payload(
                             &event.payload,
-                        );
+                        )
+                        .expect("valid workspace change fixture");
                     agent.apply_workspace_snapshot(snapshot);
                 }
                 agent_module_workspace::events::BACKEND_EVENT => {
                     if let Ok(backend_event) =
                         serde_json::from_value::<crate::event::BackendEvent>(event.payload.clone())
                     {
+                        // 冷启动恢复：`WorkspaceSessions` 回执同时补种镜像
+                        // （生产里由组合根做同一件事，见
+                        // `host_services::workspace_from_module_event`）。
+                        if let Some(reply) = event.payload.get("WorkspaceSessions") {
+                            agent.adopt_workspace_sessions(reply);
+                        }
                         agent.emit(backend_event);
                     }
                 }
@@ -4580,6 +4585,150 @@ async fn workspace_channel_tool_use_broadcasts() {
             .any(|s| s.id == "local:workspace:docs:local_user"),
         "tool use registers the channel"
     );
+}
+
+/// **冷启动恢复（C3c）**：进程重启后镜像空初始化（没有任何 `workspace.changed`
+/// 可消费），宿主复用读命令 `RequestWorkspaceSessions` 拉一次权威快照——
+/// 磁盘上存着的激活对话必须自己冒出来（通道注册 + `SessionUpdated` + 列表）。
+#[tokio::test]
+async fn workspace_restore_after_restart_pulls_persisted_active() {
+    let state_dir = workspace_state_dir("restore");
+    // 模拟"上一次运行留下的文档"：**在装配之前**直接落盘，之后才建 agent/模块。
+    // 这样镜像初始化时确实是空的（重启现场），而不是靠 upsert 触发 changed。
+    {
+        let store = agent_module_workspace::store::WorkspaceStore::load(Some(
+            state_dir.join("echo-workspaces-t.json"),
+        ));
+        store
+            .upsert(agent_module_workspace::wire::WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                directories: vec!["/srv/proj".into()],
+                ..Default::default()
+            })
+            .expect("persist workspace");
+        store
+            .set_active(Some("proj".into()), None)
+            .expect("persist active");
+    }
+
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    agent.set_team_id(Some("t".into()));
+    let state = install_workspace_module(&agent, &state_dir);
+    // 重启后的镜像：空的、没有来源。
+    let mirror = Arc::new(crate::agent::workspace_mirror::WorkspaceMirror::new());
+    assert!(mirror.is_empty() && !mirror.is_seeded());
+    agent.set_workspace_mirror(mirror.clone());
+    assert!(
+        !agent
+            .trunk
+            .all()
+            .iter()
+            .any(|s| s.id.starts_with("local:workspace:")),
+        "空镜像不注册任何工作区通道"
+    );
+
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    // 启动拉取：与组合根 `host_services::restore_workspace_sessions` 同一个调用。
+    assert!(state.store("t").active_pair().is_some());
+    let outcome = agent
+        .module_host()
+        .dispatch_raw(
+            "RequestWorkspaceSessions",
+            serde_json::json!({ "team_id": "t" }),
+        )
+        .await;
+    assert!(matches!(outcome, Some(Ok(_))), "{outcome:?}");
+    // 回执是异步到达的（通道/广播由 spawn 的 `workspace_after_change` 完成）。
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert!(mirror.is_seeded(), "回执补种了镜像");
+    assert_eq!(mirror.snapshot().active.as_deref(), Some("proj"));
+    assert!(
+        agent
+            .trunk
+            .all()
+            .iter()
+            .any(|s| s.id == "local:workspace:proj:local_user"),
+        "已存激活对话的通道被恢复注册"
+    );
+    let mut events = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        events.push(event);
+    }
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            BackendEvent::SessionUpdated { session }
+                if session.id == "local:workspace:proj:local_user"
+        )),
+        "恢复时广播通道的 SessionUpdated: {events:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&state_dir);
+}
+
+/// 恢复子集的三道闸：**他人格**回执、**坏载荷**、**重复/迟到**回执都不覆盖
+/// 已有状态（镜像一旦被错误数据种子化，这次运行就没有第二次机会）。
+#[tokio::test]
+async fn workspace_restore_ignores_foreign_malformed_and_duplicate() {
+    let state_dir = workspace_state_dir("restore-guard");
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    agent.set_team_id(Some("t".into()));
+    let _state = install_workspace_module(&agent, &state_dir);
+    let mirror = Arc::new(crate::agent::workspace_mirror::WorkspaceMirror::new());
+    agent.set_workspace_mirror(mirror.clone());
+
+    // ① 他人格：team_id 对不上 → 忽略（哪怕载荷本身合法）。
+    assert!(!agent.adopt_workspace_sessions(&serde_json::json!({
+        "team_id": "someone-else",
+        "active": "evil",
+        "sessions": [{ "id": "evil", "name": "Evil" }],
+    })));
+    // ② 缺 team_id：无法归属 → 忽略。
+    assert!(!agent.adopt_workspace_sessions(&serde_json::json!({
+        "active": "evil",
+        "sessions": [{ "id": "evil", "name": "Evil" }],
+    })));
+    // ③ 坏载荷：严格解析失败 → 忽略（不能按"空快照"抹掉状态）。
+    assert!(!agent.adopt_workspace_sessions(&serde_json::json!({
+        "team_id": "t",
+        "sessions": "not-a-list",
+    })));
+    assert!(!mirror.is_seeded(), "三道闸都不该写入镜像");
+
+    // 合法回执：补种成功。
+    let legal = serde_json::json!({
+        "team_id": "t",
+        "active": "proj",
+        "active_conversation": null,
+        "sessions": [{ "id": "proj", "name": "Proj", "directories": ["/srv/proj"] }],
+    });
+    assert!(agent.adopt_workspace_sessions(&legal));
+    assert_eq!(mirror.snapshot().active.as_deref(), Some("proj"));
+
+    // ④ 重复/迟到：同一份再来一次、以及一条"更旧"的回执，都不覆盖。
+    assert!(!agent.adopt_workspace_sessions(&legal), "重复回执被拒绝");
+    assert!(!agent.adopt_workspace_sessions(&serde_json::json!({
+        "team_id": "t",
+        "active": "ghost",
+        "sessions": [{ "id": "ghost", "name": "Ghost" }],
+    })));
+    assert_eq!(
+        mirror.snapshot().active.as_deref(),
+        Some("proj"),
+        "迟到的回执不覆盖合法状态"
+    );
+
+    let _ = std::fs::remove_dir_all(&state_dir);
 }
 
 /// 多对话（2026-10）：激活指定对话 → 通道按 `<ws>/<conv>` 派生注册并广播；

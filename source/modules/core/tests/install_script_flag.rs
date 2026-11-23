@@ -210,18 +210,22 @@ fn binary_install_chain_ships_external_modules_without_enabling_them() {
         .expect("read release.yml");
     let binary = read_script("install-binary.sh");
 
-    // 1) release.yml：独立克隆 + 独立 workspace 构建。
+    // 1) release.yml：独立拉取 + 独立 workspace 构建。
     assert!(
         workflow.contains("Build external modules"),
         "release.yml 应有独立的外部模块构建步骤（它不在 Core 的依赖图里）"
     );
+    // 2026-11（A2）：提交来源从"clone 默认分支 HEAD"改成唯一锁定表
+    // `packaging/external-modules.lock`（完整 40 位 SHA），与正式镜像同源。
+    // 这条断言盯的是"仍然独立于 Core 的依赖图"，而不是某个克隆写法：
+    // 绑具体命令会把下次改锁机制变成一次性改测试。
     assert!(
-        workflow.contains("git clone --depth 1 \"${CHECKLIST_REPO}\"")
-            || workflow.contains("git clone --depth 1 \"${CHECKLIST_REPO}\" "),
-        "外部模块必须单独克隆：`-p` 对非 workspace 成员不可用"
+        workflow.contains("scripts/release/external-modules.sh")
+            && workflow.contains("list-keys tarball"),
+        "外部模块必须按锁定表逐个独立拉取/构建（Core 的依赖图里没有它们）"
     );
     assert!(
-        workflow.contains("--manifest-path \"${checkout}/Cargo.toml\""),
+        workflow.contains("--manifest-path \"${src}/Cargo.toml\""),
         "外部模块用**它自己的** Cargo.toml / Cargo.lock 构建"
     );
     assert!(

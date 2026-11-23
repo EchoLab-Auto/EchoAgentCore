@@ -43,6 +43,11 @@ pub use agent_module_tools::{
 /// 组装一个 persona 的内置工具集：**实现全在模块里**，这里只传端口。
 ///
 /// 调用方（组合根）拿到之后照旧注入脱敏器、应用禁用状态与门控。
+// 8 个入参全是**端口**，顺序即接线顺序（实例表 / 工作区 / 配置 / 联邦出口 /
+// Shell 会话 / 会话查询 / 工具 provider / shell provider）。打成一个结构体只会
+// 让组合根多写一遍字段名，没有语义收益；真正的收敛点是 provider 侧的
+// `ToolsHostCtx`（工具清单的知识已经在那里）。
+#[allow(clippy::too_many_arguments)]
 pub fn build_registry(
     instances: std::sync::Arc<echo_defs::module_instance::InstanceRegistry>,
     workspace: std::path::PathBuf,

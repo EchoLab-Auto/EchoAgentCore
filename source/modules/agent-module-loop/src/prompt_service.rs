@@ -27,8 +27,13 @@
 use std::sync::Arc;
 
 use crate::agent::boundary::PromptBlock;
-use crate::skill::SkillRegistry;
 use std::collections::BTreeMap;
+
+// `skills` 字段只在 `#[cfg(test)]` 下存在（给旧单元测试注入技能用），所以这个导入
+// 也只在测试构建里需要。无条件导入会被判 unused（`cargo clippy --fix` 删过一版，
+// 导致 lib test 里 `PromptService::new` 找不到 `SkillRegistry`）。
+#[cfg(test)]
+use crate::skill::SkillRegistry;
 
 /// 提示词装配服务（见模块文档）。
 pub(crate) struct PromptService {
@@ -37,9 +42,12 @@ pub(crate) struct PromptService {
     pub(crate) skills: Arc<tokio::sync::Mutex<SkillRegistry>>,
     /// 无输入相关区块的**系统提示词字符串**缓存（`None` = 待重算）。
     ///
-    /// 存字符串而不是块：当前唯一的读者是 `build_system_prompt`（把块拼成
-    /// 一段文本给模型）。块级快照另有 [`Self::last_prompt_blocks`]——那是
-    /// `/context` 视图要的**按会话**数据，与这个"与输入无关的缓存"不是一回事。
+    /// 存字符串而不是块：这个槽服务的是"把块拼成一段文本"的旧口径（唯一读者
+    /// 曾是 `#[cfg(test)]` 的 `build_system_prompt`，现已直接读块），宿主侧目前
+    /// 只写不读——保留它是因为**失效点清单**需要一个落点（`invalidate()` 的
+    /// 调用点就是"什么输入变了"的清单）。块级快照另有
+    /// [`Self::last_prompt_blocks`]：那是 `/context` 视图要的**按会话**数据，
+    /// 与这个"与输入无关的缓存"不是一回事。
     system_prompt_cache: tokio::sync::RwLock<Option<String>>,
     /// 上一次 turn 的装配结果，**按会话**（`/context` 视图用）。
     ///
@@ -86,21 +94,6 @@ impl PromptService {
         self.last_prompt_blocks
             .get(session_id)
             .map(|entry| entry.value().clone())
-    }
-
-    /// 缓存的系统提示词（`None` = 未缓存 / 已失效）。
-    ///
-    /// 当前唯一读者是 `build_system_prompt`（`#[cfg(test)]`）——它保留着
-    /// 旧的"拼成一整段字符串"语义供测试对照。非测试构建里是死代码。
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) async fn cached_prompt(&self) -> Option<String> {
-        self.system_prompt_cache.read().await.clone()
-    }
-
-    /// 写入缓存（调用方刚算出一份"与输入无关"的提示词时）。
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) async fn cache_prompt(&self, prompt: String) {
-        *self.system_prompt_cache.write().await = Some(prompt);
     }
 }
 

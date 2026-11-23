@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "verification/wave2-*"]
   pull_request:
   workflow_dispatch:
 
@@ -56,6 +56,95 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/check-deps.sh
+
+  # 只测比较器本身：伪文件、不联网、不构建。真实配对在下面的
+  # protocol-pinned-panel 里做（它才证明“现在这份 Core 与 Panel 固定提交配对”）。
+  protocol-pair-check:
+    name: native release protocol comparator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/check-panel-protocol.sh
+
+  # PR 上的真实流程：Cargo.lock 里 pin 的 Panel 提交 → checkout 公开仓 →
+  # 用当前 Core 源码生成 TS → 与 Panel 提交里的生成物逐字 cmp。
+  #
+  # RUSTFLAGS 刻意留空（与 release.yml 的协议作业同口径）：本 job 的职责是
+  # 生成并比对绑定，不是告警门禁。全局 `-D warnings` 会让协议生成被无关的
+  # 既有告警阻断；clippy / test / deploy-tool 等其他 job 的门禁不受影响。
+  protocol-pinned-panel:
+    name: protocol binding vs pinned panel
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cargo.lock 是 Panel 提交的唯一真值（release.yml 的 protocol 作业同样
+      # 从这里取）；不接受 branch=main 的浮动解析。
+      - name: Resolve pinned Panel revision
+        id: panel
+        run: |
+          set -euo pipefail
+          revision=$(awk '
+            /^name = "agent-module-panel"$/ { in_pkg = 1; next }
+            in_pkg && /^source = / {
+              if (match($0, /#[0-9a-f]+"/)) {
+                print substr($0, RSTART + 1, RLENGTH - 2)
+              }
+              exit
+            }
+            in_pkg && /^$/ { in_pkg = 0 }
+          ' Cargo.lock)
+          if [[ ! $revision =~ ^[0-9a-f]{40}$ ]]; then
+            echo "error: agent-module-panel 没有在 Cargo.lock 里 pin 到 40 位提交（得到：${revision:-空}）" >&2
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "panel revision: $revision"
+
+      # 公开仓、按 SHA 取固定提交（不跟分支 HEAD 浮动）。
+      - uses: actions/checkout@v4
+        with:
+          repository: EchoLab-Auto/EchoAgentPanel
+          ref: ${{ steps.panel.outputs.revision }}
+          path: panel
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Generate Core bindings and compare byte-for-byte
+        run: |
+          set -euo pipefail
+          binding="$RUNNER_TEMP/protocol.generated.ts"
+          cargo run --quiet --locked -p echo-protocol --features ts-bindings \
+            --example protocol_contract_ts > "$binding"
+          bash scripts/check-panel-protocol.sh "$binding" panel/web/src/protocol.generated.ts
+
+      # 契约归档回归：不传 --ts-from，走与 release 相同的 builder → cargo
+      # 生成路径；EXPECTED_TS_SHA256 取上一步已与 Panel 逐字一致的绑定。
+      #
+      # 先删掉临时 Panel checkout（比对已完成）：它位于 Core 工作树内，留着会
+      # 让 builder 把 panel/ 当成未跟踪改动，退回 dirty 工作树快照而不是干净提交。
+      - name: Contract archive regression
+        run: |
+          set -euo pipefail
+          rm -rf -- panel
+          binding="$RUNNER_TEMP/protocol.generated.ts"
+          expected=$(sha256sum "$binding" | cut -d' ' -f1)
+          EXPECTED_TS_SHA256="$expected" bash scripts/tests/protocol-contract-artifact.test.sh
+
+  release-lock:
+    name: release-module-lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 离线：表结构（只认 40 位 SHA）、两个正式入口都接在这张表上、
+      # 正式路径没有"退回无锁"兜底。
+      - run: ./scripts/release/test-external-modules.sh
+      # 网络：锁定提交公开可取 + 自带可用的 Cargo.lock（正式发版的前提）。
+      - run: ./scripts/release/test-external-modules.sh --remote
 
   npm-cli:
     name: npm-deploy-cli

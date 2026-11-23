@@ -8,6 +8,9 @@ repository.workspace = true
 description = "联邦执行层模块：远程工具路由表 / 代理工具 / 跨机聚合 / 跨机只读查询"
 
 [dependencies]
+# 联邦状态 DTO（FederationPeerInfo / FederatedNodeInfo / FederationLinkState）
+# 的真值在 echo-protocol；本 crate 再导出，运行时（链路/路由/聚合）不受影响。
+echo-protocol = { workspace = true }
 echo-defs = { workspace = true }
 serde.workspace = true
 thiserror.workspace = true
@@ -23,12 +26,10 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
-# TypeScript 绑定生成（可选）：联邦状态类型出现在管理面协议里（Panel 要读），
-# 所以生成能力也要到这里。feature 关闭时零影响。
-ts-rs = { version = "12", optional = true }
-
 [features]
-ts-bindings = ["dep:ts-rs"]
+# TypeScript 绑定生成：联邦状态类型已随协议搬到 `echo-protocol`，这里只转发，
+# 让旧的 `agent-module-federation/ts-bindings` 开关继续有效。
+ts-bindings = ["echo-protocol/ts-bindings"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

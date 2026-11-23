@@ -434,6 +434,24 @@ pub fn estimate_cost(
     Some((cost, price.currency.clone()))
 }
 
+/// 指标存储即用量出口：计量装饰器只认 [`UsageRecorder`]，不认
+/// `echo-balances.jsonl` / 保留期 / 定价表（那些属本模块）。
+///
+/// 这个 impl 与 `UsageRecorder`、`MetricsStore` **三者在同一个 crate**——
+/// 搬家前它在宿主 `llm.rs` 里，靠孤儿规则勉强成立（trait 与类型分居两处）。
+impl crate::UsageRecorder for MetricsStore {
+    fn record_usage(
+        &self,
+        profile: &str,
+        model: &str,
+        prompt: u32,
+        completion: u32,
+        cache_hit: u32,
+    ) {
+        MetricsStore::record_usage(self, profile, model, prompt, completion, cache_hit);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,23 +762,5 @@ mod tests {
         assert_eq!(s.completion_tokens, 15);
         assert_eq!(s.calls, 2);
         let _ = fs::remove_dir_all(&dir);
-    }
-}
-
-/// 指标存储即用量出口：计量装饰器只认 [`UsageRecorder`]，不认
-/// `echo-balances.jsonl` / 保留期 / 定价表（那些属本模块）。
-///
-/// 这个 impl 与 `UsageRecorder`、`MetricsStore` **三者在同一个 crate**——
-/// 搬家前它在宿主 `llm.rs` 里，靠孤儿规则勉强成立（trait 与类型分居两处）。
-impl crate::UsageRecorder for MetricsStore {
-    fn record_usage(
-        &self,
-        profile: &str,
-        model: &str,
-        prompt: u32,
-        completion: u32,
-        cache_hit: u32,
-    ) {
-        MetricsStore::record_usage(self, profile, model, prompt, completion, cache_hit);
     }
 }

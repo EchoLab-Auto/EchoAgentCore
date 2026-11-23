@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// 同时服务 ws 协议与平台入站，改名不会有编译错误的那类漂移因此不存在。
 pub use echo_defs::chat::IncomingFile;
 
-pub use agent_module_federation::{FederatedNodeInfo, FederationLinkState, FederationPeerInfo};
+pub use crate::federation::{FederatedNodeInfo, FederationLinkState, FederationPeerInfo};
 
 /// 状态快照 → 线上事件的构造器。
 ///

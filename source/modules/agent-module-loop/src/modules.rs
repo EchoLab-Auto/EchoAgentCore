@@ -879,11 +879,7 @@ impl ModuleHost {
         if !waiting.is_empty() {
             let wait_timeout = timeout / plan.len().max(1) as u32;
             for step in plan {
-                let Some((_, required)) = waiting
-                    .iter()
-                    .find(|(id, _)| id == &step.id)
-                    .cloned()
-                    .map(|(id, keys)| (id, keys))
+                let Some((_, _required)) = waiting.iter().find(|(id, _)| id == &step.id).cloned()
                 else {
                     continue;
                 };
@@ -1112,7 +1108,10 @@ impl ModuleHost {
                 }
                 // 声明表是模块自己给的：没声明就是"没有这个方法"，直接报，
                 // 不要送进去让模块回一个笼统的 unknown_contribution。
-                if !Self::external_commands(&handle).iter().any(|cmd| cmd == name) {
+                if !Self::external_commands(&handle)
+                    .iter()
+                    .any(|cmd| cmd == name)
+                {
                     return Some(Err(format!("模块 {module} 未声明方法 {name}")));
                 }
                 let ctx = Self::external_invoke_ctx(&payload, INVOKE_TIMEOUT_MS);
@@ -1125,9 +1124,7 @@ impl ModuleHost {
             Some(owner) if owner == module => {
                 self.registry.dispatch_command_async(name, payload).await
             }
-            Some(owner) => Some(Err(format!(
-                "方法 {name} 属于模块 {owner}，不是 {module}"
-            ))),
+            Some(owner) => Some(Err(format!("方法 {name} 属于模块 {owner}，不是 {module}"))),
             None => None,
         }
     }
@@ -1481,9 +1478,7 @@ impl ModuleHost {
     /// 面板的「重启」按钮走这条：让模块按新配置 / 新外部依赖重新初始化
     /// （子进程重连、实例进程重启），不触碰任何持久化状态。
     pub fn restart(&self, id: &str) -> Result<(), String> {
-        let result = self.registry.restart(id, &self.ctx());
-        if result.is_ok() {}
-        result
+        self.registry.restart(id, &self.ctx())
     }
 
     /// 记录「定义从哪来 / 怎么启动」（组合根装配期，面板技术信息用）。
@@ -1605,13 +1600,13 @@ mod tests {
         })
     }
 
-    fn probe(
-        id: &str,
-        kind: &str,
-    ) -> (
+    /// 探针模块 + 它在 mount 时看到的工具表（测试随后读那个 `Option`）。
+    type Probe = (
         Arc<dyn echo_module::Module>,
         Arc<parking_lot::Mutex<Option<Arc<agent_module_tools::ToolRegistry>>>>,
-    ) {
+    );
+
+    fn probe(id: &str, kind: &str) -> Probe {
         let seen = Arc::new(parking_lot::Mutex::new(None));
         let module = Arc::new(ScopeProbeModule {
             manifest: echo_module::ModuleManifest::builtin(id, id, "0.0.0", kind, "test probe"),
@@ -1701,7 +1696,7 @@ mod tests {
         let host = ModuleHost::new();
         let root_ctx = Arc::new(echo_context::Ctx::default());
         host.attach_root_ctx(root_ctx);
-        host.set_persona_catalog(Arc::new(|| Vec::new()));
+        host.set_persona_catalog(Arc::new(Vec::new));
 
         let a = scope_agent("a");
         let b = scope_agent("b");
@@ -1781,7 +1776,7 @@ mod tests {
     async fn persona_scope_is_rebuilt_when_the_agent_changes() {
         let host = ModuleHost::new();
         host.attach_root_ctx(Arc::new(echo_context::Ctx::default()));
-        host.set_persona_catalog(Arc::new(|| Vec::new()));
+        host.set_persona_catalog(Arc::new(Vec::new));
 
         let first = scope_agent("a");
         let scope_first = host.persona_scope(&first).expect("scope 1");
@@ -1883,9 +1878,11 @@ mod tests {
     /// 命令名与枚举变体**唯一**的权威映射，框架分发读的也是它。
     #[test]
     fn reserved_commands_exist_in_the_protocol() {
+        // 协议真值在 `echo-protocol`（2026-11 B2 反转）：命令枚举与 `kind_name`
+        // 都搬过去了，管理面只保留准入策略。
         let source = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../agent-module-management/src/protocol/command.rs"
+            "/../echo-protocol/src/command.rs"
         ));
         // `pub fn kind_name` 之后到下一个 `}` 收尾的那一段。
         let start = source

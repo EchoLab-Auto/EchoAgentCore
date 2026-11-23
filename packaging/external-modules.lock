@@ -1,0 +1,29 @@
+# 外置模块锁定表（**唯一真值**）—— native tarball 与正式镜像共用
+#
+# 为什么需要这张表：外置模块（QQ 适配器、任务清单）住在各自的仓里，Core 的
+# Cargo.lock 管不到它们。若两边各自 `git clone ... main`，同一个 tag 会构建出
+# 不同内容，"v0.3.0 的产物"就不是一个确定的东西；若一边从 Cargo.lock 取、
+# 另一边从分支取，两个正式产物之间也对不上号。所以**正式路径只认这张表**，
+# 且表里只写完整 40 位提交 SHA——分支名与 tag 都会漂移，不是身份。
+#
+# 格式（一行一个模块，空格分隔；`#` 开头为注释）：
+#   module <key> <repo-url> <commit-sha40> <crate> <targets>
+#
+#   key      稳定短名，产物清单 / OCI 标签里用它（不要改，会打断追溯链）
+#   repo-url 公开 HTTPS 仓地址（正式路径按匿名只读拉取，失败即失败）
+#   commit   完整 40 位小写 SHA（**不可是 tag / 分支名**，见 scripts/release/test-external-modules.sh）
+#   crate    workspace 里的包名（`cargo build -p <crate>`）
+#   targets  该模块进哪些正式产物：image（容器镜像）/ tarball（原生 tarball），逗号分隔
+#
+# 怎么改：只改 commit 字段，并在同一次提交里说明为什么选这个提交。改完跑
+#   ./scripts/release/test-external-modules.sh --remote
+# 它会验证 SHA 公开可取、且该提交自带可锁定构建的 Cargo.lock。
+#
+# 为什么这些 SHA 是"公开可取"的：两个仓都是公开仓，SHA 都已在 origin/main 上，
+# 匿名 `git fetch origin <sha>` 可取。本地未推送的提交**不能**写进来——CI 拉不到，
+# 正式入口会必然失败。
+
+schema=1
+
+module checklist  https://github.com/EchoLab-Auto/agent-module-checklist  9ec7aad6536512e2987134dbeb77cb15f18fa179  agent-module-checklist  image,tarball
+module adapter-qq https://github.com/EchoLab-Auto/agent-module-adapter-qq bf7733fbef3c40b59b469a1fb85223fe079658ae  agent-module-adapter-qq image

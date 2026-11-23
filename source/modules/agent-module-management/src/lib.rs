@@ -25,8 +25,9 @@
 //!   让一个 Panel 用同一把密钥接入全网任一节点，服务端按级别（只读/操作/
 //!   管理）强制边界——见 [`ConnRole::Panel`] 与 [`serve_management_ws`]。
 //!
-//! 依赖纪律：只依赖 `agent-module-management`（线契约）、`agent-module-federation`（合并端口
-//! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
+//! 依赖纪律：线契约在 `echo-protocol`（纯 wire，零运行时）；本 crate 只额外依赖
+//! `agent-module-federation`（合并端口时的对端连接接收与 Panel 身份等级）与
+//! tokio/tungstenite——不依赖 `echo-agent`。
 
 pub mod host_keys;
 pub mod protocol;
@@ -37,9 +38,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::protocol::{
-    serialize_event_identified, BackendBridge, DeltaBatcher, EntryTracker, SequencedEvent,
-};
+// 这些名字由上面的 `pub use protocol::*` 一并引入作用域；再写一条私有
+// `use crate::protocol::{...}` 只会遮蔽同一批公开重导出（hidden_glob_reexports）。
 use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
@@ -57,11 +57,13 @@ pub const DEFAULT_FEDERATION_LISTEN: &str = "0.0.0.0:3133";
 pub const MANIFEST_TOML: &str = include_str!("../module.toml");
 
 pub const MODULE_ID: &str = "echo-agent.management.panel";
-/// 协议词汇的兼容身份（原 echo-protocol crate 的管理面显示 id）。
-/// 协议模块的声明（与 `MANIFEST_TOML` 是两个模块，见文件内注释）。
-pub const PROTOCOL_MANIFEST_TOML: &str = include_str!("../module.protocol.toml");
-
-pub const PROTOCOL_MODULE_ID: &str = "echo-agent.kernel.protocol";
+/// 协议模块的身份与声明（`PROTOCOL_MODULE_ID` / `PROTOCOL_MANIFEST_TOML`）。
+///
+/// 真值已随 B2 反转搬到 `echo-protocol`（与 `MANIFEST_TOML` 是两个模块）：
+/// 协议是**线契约**，管理面是 WS 桥接。这里再导出，保持
+/// `agent_module_management::{PROTOCOL_MODULE_ID, PROTOCOL_MANIFEST_TOML}`
+/// 这两条旧路径不变（组合根与模块清单都在用）。
+pub use echo_protocol::{PROTOCOL_MANIFEST_TOML, PROTOCOL_MODULE_ID};
 
 /// Broadcasts agent events to every connected Panel.
 ///
@@ -457,22 +459,34 @@ async fn serve_with_listener_and_token(
         // （两者都指向本节点的 `Arc<Federation>`，装配层保证）。
         let panel_source = federation.clone().or_else(|| observer.clone());
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(
-                stream,
-                peer,
-                events,
-                bridge,
-                &access_token,
+            let context = ConnectionContext {
+                access_token: &access_token,
                 federation,
                 observer,
                 panel_source,
-            )
-            .await
-            {
+            };
+            if let Err(e) = handle_connection(stream, peer, events, bridge, context).await {
                 warn!(error = %e, "Panel connection error");
             }
         });
     }
+}
+
+/// 一条已接受的连接所需的装配上下文。
+///
+/// 连接本身与共享的事件/命令总线之外，剩下四项都是"从哪个联邦句柄取哪
+/// 类信息"的出处；单独成组是为了让 `handle_connection` 的签名保持可读，
+/// 而不是一长串 `Option<Arc<Federation>>`。
+struct ConnectionContext<'a> {
+    access_token: &'a str,
+    /// 合并模式的联邦句柄（Some = 联邦入站与本端口共用监听）。
+    federation: Option<Arc<agent_module_federation::Federation>>,
+    /// 入站 Host 观测出处（独立模式也用它学"别人怎么连我"）。
+    observer: Option<Arc<agent_module_federation::Federation>>,
+    /// **Panel 身份密钥表**出处（P1）：合并模式下与 `federation` 同一个句柄，
+    /// 独立模式下就是 `observer`。单独一项是为了让"谁提供 panel 判定"
+    /// 在调用点显式可读（两者在两种模式下恰好同源，但不是同一个概念）。
+    panel_source: Option<Arc<agent_module_federation::Federation>>,
 }
 
 // 回调签名由 tokio-tungstenite 的 `accept_hdr_async` 固定：Err 侧是库的
@@ -483,16 +497,14 @@ async fn handle_connection(
     peer: std::net::SocketAddr,
     events: Arc<EventBroker>,
     bridge: Arc<BackendBridge>,
-    access_token: &str,
-    // 合并模式的联邦句柄（Some = 联邦入站与本端口共用监听）。
-    federation: Option<Arc<agent_module_federation::Federation>>,
-    // 入站 Host 观测出处（独立模式也用它学"别人怎么连我"）。
-    observer: Option<Arc<agent_module_federation::Federation>>,
-    // **Panel 身份密钥表**出处（P1）：合并模式下与 `federation` 同一个句柄，
-    // 独立模式下就是 `observer`。单独一个参数是为了让"谁提供 panel 判定"
-    // 在调用点显式可读（两者在两种模式下恰好同源，但不是同一个概念）。
-    panel_source: Option<Arc<agent_module_federation::Federation>>,
+    context: ConnectionContext<'_>,
 ) -> anyhow::Result<()> {
+    let ConnectionContext {
+        access_token,
+        federation,
+        observer,
+        panel_source,
+    } = context;
     match federation {
         // 独立模式：管理通道 + Panel 身份（`panel_source` 提供 Panel 密钥表；
         // `observer` 仅用于记录入站 Host）。
@@ -764,18 +776,6 @@ fn panel_ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfi
     }
 }
 
-/// 管理通道连接主体（升级后；独立/合并模式共用）。
-///
-/// `merged_hint` = 该连接来自合并监听端（用于联邦帧误连的诊断增强：
-/// 管理令牌为空的核心上，未知 peer 令牌的连接会经兼容分支被归为管理，
-/// 若其首帧是联邦帧则明确记录并断开，避免对端黑盒等超时）。
-/// `access` = 本连接的权限级别（P1，2026-11）：
-///
-/// - 本机管理令牌 / Panel 身份的 `operate` / `admin` → 不设门（与原行为一致）；
-/// - Panel 身份的 `readonly` → **只放行** [`crate::protocol::PANEL_READONLY_COMMANDS`]，
-///   其余命令就地拒绝并回一条 `Error` 事件（而不是静默丢弃——客户端必须知道
-///   "我不是没权限，是被降级了"）；
-/// - `off` 理论上不会走到这里（握手期已 401），出现即按只读处理（fail-closed）。
 /// Panel 权限级别的日志短名（`PanelAccess` 的 Debug 输出会随枚举增长变，
 /// 日志字段要稳定可聚合）。
 fn panel_access_str(access: agent_module_federation::PanelAccess) -> &'static str {
@@ -788,6 +788,18 @@ fn panel_access_str(access: agent_module_federation::PanelAccess) -> &'static st
     }
 }
 
+/// 管理通道连接主体（升级后；独立/合并模式共用）。
+///
+/// `merged_hint` = 该连接来自合并监听端（用于联邦帧误连的诊断增强：
+/// 管理令牌为空的核心上，未知 peer 令牌的连接会经兼容分支被归为管理，
+/// 若其首帧是联邦帧则明确记录并断开，避免对端黑盒等超时）。
+/// `access` = 本连接的权限级别（P1，2026-11）：
+///
+/// - 本机管理令牌 / Panel 身份的 `operate` / `admin` → 不设门（与原行为一致）；
+/// - Panel 身份的 `readonly` → **只放行** [`crate::protocol::PANEL_READONLY_COMMANDS`]，
+///   其余命令就地拒绝并回一条 `Error` 事件（而不是静默丢弃——客户端必须知道
+///   "我不是没权限，是被降级了"）；
+/// - `off` 理论上不会走到这里（握手期已 401），出现即按只读处理（fail-closed）。
 async fn serve_management_ws(
     ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     events: Arc<EventBroker>,
@@ -880,7 +892,7 @@ async fn serve_management_ws(
                                             continue;
                                         }
                                         commands_in += 1;
-                                        let _ = bridge.send_command(cmd);
+                                        let _ = bridge.send_command(*cmd);
                                     }
                                     None => {
                                         // 合法的 `WsMessage::Event` 帧（客户端误发）：
@@ -1009,7 +1021,10 @@ async fn serve_management_ws(
 /// One parsed inbound frame from the Panel.
 #[derive(Debug)]
 pub(crate) enum InboundFrame {
-    Command(crate::protocol::BackendCommand),
+    /// 装箱：`BackendCommand` 的 `SendMessage` 变体带附件/图片，整枚举
+    /// 若内联会把每个 `InboundFrame` 撑到 300+ 字节；解析后立刻消费，
+    /// 一次堆分配换枚举回到小尺寸（wire 形状不变）。
+    Command(Box<crate::protocol::BackendCommand>),
     /// 帧**无法解析**：非法 JSON 或未知命令变体。
     ///
     /// 与「合法但非命令」（`WsMessage::Event`，返回 `None`）严格区分：后者
@@ -1026,7 +1041,7 @@ pub(crate) enum InboundFrame {
 /// - 解析失败 → `Some(Malformed)`：由调用方回 `BackendEvent::Error`
 pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
     match serde_json::from_str::<crate::protocol::WsMessage>(text) {
-        Ok(crate::protocol::WsMessage::Command(cmd)) => Some(InboundFrame::Command(cmd)),
+        Ok(crate::protocol::WsMessage::Command(cmd)) => Some(InboundFrame::Command(Box::new(cmd))),
         Ok(crate::protocol::WsMessage::Event(_)) => None,
         Err(error) => {
             // 截断片段：整帧可能很大（附件 base64），日志里只要够定位的头部。
@@ -1074,6 +1089,66 @@ fn readonly_rejection(
     }
 }
 
+// 构造入口见文件前部的 `module()`（管理面监听 + 会话视图命令域外置后的
+// 瘦身版）。此处保留历史注释位置以便追溯。
+pub fn module(version: &str) -> std::sync::Arc<dyn echo_module::Module> {
+    use echo_module::{BuiltinModule, ModuleManifest, ServiceSlot};
+
+    let management = ServiceSlot::<std::sync::Arc<dyn host_keys::ManagementHost>>::new();
+    let bind_mgmt = management.clone();
+    let bind_serve_mgmt = management.clone();
+
+    let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
+        .expect("agent-module-management 的 module.toml 解析失败");
+    std::sync::Arc::new(BuiltinModule::new(manifest, move |mctx| {
+        let keep_mgmt = bind_mgmt.bind(mctx, &host_keys::MANAGEMENT_HOST)?;
+        let host = bind_serve_mgmt
+            .get()
+            .ok_or_else(|| echo_module::ModuleMountError::Mount("management host 未绑定".into()))?;
+
+        // `modules.toml` 覆盖监听地址（唯一走这条路的一项）。
+        let default_addr = host.default_address();
+        let addr = mctx
+            .config_str("address")
+            .map(str::to_string)
+            .unwrap_or_else(|| default_addr.clone());
+        if addr != default_addr {
+            tracing::info!(
+                configured = %default_addr,
+                effective = %addr,
+                "management address overridden by modules.toml"
+            );
+        }
+
+        let bridge = host.bridge();
+        let token = host.token();
+        let federation = host.federation();
+        // 观测出处：独立监听时联邦不经过本端口，但**入站 Host 仍要从这里
+        // 学**（Panel 怎么连我，邀请串就宣告哪个地址）。
+        let observer = host.federation_observer();
+        let merged = federation.is_some();
+        let server = tokio::spawn(async move {
+            let result = match federation {
+                Some(federation) => serve_with_federation(&addr, bridge, token, federation).await,
+                None => serve_with_token_observing(&addr, bridge, token, observer).await,
+            };
+            if let Err(error) = result {
+                tracing::error!(
+                    error = %error,
+                    "management WS server stopped — Panel channel{} down; \
+                     check the bind address is free (ss -tlnp)",
+                    if merged { " and federation inbound" } else { "" }
+                );
+            }
+        });
+        let abort = server.abort_handle();
+        Ok(vec![
+            keep_mgmt,
+            echo_context::Disposer::from_fn(move || abort.abort()),
+        ])
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1100,7 +1175,7 @@ mod tests {
         match handle_inbound_text(text) {
             Some(InboundFrame::Command(cmd)) => {
                 assert_eq!(
-                    cmd,
+                    *cmd,
                     BackendCommand::SendMessage {
                         session_id: "s1".into(),
                         content: "hi".into(),
@@ -1124,7 +1199,11 @@ mod tests {
     #[test]
     fn malformed_frames_carry_a_reason() {
         // 静默丢弃的反面：坏帧必须给出可读原因，调用方才能回一条错误帧。
-        for text in ["not json", "", r#"{"type":"command","payload":{"TotallyUnknownOp":{}}}"#] {
+        for text in [
+            "not json",
+            "",
+            r#"{"type":"command","payload":{"TotallyUnknownOp":{}}}"#,
+        ] {
             match handle_inbound_text(text) {
                 Some(InboundFrame::Malformed { reason }) => {
                     assert!(!reason.is_empty(), "reason must not be empty for {text:?}");
@@ -1162,7 +1241,7 @@ mod tests {
         let text = r#"{"type":"command","payload":"RequestFederationStatus"}"#;
         match handle_inbound_text(text) {
             Some(InboundFrame::Command(cmd)) => {
-                assert_eq!(cmd, BackendCommand::RequestFederationStatus);
+                assert_eq!(*cmd, BackendCommand::RequestFederationStatus);
             }
             other => panic!("expected command frame, got {other:?}"),
         }
@@ -1175,7 +1254,7 @@ mod tests {
         let text = r#"{"type":"command","payload":{"RequestFederationStatus":null}}"#;
         match handle_inbound_text(text) {
             Some(InboundFrame::Command(cmd)) => {
-                assert_eq!(cmd, BackendCommand::RequestFederationStatus);
+                assert_eq!(*cmd, BackendCommand::RequestFederationStatus);
             }
             other => panic!("expected command frame, got {other:?}"),
         }
@@ -1188,7 +1267,7 @@ mod tests {
         match handle_inbound_text(text) {
             Some(InboundFrame::Command(cmd)) => {
                 assert_eq!(
-                    cmd,
+                    *cmd,
                     BackendCommand::InvokeInstanceOp {
                         instance: "qq-default".into(),
                         method: "set_gate_mode".into(),
@@ -1265,17 +1344,14 @@ mod tests {
 
         let mut error = None;
         for _ in 0..20 {
-            let next = tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                ws.next(),
-            )
-            .await;
+            let next = tokio::time::timeout(std::time::Duration::from_millis(200), ws.next()).await;
             let Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) = next else {
                 continue;
             };
-            if let Some(crate::protocol::WsMessage::Event(
-                crate::protocol::BackendEvent::Error { message, .. },
-            )) = crate::protocol::deserialize_message(&text)
+            if let Some(crate::protocol::WsMessage::Event(crate::protocol::BackendEvent::Error {
+                message,
+                ..
+            })) = crate::protocol::deserialize_message(&text)
             {
                 error = Some(message);
                 break;
@@ -2011,64 +2087,4 @@ mod tests {
             "revoked panel key must be HTTP 401, got {error:?}"
         );
     }
-}
-
-// 构造入口见文件前部的 `module()`（管理面监听 + 会话视图命令域外置后的
-// 瘦身版）。此处保留历史注释位置以便追溯。
-pub fn module(version: &str) -> std::sync::Arc<dyn echo_module::Module> {
-    use echo_module::{BuiltinModule, Inject, ModuleManifest, ServiceSlot};
-
-    let management = ServiceSlot::<std::sync::Arc<dyn host_keys::ManagementHost>>::new();
-    let bind_mgmt = management.clone();
-    let bind_serve_mgmt = management.clone();
-
-    let manifest = ModuleManifest::from_toml(MANIFEST_TOML, version)
-        .expect("agent-module-management 的 module.toml 解析失败");
-    std::sync::Arc::new(BuiltinModule::new(manifest, move |mctx| {
-        let keep_mgmt = bind_mgmt.bind(mctx, &host_keys::MANAGEMENT_HOST)?;
-        let host = bind_serve_mgmt
-            .get()
-            .ok_or_else(|| echo_module::ModuleMountError::Mount("management host 未绑定".into()))?;
-
-        // `modules.toml` 覆盖监听地址（唯一走这条路的一项）。
-        let default_addr = host.default_address();
-        let addr = mctx
-            .config_str("address")
-            .map(str::to_string)
-            .unwrap_or_else(|| default_addr.clone());
-        if addr != default_addr {
-            tracing::info!(
-                configured = %default_addr,
-                effective = %addr,
-                "management address overridden by modules.toml"
-            );
-        }
-
-        let bridge = host.bridge();
-        let token = host.token();
-        let federation = host.federation();
-        // 观测出处：独立监听时联邦不经过本端口，但**入站 Host 仍要从这里
-        // 学**（Panel 怎么连我，邀请串就宣告哪个地址）。
-        let observer = host.federation_observer();
-        let merged = federation.is_some();
-        let server = tokio::spawn(async move {
-            let result = match federation {
-                Some(federation) => serve_with_federation(&addr, bridge, token, federation).await,
-                None => serve_with_token_observing(&addr, bridge, token, observer).await,
-            };
-            if let Err(error) = result {
-                tracing::error!(
-                    error = %error,
-                    "management WS server stopped — Panel channel{} down; \
-                     check the bind address is free (ss -tlnp)",
-                    if merged { " and federation inbound" } else { "" }
-                );
-            }
-        });
-        let abort = server.abort_handle();
-        Ok(vec![
-            keep_mgmt,
-            echo_context::Disposer::from_fn(move || abort.abort()),
-        ])
-    }))
 }

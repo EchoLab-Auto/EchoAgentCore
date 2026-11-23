@@ -504,6 +504,57 @@ pub fn history_watermark(
         .unwrap_or(0)
 }
 
+/// `TrunkStore` 就是归档事件的来源：读文件 + 解析 + 按会话切片都在
+/// `store::archives` 里（I/O），本模块只管投影。
+impl ArchiveEventSource for TrunkStore {
+    fn archive_prefix_events(
+        &self,
+        archive: &str,
+        session_id: &str,
+        count: usize,
+    ) -> (Vec<echo_session::SessionEvent>, Option<String>) {
+        self.archive_prefix_events(archive, session_id, count)
+    }
+}
+
+impl TrunkStore {
+    /// 从事件日志为单个会话派生显示历史（最近 `limit` 条，时间升序）。
+    ///
+    /// 返回 `(messages, total, truncated)`。规则全在上面的自由函数里，这里
+    /// 只把日志交出去——**一行转发**（2026-11 外置前它在宿主 `session/`）。
+    pub fn display_history_for_session(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> (Vec<TimelineMessage>, usize, bool) {
+        display_history_for_session(&self.event_log(), session_id, limit)
+    }
+
+    /// 派生显示历史，并按需把**压缩前归档**接上去（粘贴进同一条消息流）。
+    ///
+    /// `expand_depth`：允许本次解析几层归档（`None`/`Some(0)` = 不展开，
+    /// 只在结果里标 `has_older`）。一次一层见
+    /// [`EXPAND_DEPTH_PER_REQUEST`]。
+    ///
+    /// 注意：本方法会在调用线程里**同步解析 JSON**（一份可达 20+ MB）。
+    /// 调用方要么在 `spawn_blocking` 里，要么接受这次阻塞。
+    pub fn display_history_extended(
+        &self,
+        session_id: &str,
+        limit: usize,
+        expand_depth: Option<usize>,
+    ) -> ExtendedHistory {
+        let events = self.event_log();
+        let context = expand_depth
+            .filter(|depth| *depth > 0)
+            .map(|depth| ExpandContext {
+                source: self as &dyn ArchiveEventSource,
+                depth,
+            });
+        display_history_extended(&events, session_id, limit, context.as_ref())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1144,56 +1195,5 @@ mod tests {
     #[test]
     fn watermark_is_zero_for_empty_input() {
         assert_eq!(history_watermark(vec![], "s"), 0);
-    }
-}
-
-/// `TrunkStore` 就是归档事件的来源：读文件 + 解析 + 按会话切片都在
-/// `store::archives` 里（I/O），本模块只管投影。
-impl ArchiveEventSource for TrunkStore {
-    fn archive_prefix_events(
-        &self,
-        archive: &str,
-        session_id: &str,
-        count: usize,
-    ) -> (Vec<echo_session::SessionEvent>, Option<String>) {
-        self.archive_prefix_events(archive, session_id, count)
-    }
-}
-
-impl TrunkStore {
-    /// 从事件日志为单个会话派生显示历史（最近 `limit` 条，时间升序）。
-    ///
-    /// 返回 `(messages, total, truncated)`。规则全在上面的自由函数里，这里
-    /// 只把日志交出去——**一行转发**（2026-11 外置前它在宿主 `session/`）。
-    pub fn display_history_for_session(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> (Vec<TimelineMessage>, usize, bool) {
-        display_history_for_session(&self.event_log(), session_id, limit)
-    }
-
-    /// 派生显示历史，并按需把**压缩前归档**接上去（粘贴进同一条消息流）。
-    ///
-    /// `expand_depth`：允许本次解析几层归档（`None`/`Some(0)` = 不展开，
-    /// 只在结果里标 `has_older`）。一次一层见
-    /// [`EXPAND_DEPTH_PER_REQUEST`]。
-    ///
-    /// 注意：本方法会在调用线程里**同步解析 JSON**（一份可达 20+ MB）。
-    /// 调用方要么在 `spawn_blocking` 里，要么接受这次阻塞。
-    pub fn display_history_extended(
-        &self,
-        session_id: &str,
-        limit: usize,
-        expand_depth: Option<usize>,
-    ) -> ExtendedHistory {
-        let events = self.event_log();
-        let context = expand_depth
-            .filter(|depth| *depth > 0)
-            .map(|depth| ExpandContext {
-                source: self as &dyn ArchiveEventSource,
-                depth,
-            });
-        display_history_extended(&events, session_id, limit, context.as_ref())
     }
 }

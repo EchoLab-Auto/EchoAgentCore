@@ -383,11 +383,17 @@ pub fn account_from_jwt(jwt: &str) -> (String, String) {
 /// `/oauth/token` 的响应体。
 #[derive(Debug, serde::Deserialize)]
 pub struct TokenResponse {
+    /// 访问令牌（之后所有请求的 `Bearer`）。
     pub access_token: String,
+    /// 刷新令牌（换新 access token 用）；某些响应不带——[`ChatGptAuth::usable`]
+    /// 只要求 access token 与 account id 非空。
     #[serde(default)]
     pub refresh_token: String,
+    /// OIDC id_token（JWT）：account id 与 email 的规范来源。
     #[serde(default)]
     pub id_token: String,
+    /// access token 有效期（秒）；缺失或非正时 [`TokenResponse::into_auth`]
+    /// 按 1 小时兜底。
     #[serde(default)]
     pub expires_in: i64,
 }
@@ -426,10 +432,13 @@ impl TokenResponse {
 
 /// 登录结果里给调用方的中间态（用于"先打印 URL 再去等回调"）。
 pub struct PendingLogin {
+    /// 用户要打开的授权 URL（已带 `state` 与 PKCE challenge）。
     pub url: String,
     /// 等回调的 future：解析出 code 后在这里完成。
     listener: tokio::net::TcpListener,
+    /// CSRF 随机串：回调必须原样回传，与 `url` 里的 `state` 比对。
     pub state: String,
+    /// PKCE verifier / challenge 对（换 token 时出示 verifier）。
     pub pkce: Pkce,
     client: reqwest::Client,
 }
@@ -573,6 +582,11 @@ pub(crate) fn describe_transport_error(error: &reqwest::Error) -> String {
     )
 }
 
+/// 登录前的网络预检：确认当前出口**地区**没被 OpenAI 拒绝。
+///
+/// 用假 authorization code 打 `/oauth/token`：被拒（HTTP 4xx）恰恰说明请求
+/// 已到达上游、地区通过；只有 `unsupported_country_region_territory` 判失败。
+/// 判定逻辑在纯函数 [`classify_preflight`] 里（便于单测）。
 pub async fn preflight() -> Result<(), String> {
     let client = build_client()?;
     // 只探测"地区门"，不真的换令牌：code 填一个假值，期望它被拒（那说明
@@ -1162,10 +1176,7 @@ mod tests {
         }
         .into_auth();
         assert_eq!(auth.account_id, "acc-from-access");
-        assert_eq!(
-            auth.expires_at_ms > chrono::Utc::now().timestamp_millis(),
-            true
-        );
+        assert!(auth.expires_at_ms > chrono::Utc::now().timestamp_millis());
     }
 
     #[test]

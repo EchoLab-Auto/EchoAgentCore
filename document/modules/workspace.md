@@ -20,7 +20,7 @@ y: 216
 （`EchoLab-Auto/agent-module-workspace`），Core 以 git 依赖引入：
 
 ```toml
-agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", branch = "main" }
+agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", rev = "9bbced476c3cdd5b3712edf1252e63f395a78548" }
 ```
 
 | 项 | 值 |
@@ -68,16 +68,18 @@ agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-w
 
 | 事件 | 载荷 | 宿主动作 |
 |---|---|---|
-| `workspace.backend_event` | 一个 `BackendEvent` JSON | 按 `team_id` 找人格出口，原样发给面板 |
+| `workspace.backend_event` | 一个 `BackendEvent` JSON | 按 `team_id` 找人格出口；`WorkspaceSessions` 回执也可初始化尚未有来源的宿主镜像 |
 | `workspace.changed` | `{team_id, active, active_conversation, sessions}` | 刷新镜像 → 确保通道 + 广播 |
-| `workspace.conversation_deleted` | `{team_id, workspace_id, conversation}` | 清空该对话的通道历史 |
+| `workspace.conversation_deleted` | `{team_id, workspace_id, conversation}` | 旧模块的历史清理事件；新模块的默认删除不发此事件 |
 
 **为什么这样切**：会话通道（`TrunkStore`）、会话级 provider、事件出口都是宿主的
 会话模型，模块不该认识它们；而 store 的数据与校验归模块。迁出前 store 在宿主里，
 两边靠"不要同时写"的纪律维持一致；现在宿主**没有** store 的写句柄，分叉在类型上
 就不可能发生。
 
-## 命令域（9 条）
+Core 冷启动时复用 `RequestWorkspaceSessions` 读取已授权人格的持久快照；面板重连后重发同一请求，也可补齐还未初始化的镜像。已有镜像不会被迟到的读取回执覆盖；现有事件没有版本号，不保证任意乱序或漏事件后的镜像修复。
+
+## 命令域
 
 面板 7 条（线协议，`BackendCommand`）：`RequestWorkspaceSessions` /
 `SaveWorkspaceSession` / `DeleteWorkspaceSession` / `ActivateWorkspaceSession` /
@@ -90,7 +92,12 @@ agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-w
 | `WorkspaceSetConversationApiProfile` | 会话级 API 覆盖写进工作区对话 | 宿主不再持有 store，只能请求唯一写者 |
 | `WorkspaceRenameApiProfile` | 供应商改名后传播 `api_profile` 引用 | 同上 |
 
-外加 `WorkspaceToolCall`（`workspace` 工具的调用入口，见下）。
+新模块另提供两个私有方法，经 `InvokeModuleOp` / `ModuleInvokeResult` 调用，不增加全局协议变体：
+
+- `workspace.overview`：读取指定人格的工作区概览。
+- `workspace.deleteConversation`：只删除入口，保留历史；落盘成功才更新状态。最后一条对话不允许删除，退役通道不能被陈旧保存重新引入。不支持该方法的旧模块不会触发清历史回退。
+
+外加 `WorkspaceToolCall`（`workspace` 工具的调用入口，见下）。Core 编译进的是锁文件记录的 Workspace 版本，新方法随新的模块版本交付。
 
 ## `workspace` 工具
 
@@ -107,7 +114,7 @@ agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-w
 - 文档路径：`$XDG_CONFIG_HOME/echo-agent-core/echo-workspaces-{team_id}.json`
   （模块配置 `[module.config] state_dir` 可覆盖）——**与迁出前同一路径**，旧数据
   直接可读，无需迁移。
-- 线类型：模块仓 `wire` 模块是 `agent-module-management` 的**镜像**（字段名逐字一致）。
+- 线类型：模块仓 `wire` 模块是 `echo-protocol` 工作区消息的**镜像**（字段名逐字一致）。
   为什么不用同一套类型：Core 以 git 依赖引入模块仓，模块反向依赖 Core 的 crate
   就是包级循环依赖，Cargo 直接拒绝。两侧的边界收在
   `workspace_commands::to_protocol_session`，任一侧加字段都会在编译期报错。

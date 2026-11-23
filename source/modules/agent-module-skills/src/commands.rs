@@ -119,7 +119,6 @@ impl SkillsCommandHandler {
                 Ok(())
             }
             BackendCommand::ReloadSkills => {
-                let dir = self.host.skills_dir();
                 match self.runtime.reload().await {
                     Ok(any) => {
                         self.emit_list().await;
@@ -169,7 +168,7 @@ impl SkillsCommandHandler {
                 };
                 match save_skill_file(&dir, &draft) {
                     Ok(()) => {
-                        self.reload_after(dir).await;
+                        self.reload_after().await;
                         self.emit_list().await;
                         self.notice(format!("skill {name} saved"));
                     }
@@ -181,7 +180,7 @@ impl SkillsCommandHandler {
                 let dir = self.host.skills_dir();
                 match delete_skill_file(&dir, &name) {
                     Ok(()) => {
-                        self.reload_after(dir).await;
+                        self.reload_after().await;
                         self.emit_list().await;
                         self.notice(format!("skill {name} deleted"));
                     }
@@ -207,7 +206,7 @@ impl SkillsCommandHandler {
                 .unwrap_or_else(|e| Err(format!("install task join failed: {e}")));
                 match installed {
                     Ok(_) => {
-                        self.reload_after(dir).await;
+                        self.reload_after().await;
                         self.emit_list().await;
                         self.notice(format!("skill source installed: {url}"));
                     }
@@ -225,7 +224,7 @@ impl SkillsCommandHandler {
                 .unwrap_or_else(|e| Err(format!("update task join failed: {e}")));
                 match updated {
                     Ok(source) => {
-                        self.reload_after(dir).await;
+                        self.reload_after().await;
                         self.emit_list().await;
                         self.notice(format!("skill {name} updated to {}", source.rev));
                     }
@@ -251,7 +250,7 @@ impl SkillsCommandHandler {
     }
 
     /// 重载并只记日志（保存/删除/安装之后的重载失败不该吞掉用户的操作结果）。
-    async fn reload_after(&self, dir: String) {
+    async fn reload_after(&self) {
         if let Err(error) = self.runtime.reload().await {
             tracing::warn!(error = %error, "skill reload after mutation failed");
         }
@@ -412,7 +411,6 @@ mod tests {
     use std::sync::Mutex;
 
     struct FakeHost {
-        registry: Arc<tokio::sync::Mutex<SkillRegistry>>,
         dir: String,
         events: Mutex<Vec<BackendEvent>>,
         enabled_calls: Mutex<Vec<(String, bool)>>,
@@ -421,7 +419,6 @@ mod tests {
     impl FakeHost {
         fn new(dir: &std::path::Path) -> Self {
             Self {
-                registry: Arc::new(tokio::sync::Mutex::new(SkillRegistry::new())),
                 dir: dir.display().to_string(),
                 events: Mutex::new(Vec::new()),
                 enabled_calls: Mutex::new(Vec::new()),
@@ -499,7 +496,7 @@ mod tests {
                 host.clone(),
                 crate::runtime::SkillsRuntime::new(
                     host.clone(),
-                    Arc::new(crate::prompt::TestPromptStore::default()),
+                    Arc::new(crate::prompt::TestPromptStore),
                 ),
             ),
             host,

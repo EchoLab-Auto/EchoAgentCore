@@ -83,7 +83,7 @@ enum SubCommand {
     /// 输出是**单文件、纯类型声明**，没有运行时值——Panel 直接 `export *`。
     ///
     /// 为什么由 Core 提供而不是 Panel 自己写脚本解析 Rust：线格式的真值是
-    /// `agent-module-management/src/protocol/` 里的 serde 类型，只有 Rust
+    /// `echo-protocol/src/` 里的 serde 类型，只有 Rust
     /// 编译器知道它们最终是什么形状（tag/content/rename/untagged/default）。
     #[cfg(feature = "ts-bindings")]
     DumpProtocolTs {
@@ -1798,8 +1798,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     ),
                 )
                     as std::sync::Arc<dyn agent_module_skills::host_keys::SkillContributionSource>),
-                // 运行中人格表：`RequestState` 补全所有 persona 清单。
-                manager: Some(supervisor.manager()),
             },
         );
 
@@ -2269,6 +2267,22 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // orchestration 已删除（2026-09-16）
     }
 
+    // ---- 工作区状态镜像的冷启动恢复（C3c）----
+    //
+    // 镜像只消费 `workspace.changed`（**变更时才有**的事件）。进程重启后磁盘上
+    // 存着激活工作区/对话，但没有任何变更发生 → 镜像空着 → 项目对话通道不注册、
+    // `SessionUpdated` 不广播，面板的「本地当前对话」要等用户动手改一次才出现。
+    //
+    // 恢复办法是复用模块既有的读命令 `RequestWorkspaceSessions`（面板本来就用它
+    // 刷新列表）：模块从**权威 store** 读快照并以 `workspace.backend_event` 回执，
+    // 回执经同一条事件桥补种镜像再跑宿主的后半段。只读、不加命令、不改线格式、
+    // 不写 Workspace 文件、不引入跨机状态。
+    //
+    // 位置：**模块挂载之后**（否则没有模块可问）**且人格能力应用之后**——恢复要
+    // 按最终的白名单筛人格（`persona_allows_module`），提前跑会读到还没写进去的
+    // 名单，等于绕开门控。异步，不阻塞启动。
+    crate::host_services::restore_workspace_sessions(&supervisor.manager(), &module_host);
+
     // 进程级核心代理（`__core`）：不是人格、不在 supervisor 注册表里，但它
     // 也有自己的会话档。此前它既没有周期保存、也不在退出时的收尾名单里
     // （2026-11 C 统一生命周期时补上）——只有周期保存，模块热重载仍归人格
@@ -2641,6 +2655,58 @@ async fn shutdown_signal() {
     }
 }
 
+/// 外部仓的**进程内**模块里，默认启用（不需要部署方在 `modules.toml` 提一句）。
+///
+/// 默认禁用的理由只对一类模块成立：**默认启用等于默认对外开一个面**。
+/// Panel 就是那类（它监听端口）。工作区不是——它是纯客户端能力（面板多会话 /
+/// 多目录 + 一个 `workspace` 工具），不监听任何端口、不引入新的信任边界。
+///
+/// 把它留在"可选"名单里的实际后果是**所有新部署都没有工作区入口**：
+/// `emit_modules_list` 只发 `enabled` 的模块（禁用即卸载，"清单的语义是当前
+/// 挂载的模块"），所以它在面板上既不可见、也无从就地启用。实测就是这个症状
+/// ——一个全新二进制安装的部署，模块清单里根本没有 `echo-agent.workspace`。
+///
+/// 不想要它的部署照旧写 `enabled = false`（那比"想要却看不到开关"好查得多）。
+pub(crate) const DEFAULT_ENABLED_EXTERNAL_IDS: [&str; 1] = [agent_module_workspace::MODULE_ID];
+
+/// 该模块是否**必须**由部署方在 `modules.toml` 里显式启用才挂载。
+///
+/// 判据只有两条：不在 [`agent_module_loop::modules::BUILTIN_MODULE_IDS`]
+/// （本仓声明的内置模块）里，且不在 [`DEFAULT_ENABLED_EXTERNAL_IDS`] 里。
+fn needs_explicit_enable(module_id: &str) -> bool {
+    !agent_module_loop::modules::BUILTIN_MODULE_IDS.contains(&module_id)
+        && !DEFAULT_ENABLED_EXTERNAL_IDS.contains(&module_id)
+}
+
+/// 来自其它仓库、编译进本二进制的进程内模块。
+///
+/// 这里只做「工厂 → 目录」的通用装配：模块的 ID、manifest、配置校验、
+/// mount/unmount 和资源释放全部由所属 crate 提供；Core 不持有其实现。
+/// 没有显式列出的外部模块不会被自动扫描/启动。
+///
+/// ## 为什么要传 `PanelDefaults`
+///
+/// 内嵌 Panel 连的是**本进程**的管理面，而那份地址与令牌本来就在组合根手里
+/// （`core.toml` 的 `[core]`）。不注入的话，用户为了"连自己"得在模块配置里
+/// 再抄一遍令牌——而模块配置会进诊断/清单面，凭证放那里等于主动泄漏（该
+/// crate 的文档也明令禁止）。于是唯一干净的路径是：**宿主在装配期把这两个
+/// 事实交出去**，模块配置面保持"可公开"。
+///
+/// 缺省部署（`modules.toml` 没有 panel 行）不受影响：外部仓的可选模块默认
+/// 不挂载，注入的默认值只是躺在那里没人用。
+fn external_builtin_modules(
+    version: &str,
+    core: &crate::config::CoreSection,
+) -> Vec<Arc<dyn echo_module::Module>> {
+    vec![agent_module_panel::module_with_defaults(
+        version,
+        Some(agent_module_panel::PanelDefaults {
+            core_url: core.management_address.clone(),
+            core_access_token: core.management_access_token.clone(),
+        }),
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2712,56 +2778,4 @@ mod tests {
             assert!(!needs_explicit_enable(id), "{id}");
         }
     }
-}
-
-/// 外部仓的**进程内**模块里，默认启用（不需要部署方在 `modules.toml` 提一句）。
-///
-/// 默认禁用的理由只对一类模块成立：**默认启用等于默认对外开一个面**。
-/// Panel 就是那类（它监听端口）。工作区不是——它是纯客户端能力（面板多会话 /
-/// 多目录 + 一个 `workspace` 工具），不监听任何端口、不引入新的信任边界。
-///
-/// 把它留在"可选"名单里的实际后果是**所有新部署都没有工作区入口**：
-/// `emit_modules_list` 只发 `enabled` 的模块（禁用即卸载，"清单的语义是当前
-/// 挂载的模块"），所以它在面板上既不可见、也无从就地启用。实测就是这个症状
-/// ——一个全新二进制安装的部署，模块清单里根本没有 `echo-agent.workspace`。
-///
-/// 不想要它的部署照旧写 `enabled = false`（那比"想要却看不到开关"好查得多）。
-pub(crate) const DEFAULT_ENABLED_EXTERNAL_IDS: [&str; 1] = [agent_module_workspace::MODULE_ID];
-
-/// 该模块是否**必须**由部署方在 `modules.toml` 里显式启用才挂载。
-///
-/// 判据只有两条：不在 [`agent_module_loop::modules::BUILTIN_MODULE_IDS`]
-/// （本仓声明的内置模块）里，且不在 [`DEFAULT_ENABLED_EXTERNAL_IDS`] 里。
-fn needs_explicit_enable(module_id: &str) -> bool {
-    !agent_module_loop::modules::BUILTIN_MODULE_IDS.contains(&module_id)
-        && !DEFAULT_ENABLED_EXTERNAL_IDS.contains(&module_id)
-}
-
-/// 来自其它仓库、编译进本二进制的进程内模块。
-///
-/// 这里只做「工厂 → 目录」的通用装配：模块的 ID、manifest、配置校验、
-/// mount/unmount 和资源释放全部由所属 crate 提供；Core 不持有其实现。
-/// 没有显式列出的外部模块不会被自动扫描/启动。
-///
-/// ## 为什么要传 `PanelDefaults`
-///
-/// 内嵌 Panel 连的是**本进程**的管理面，而那份地址与令牌本来就在组合根手里
-/// （`core.toml` 的 `[core]`）。不注入的话，用户为了"连自己"得在模块配置里
-/// 再抄一遍令牌——而模块配置会进诊断/清单面，凭证放那里等于主动泄漏（该
-/// crate 的文档也明令禁止）。于是唯一干净的路径是：**宿主在装配期把这两个
-/// 事实交出去**，模块配置面保持"可公开"。
-///
-/// 缺省部署（`modules.toml` 没有 panel 行）不受影响：外部仓的可选模块默认
-/// 不挂载，注入的默认值只是躺在那里没人用。
-fn external_builtin_modules(
-    version: &str,
-    core: &crate::config::CoreSection,
-) -> Vec<Arc<dyn echo_module::Module>> {
-    vec![agent_module_panel::module_with_defaults(
-        version,
-        Some(agent_module_panel::PanelDefaults {
-            core_url: core.management_address.clone(),
-            core_access_token: core.management_access_token.clone(),
-        }),
-    )]
 }

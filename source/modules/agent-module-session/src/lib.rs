@@ -58,10 +58,10 @@ pub mod store;
 pub use commands::{SessionCommandHandler, SessionCommandHost};
 pub use store::{PersistLoadError, TrunkStore};
 
-/// 模块 id（`core.toml` 的 `enabled_modules` / 面板清单同一口径）。
 /// 模块声明文件——身份、依赖、提供的服务键全在这里（单一真值）。
 pub const MANIFEST_TOML: &str = include_str!("../module.toml");
 
+/// 模块 id（`core.toml` 的 `enabled_modules` / 面板清单同一口径）。
 pub const MODULE_ID: &str = "echo-agent.session";
 
 /// 会话工厂的服务键（宿主按此解析；其它模块一般不直接用它）。

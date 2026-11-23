@@ -99,8 +99,8 @@ pub const WIRE_REASONING_HEAD_CHARS: usize = 240;
 
 /// 按"新近程度"瘦身推理条目（见上方常量说明）。非推理条目原样保留。
 pub fn elide_reasoning_for_wire(
-    messages: Vec<crate::event::TimelineMessage>,
-) -> Vec<crate::event::TimelineMessage> {
+    messages: Vec<echo_protocol::event::TimelineMessage>,
+) -> Vec<echo_protocol::event::TimelineMessage> {
     let reasoning: Vec<usize> = messages
         .iter()
         .enumerate()

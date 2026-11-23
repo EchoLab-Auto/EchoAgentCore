@@ -1,0 +1,10 @@
+{
+  "type": "command",
+  "payload": {
+    "RequestTimelineEarlier": {
+      "team_id": "persona-demo",
+      "before_ord": 11,
+      "limit": 50
+    }
+  }
+}

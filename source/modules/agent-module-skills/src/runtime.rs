@@ -181,7 +181,7 @@ mod contribution_tests {
                 applies: AtomicUsize::new(0),
             })
         }
-        fn set(mut self: Arc<Self>, contributions: Vec<(String, Vec<crate::Skill>)>) {
+        fn set(self: Arc<Self>, contributions: Vec<(String, Vec<crate::Skill>)>) {
             *self.contributions.lock().unwrap() = contributions;
         }
     }

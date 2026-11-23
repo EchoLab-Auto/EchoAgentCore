@@ -398,6 +398,14 @@ fn humanize_reset(resets_at: i64) -> String {
     }
 }
 
+/// 备用 provider 解析的 boxed future。
+///
+/// 比 [`CompactionHost::provider`] 多一层 `Option`：`None` 表示"没有备用出口"
+/// （重试同一个出口没意义）。提成别名只为让方法签名读得出来——它是同一个
+/// `Pin<Box<dyn Future>>` 形状，不是一个新类型。
+pub type FallbackProviderFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Arc<dyn LlmProvider>>> + Send + 'a>>;
+
 /// 宿主端口：压缩策略需要而模块不该知道的六件事。
 ///
 /// `compact_history` 的**互斥锁由宿主持有**（在调用本函数之前拿），所以这里
@@ -423,11 +431,7 @@ pub trait CompactionHost: Send + Sync {
     /// 宿主按「全局默认 profile（`active_api`）」解析；与 [`Self::provider`]
     /// 等价时应返回 `None`（重试同一个出口没有意义）。默认实现返回 `None`
     /// ——不认识全局默认的宿主保持原行为。
-    fn fallback_provider(
-        &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<Arc<dyn LlmProvider>>> + Send + '_>,
-    > {
+    fn fallback_provider(&self) -> FallbackProviderFuture<'_> {
         Box::pin(async { None })
     }
     /// 模型的上下文窗口（token）；`None` = 未知 / 未配置。
@@ -2059,7 +2063,7 @@ mod tests {
                 resets_at: None,
             }),
         };
-        let reasons = failure_reasons(&vec![truncated(), quota, truncated()]);
+        let reasons = failure_reasons(&[truncated(), quota, truncated()]);
         assert_eq!(reasons.len(), 2, "同一条截断原因只报一次：{reasons:?}");
     }
 

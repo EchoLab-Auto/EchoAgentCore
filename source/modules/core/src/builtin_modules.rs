@@ -388,7 +388,7 @@ fn push_builtin_identity(
 /// （`command_is_host_reserved`），模块永远收不到，且**没有任何提示**。
 ///
 /// 这正是 `RequestSelfUpdate` / `MigrateSession` 曾经的形状——保留在名单里
-/// + 实现只在模块侧 = 必失败。装配期报出来，这类"声明了但收不到"就不可能
+/// 且实现只在模块侧，必然失败。装配期报出来，这类"声明了但收不到"就不可能
 /// 再溜进去。
 fn reject_reserved_commands(catalog: &[Arc<dyn Module>]) -> anyhow::Result<()> {
     for module in catalog {

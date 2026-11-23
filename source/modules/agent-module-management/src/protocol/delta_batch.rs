@@ -27,15 +27,9 @@
 
 use std::time::{Duration, Instant};
 
-use crate::event::BackendEvent;
+use echo_protocol::event::BackendEvent;
 
-/// 一条待下发的合并事件。
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "ts-bindings", derive(ts_rs::TS))]
-pub struct Emit {
-    pub event: BackendEvent,
-    pub entry: Option<String>,
-}
+pub use echo_protocol::emit::Emit;
 
 /// 合批窗口（同一段连续的增量在该窗口内的部分合并为一帧）。
 pub const DEFAULT_BATCH_WINDOW: Duration = Duration::from_millis(60);

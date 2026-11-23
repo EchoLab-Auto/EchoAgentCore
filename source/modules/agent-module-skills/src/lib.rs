@@ -51,7 +51,7 @@ pub fn manifest(version: &str) -> echo_module::ModuleManifest {
 /// 得到它"是另一件事。宿主监听 `module.mounted` / `module.unmounted` 统一拨
 /// （见组合根），模块因此不必再拿一个 `gate` 闭包。
 pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
-    use echo_module::{BuiltinModule, Inject, ServiceSlot};
+    use echo_module::{BuiltinModule, ServiceSlot};
 
     let host = ServiceSlot::<Arc<dyn commands::SkillsCommandHost>>::new();
     let runtime = ServiceSlot::<Arc<runtime::SkillsRuntime>>::new();

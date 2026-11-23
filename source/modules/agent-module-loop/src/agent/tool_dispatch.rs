@@ -108,7 +108,7 @@ impl ToolExecutionHost for AgentToolHost<'_> {
         // 执行链认识具体工具的名字。现在只剩一次查表：没有绑定就记一条 debug
         // （工具声明了状态但没人认领它的线上形状）。
         if let Some((key, state)) = tool_state(&agent.tools, &call.name, &cx.session_id) {
-            match agent.tool_state_event(&key) {
+            match agent.tool_state_event(key) {
                 Some(build) => agent.emit(build(&cx.session_id, &state)),
                 None => tracing::debug!(
                     tool = %call.name,

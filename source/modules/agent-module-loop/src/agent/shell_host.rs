@@ -61,6 +61,27 @@ impl ShellCommandHost for AgentShellCommandHost {
     }
 }
 
+/// 实例命令域的宿主适配器：注册表 + 出口，两件事。
+pub struct AgentInstanceCommandHost {
+    origin: Arc<Agent>,
+}
+
+impl AgentInstanceCommandHost {
+    pub fn new(origin: Arc<Agent>) -> Self {
+        Self { origin }
+    }
+}
+
+impl agent_module_tools::instance_commands::InstanceCommandHost for AgentInstanceCommandHost {
+    fn instances(&self) -> Arc<echo_defs::module_instance::InstanceRegistry> {
+        Arc::clone(&self.origin.instances)
+    }
+
+    fn emit(&self, event: BackendEvent) {
+        self.origin.emit(event);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,26 +104,5 @@ mod tests {
         assert_eq!(host.team_id().as_deref(), Some("alice"));
         // 未接线时管理器为 None（命令会回可读错误，不静默）。
         assert!(host.manager().is_none());
-    }
-}
-
-/// 实例命令域的宿主适配器：注册表 + 出口，两件事。
-pub struct AgentInstanceCommandHost {
-    origin: Arc<Agent>,
-}
-
-impl AgentInstanceCommandHost {
-    pub fn new(origin: Arc<Agent>) -> Self {
-        Self { origin }
-    }
-}
-
-impl agent_module_tools::instance_commands::InstanceCommandHost for AgentInstanceCommandHost {
-    fn instances(&self) -> Arc<echo_defs::module_instance::InstanceRegistry> {
-        Arc::clone(&self.origin.instances)
-    }
-
-    fn emit(&self, event: BackendEvent) {
-        self.origin.emit(event);
     }
 }

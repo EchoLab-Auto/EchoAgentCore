@@ -27,6 +27,10 @@ use crate::config::{AgentConfig, TeamMember};
 /// （`__core`、运行期新建人格）都是这样藏了很久。把"必须绑定"变成类型
 /// 约束，比在调用点补 `set_manager` 靠得住：以后新增创建路径时，
 /// 不经过 `bound` 就编译不过。
+// 不用 clippy 建议的 `#[non_exhaustive]`：那个属性只封住 **crate 外** 的构造，
+// 而这里的 `_sealed` 还要封住本 crate 其它模块——构造点必须只剩下面这两条
+// （`bound` 与 `AgentManager::new` 的兜底），见类型文档里的事故复盘。
+#[allow(clippy::manual_non_exhaustive)]
 #[derive(Clone)]
 pub struct RunningAgent {
     pub id: String,

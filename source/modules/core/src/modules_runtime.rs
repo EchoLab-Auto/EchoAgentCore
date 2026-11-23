@@ -676,6 +676,15 @@ pub fn config_origins(config_path: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// 已被外部条目顶替的内置模块 id 集合（装配期从模块目录里摘掉它们）。
+pub fn external_replaced_ids(entries: &[StaticModuleEntry]) -> std::collections::HashSet<String> {
+    entries
+        .iter()
+        .filter(|entry| entry.kind != "builtin" && entry.enabled)
+        .map(|entry| entry.id.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1177,13 +1186,4 @@ mod tests {
             .is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// 已被外部条目顶替的内置模块 id 集合（装配期从模块目录里摘掉它们）。
-pub fn external_replaced_ids(entries: &[StaticModuleEntry]) -> std::collections::HashSet<String> {
-    entries
-        .iter()
-        .filter(|entry| entry.kind != "builtin" && entry.enabled)
-        .map(|entry| entry.id.clone())
-        .collect()
 }

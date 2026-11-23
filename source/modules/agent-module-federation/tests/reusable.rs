@@ -69,9 +69,8 @@ async fn arbitrary_application_messages_cross_two_nodes() {
 
     let server_info = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match server_rx.recv().await.unwrap() {
-                LinkEvent::Up(info) => break info,
-                _ => {}
+            if let LinkEvent::Up(info) = server_rx.recv().await.unwrap() {
+                break info;
             }
         }
     })
@@ -82,9 +81,8 @@ async fn arbitrary_application_messages_cross_two_nodes() {
 
     let client_info = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match client_rx.recv().await.unwrap() {
-                LinkEvent::Up(info) => break info,
-                _ => {}
+            if let LinkEvent::Up(info) = client_rx.recv().await.unwrap() {
+                break info;
             }
         }
     })
@@ -105,9 +103,8 @@ async fn arbitrary_application_messages_cross_two_nodes() {
         .unwrap();
     let received = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match server_rx.recv().await.unwrap() {
-                LinkEvent::Frame { from, frame } => break (from, frame),
-                _ => {}
+            if let LinkEvent::Frame { from, frame } = server_rx.recv().await.unwrap() {
+                break (from, frame);
             }
         }
     })
@@ -134,9 +131,8 @@ async fn arbitrary_application_messages_cross_two_nodes() {
         .unwrap();
     let response = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match client_rx.recv().await.unwrap() {
-                LinkEvent::Frame { frame, .. } => break frame,
-                _ => {}
+            if let LinkEvent::Frame { frame, .. } = client_rx.recv().await.unwrap() {
+                break frame;
             }
         }
     })

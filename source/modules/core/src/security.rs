@@ -187,8 +187,6 @@ pub fn sensitive_dirs(config_path: &Path) -> Vec<PathBuf> {
     }
     dirs
 }
-/// 敏感路径判定（词汇归定义层，与工具模块的出站闸门共用）。
-
 /// 递归收集 TOML 表里「看起来是凭据」的字符串值（键名形态匹配）。
 ///
 /// 命中键名（小写比较，含即算）：`token` / `secret` / `password` /

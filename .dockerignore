@@ -9,5 +9,7 @@ qrcode.png
 document/
 docs/
 npm/
-packaging/
+# 但外置模块锁定表要进构建上下文：正式镜像的模块提交只认它。
+packaging/*
+!packaging/external-modules.lock
 tools/

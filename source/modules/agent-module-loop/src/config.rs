@@ -429,6 +429,11 @@ impl AgentConfig {
 /// Back-compat alias: TeamMember was previously named AgentProfile.
 pub type AgentProfile = TeamMember;
 
+/// serde 默认：`true`（新增的开关一律"默认开、显式关"）。
+fn default_true() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,9 +743,4 @@ mod tests {
         assert_eq!(member.memory_limit_tokens, None);
         assert_eq!(member.context_window_tokens, None);
     }
-}
-
-/// serde 默认：`true`（新增的开关一律"默认开、显式关"）。
-fn default_true() -> bool {
-    true
 }

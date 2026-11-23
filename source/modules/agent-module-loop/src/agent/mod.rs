@@ -46,6 +46,11 @@ pub type EventSink = std::sync::Arc<dyn Fn(BackendEvent) + Send + Sync>;
 use std::sync::Arc;
 
 use anyhow::Result;
+
+// `Mutex` 只被下面 `#[cfg(test)]` 的 `skills()` 访问器用到。放在无条件导入位置
+// 会被非测试构建判为 unused（`cargo clippy --fix` 正是这么删掉的，删完 lib test
+// 就在 `skills()` 里找不到 `Mutex` 了）。
+#[cfg(test)]
 use tokio::sync::Mutex;
 
 use echo_defs::module_instance::InstanceRegistry;
@@ -1963,8 +1968,6 @@ pub mod tests;
 
 #[cfg(test)]
 mod session_api_persistence_tests {
-    use super::*;
-
     /// 覆盖必须落盘并在**新进程**（新 store）里读回来。
     ///
     /// 这条测的是本轮改造的核心承诺：非工作区通道的会话级覆盖跨重启存活。

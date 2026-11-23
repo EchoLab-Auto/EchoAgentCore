@@ -1,0 +1,12 @@
+{
+  "type": "event",
+  "seq": 131,
+  "payload": {
+    "ModuleInvokeResult": {
+      "module": "vendor.demo.todo",
+      "method": "todo.create",
+      "ok": false,
+      "error": "模块 vendor.demo.todo 未声明方法 todo.create"
+    }
+  }
+}

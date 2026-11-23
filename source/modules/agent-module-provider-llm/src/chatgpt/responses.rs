@@ -88,6 +88,7 @@ impl ChatGptProvider {
         })
     }
 
+    /// 设置推理强度（builder 风格；默认取 [`echo_defs::ReasoningEffort::default`]）。
     pub fn with_reasoning(mut self, effort: echo_defs::ReasoningEffort) -> Self {
         self.reasoning_effort = effort;
         self

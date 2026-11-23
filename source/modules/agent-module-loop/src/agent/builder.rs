@@ -288,7 +288,6 @@ impl AgentBuilder {
         if let Some(store) = self.subagent_store {
             // 默认墙钟上限取配置（`0` = 不限制）。捕获时机必须在 `Agent::new`
             // 之前 —— `self.config` 在那里被 move 掉了。
-            let subagent_timeout_secs = subagent_timeout_secs;
             agent.attach_subagent_runtime_with(
                 store,
                 self.subagent_remote_sink,

@@ -752,9 +752,8 @@ impl InvokeRouter {
         workspace_roots: &[std::path::PathBuf],
     ) -> FedFrame {
         let call_id = request.call_id.clone();
-        // 1. 统一入口基本校验：call_id 形状 / origin 一致性 / 工具名 / args 形状。
         if let Err(reply) = self.validate_invoke_envelope(from, &request) {
-            return reply;
+            return *reply;
         }
         // 2. per-peer 白名单裁决。
         let verdict = self
@@ -1019,18 +1018,22 @@ impl InvokeRouter {
     /// - 回环：origin 是本机 → `LoopDetected`（跨机回环，恶意或误配）；
     /// - 工具名：非空、长度有界、无空白/控制字符（注册表键的形状假设）；
     /// - `args`：必须是 JSON 对象或 null（工具 schema 的根形状）。
+    ///
+    /// `Err` 侧装箱：`FedFrame` 是线上帧的固定形状（含 `NodeHello` 等大
+    /// 变体），不能为 lint 改协议类型；校验失败路径本就冷，Box 一次即可
+    /// 让 `Result` 回到小尺寸。
     fn validate_invoke_envelope(
         &self,
         from: &str,
         request: &InvokeRequest,
-    ) -> Result<(), FedFrame> {
+    ) -> Result<(), Box<FedFrame>> {
         let call_id = request.call_id.as_str();
         let reject = |code, message: String| {
-            Err(FedFrame::Error {
+            Err(Box::new(FedFrame::Error {
                 call_id: Some(request.call_id.clone()),
                 code,
                 message,
-            })
+            }))
         };
         if call_id.is_empty() || call_id.len() > 256 {
             return reject(

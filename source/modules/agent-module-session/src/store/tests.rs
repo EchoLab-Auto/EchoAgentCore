@@ -1,6 +1,19 @@
 use super::*;
 use proptest::prelude::*;
 
+/// 设定文件 mtime：`filetime` 0.2 的 `set_file_mtime` 已标记弃用，
+/// std 的 `File::set_times` 覆盖同一用途（Rust 1.75+）。
+fn set_mtime(path: &std::path::Path, unix_seconds: i64) {
+    let modified =
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(unix_seconds.try_into().unwrap());
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+}
+
 proptest! {
     /// Round-trip for any key whose fields don't contain the `:` separator
     /// (the wire format's only structural character).
@@ -2589,8 +2602,7 @@ fn prune_archives_keeps_newest_and_ignores_foreign_stems() {
     for i in 0..6 {
         let f = archives.join(format!("echo-sessions-x-2026100{i}-000000-precompact.json"));
         std::fs::write(&f, "{}").unwrap();
-        let mtime = filetime::FileTime::from_unix_time(1_700_000_000 + i as i64, 0);
-        filetime::set_file_mtime(&f, mtime).unwrap();
+        set_mtime(&f, 1_700_000_000 + i as i64);
     }
     std::fs::write(archives.join("other-stem-20261001-000000.json"), "{}").unwrap();
     std::fs::write(archives.join("echo-sessions-x-note.txt"), "x").unwrap();
@@ -2625,19 +2637,11 @@ fn prune_archives_does_not_swallow_longer_stems() {
     std::fs::create_dir_all(&archives).unwrap();
     let long_stem = archives.join("echo-sessions-x-y-20261001-000000.json");
     std::fs::write(&long_stem, "{}").unwrap();
-    filetime::set_file_mtime(
-        &long_stem,
-        filetime::FileTime::from_unix_time(1_700_000_000, 0),
-    )
-    .unwrap();
+    set_mtime(&long_stem, 1_700_000_000);
     for (i, ts) in ["20261002-000000", "20261003-000000"].iter().enumerate() {
         let f = archives.join(format!("echo-sessions-x-{ts}.json"));
         std::fs::write(&f, "{}").unwrap();
-        filetime::set_file_mtime(
-            &f,
-            filetime::FileTime::from_unix_time(1_700_000_100 + i as i64, 0),
-        )
-        .unwrap();
+        set_mtime(&f, 1_700_000_100 + i as i64);
     }
 
     TrunkStore::prune_archives(&archives, "echo-sessions-x", 1);
@@ -2864,8 +2868,7 @@ fn prune_archives_orders_by_filename_timestamp_not_mtime() {
     for i in 0..4 {
         let f = archives.join(format!("echo-sessions-x-2026101{i}-000000-001.json"));
         std::fs::write(&f, "{}").unwrap();
-        let mtime = filetime::FileTime::from_unix_time(1_700_000_000 - i as i64 * 100, 0);
-        filetime::set_file_mtime(&f, mtime).unwrap();
+        set_mtime(&f, 1_700_000_000 - i as i64 * 100);
     }
 
     TrunkStore::prune_archives(&archives, "echo-sessions-x", 2);

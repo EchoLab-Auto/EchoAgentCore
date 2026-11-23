@@ -55,6 +55,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 **协议层**
 
 - [protocol.md](./protocol/protocol.md) — 协议与数据流：传输信封、命令/事件、事件流连续性、时间线同步、兼容性规则
+- [contract-artifact.md](./protocol/contract-artifact.md) — 管理面契约归档：发布配对、固定提交溯源与离线核验
 
 **前端层 —— Panel 与视图交互契约**
 

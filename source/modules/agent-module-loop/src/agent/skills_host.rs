@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use agent_module_management::protocol::BackendEvent;
 use agent_module_skills::commands::SkillsCommandHost;
-use agent_module_skills::SkillRegistry;
 
 use crate::agent::registry::AgentRegistry;
 use crate::agent::Agent;

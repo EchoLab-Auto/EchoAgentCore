@@ -23,4 +23,3 @@ tracing.workspace = true
 
 [dev-dependencies]
 proptest = "1"
-filetime = "0.2"

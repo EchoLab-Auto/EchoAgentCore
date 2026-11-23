@@ -93,8 +93,6 @@ pub(crate) struct HostWiring {
     /// 组装的，所以这里是 `Option` 而不是"先塞空实现后回填"。
     pub skill_contributions:
         Option<Arc<dyn agent_module_skills::host_keys::SkillContributionSource>>,
-    /// 运行中人格注册表（清单快照补全按它枚举；None = 无多 person）。
-    pub manager: Option<Arc<AgentManager>>,
 }
 
 /// 工作区模块的跨机查询接缝：把三个语义方法映射到联邦查询出口。
@@ -523,15 +521,27 @@ pub(crate) fn workspace_from_module_event(
             match serde_json::from_value::<agent_module_management::protocol::BackendEvent>(
                 event.payload.clone(),
             ) {
-                Ok(backend_event) => match team_id.and_then(|id| manager.get(&id)) {
-                    // 有人格归属 → 走它的出口（team 标注由 `Agent::emit` 负责）。
-                    Some(running) => running.agent.emit(backend_event),
-                    // 无人格归属（浏览目录这类全局命令）→ 交给事件汇聚点。
-                    None => tracing::debug!(
-                        name = %event.name,
-                        "workspace backend event without a resolvable persona; dropped"
-                    ),
-                },
+                Ok(backend_event) => {
+                    // 冷启动恢复（C3c）：`WorkspaceSessions` 是模块从**权威 store**
+                    // 读出的全量快照——启动拉取与面板重发都回这条命令，镜像空初始化
+                    // 时用它补种（只补一次，已有来源不覆盖；细节在
+                    // `Agent::adopt_workspace_sessions`）。事件本身照旧送面板，恢复
+                    // 不改变线上形状。
+                    if let Some(reply) = event.payload.get("WorkspaceSessions") {
+                        if let Some(running) = team_id.as_deref().and_then(|id| manager.get(id)) {
+                            running.agent.adopt_workspace_sessions(reply);
+                        }
+                    }
+                    match team_id.and_then(|id| manager.get(&id)) {
+                        // 有人格归属 → 走它的出口（team 标注由 `Agent::emit` 负责）。
+                        Some(running) => running.agent.emit(backend_event),
+                        // 无人格归属（浏览目录这类全局命令）→ 交给事件汇聚点。
+                        None => tracing::debug!(
+                            name = %event.name,
+                            "workspace backend event without a resolvable persona; dropped"
+                        ),
+                    }
+                }
                 Err(error) => tracing::warn!(
                     %error,
                     "workspace.backend_event 载荷不是合法的 BackendEvent（模块与宿主线格式漂移？）"
@@ -540,10 +550,15 @@ pub(crate) fn workspace_from_module_event(
             true
         }
         agent_module_workspace::events::CHANGED => {
-            let snapshot =
-                agent_module_loop::agent::workspace_mirror::WorkspaceSnapshot::from_event_payload(
-                    &event.payload,
-                );
+            let snapshot = match agent_module_loop::agent::workspace_mirror::WorkspaceSnapshot::try_from_event_payload(
+                &event.payload,
+            ) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(%error, "workspace.changed 载荷无效，保留现有镜像");
+                    return true;
+                }
+            };
             let team_id = event
                 .payload
                 .get("team_id")
@@ -592,6 +607,84 @@ pub(crate) fn workspace_from_module_event(
         }
         _ => false,
     }
+}
+
+/// **冷启动恢复（C3c）**：让每个能用工作区的人格向模块拉一次权威快照。
+///
+/// ## 为什么需要这一步
+///
+/// 宿主的镜像只消费 `workspace.changed`，而那是"变更时才有"的事件。进程重启
+/// 后磁盘上仍有激活工作区/对话，但**没有任何变更发生**——镜像空着，于是项目
+/// 对话通道不注册、`SessionUpdated` 不广播，面板的「本地当前对话」要等用户手动
+/// 改一次工作区才出现。
+///
+/// ## 为什么复用 `RequestWorkspaceSessions`
+///
+/// 它是模块既有的**读**命令：从权威 store 取快照，以 `workspace.backend_event`
+/// 回执（面板本来就在用它刷新列表）。因此恢复**不加命令、不加权限、不改线
+/// 格式、不写 Workspace 文件、不引入跨机状态**：宿主只是把"面板会发的那条
+/// 请求"在启动时替每个人格发一次，回执仍经同一条事件桥
+/// （[`workspace_from_module_event`] → `Agent::adopt_workspace_sessions`）。
+///
+/// ## 边界（**不**声称解决的部分）
+///
+/// 回执与 `workspace.changed` 都**没有版本/序号**，宿主无法判定"迟到的回执"
+/// 与"更新的变更事件"谁更晚。所以补种只做一次（见
+/// `WorkspaceMirror::seed_if_unseeded`）：镜像已有来源时回执一律不覆盖。代价是
+/// "变更事件在启动窗口里丢失 + 镜像先被一条旧回执种子化"这种组合仍然只能等
+/// 下一次变更事件自愈——要严谨覆盖它需要给事件加版本（协议改动，不在本任务）。
+///
+/// 返回是否发出了至少一条请求（`false` = 工作区模块未挂载 / 没人人格允许它，
+/// 都不是错误：那种部署本来就没有工作区能力）。
+pub(crate) fn restore_workspace_sessions(
+    manager: &Arc<AgentManager>,
+    module_host: &Arc<agent_module_loop::modules::ModuleHost>,
+) -> bool {
+    // 只问"允许工作区"的人格：名单外的人格就算有历史文档也不该被恢复出通道
+    // （门控是权限，恢复不能绕开它——这与 `workspace.changed` 的落点同一判据，
+    // 只是这里由宿主主动发起，必须自己先看名单）。
+    let targets: Vec<String> = manager
+        .all()
+        .into_iter()
+        .filter(|running| {
+            running
+                .agent
+                .persona_allows_module(agent_module_loop::modules::WORKSPACE_MODULE_ID)
+        })
+        .map(|running| running.id)
+        .collect();
+    if targets.is_empty() {
+        return false;
+    }
+    let module_host = Arc::clone(module_host);
+    // 事件桥是同步闭包，组合根这里是同步装配段——把 I/O 甩给运行时，启动不被
+    // 一次模块往返拖住。回执异步到达，落点与面板请求完全相同。
+    let handle = tokio::runtime::Handle::try_current();
+    let Some(handle) = handle.ok() else {
+        tracing::debug!("no tokio runtime; workspace session restore skipped");
+        return false;
+    };
+    handle.spawn(async move {
+        for team_id in targets {
+            let payload = serde_json::json!({ "team_id": team_id });
+            match module_host
+                .dispatch_raw("RequestWorkspaceSessions", payload)
+                .await
+            {
+                Some(Ok(_)) => tracing::debug!(team_id = %team_id, "workspace sessions restored"),
+                Some(Err(message)) => tracing::warn!(
+                    team_id = %team_id,
+                    %message,
+                    "workspace session restore failed (workspace 模块回了错误)"
+                ),
+                None => {
+                    tracing::debug!("workspace 模块未挂载（未启用 / 未注册），跳过工作区会话恢复");
+                    break;
+                }
+            }
+        }
+    });
+    true
 }
 
 #[cfg(test)]
@@ -668,7 +761,6 @@ mod tests {
             .is_err());
         assert!(host.browse("gpu-box".into(), "/".into()).await.is_err());
     }
-
     /// 生命周期事件名 → 门控方向的映射（两行代码，但写反了没人发现）。
     #[test]
     fn gating_event_names_are_the_registry_ones() {
@@ -677,5 +769,265 @@ mod tests {
         assert_eq!(event.name, "module.mounted");
         let event = echo_module::ModuleEvent::new("p", "module.unmounted", serde_json::Value::Null);
         assert_eq!(event.name, "module.unmounted");
+    }
+
+    // ── 工作区冷启动恢复（C3c）──
+
+    /// 最小 provider（恢复测试不跑模型，只要一个合法的 `LlmProvider`）。
+    struct NullProvider;
+
+    #[async_trait::async_trait]
+    impl agent_module_loop::llm::LlmProvider for NullProvider {
+        fn name(&self) -> &str {
+            "null"
+        }
+        fn default_model(&self) -> &str {
+            "null"
+        }
+        async fn chat(
+            &self,
+            _request: &agent_module_loop::llm::ChatRequest,
+        ) -> Result<agent_module_loop::llm::ChatResponse, agent_module_loop::llm::LlmError>
+        {
+            Err(agent_module_loop::llm::LlmError::Config("not used".into()))
+        }
+        async fn chat_stream(
+            &self,
+            request: &agent_module_loop::llm::ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<agent_module_loop::llm::ChatChunk>,
+        ) -> Result<agent_module_loop::llm::ChatResponse, agent_module_loop::llm::LlmError>
+        {
+            self.chat(request).await
+        }
+    }
+
+    /// 造一个只有一个人格 `t` 的管理器，并把它的镜像交出来。
+    fn manager_with_mirror() -> (
+        Arc<AgentManager>,
+        Arc<agent_module_loop::agent::workspace_mirror::WorkspaceMirror>,
+    ) {
+        use agent_module_loop::config::{AgentConfig, TeamMember};
+        let mirror = Arc::new(agent_module_loop::agent::workspace_mirror::WorkspaceMirror::new());
+        let mut raw = AgentConfig::default();
+        raw.teams.insert(
+            "t".into(),
+            TeamMember {
+                name: "T".into(),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        let shared = Arc::clone(&mirror);
+        let manager = Arc::new(AgentManager::build(&raw, move |id, _profile| {
+            let agent = Arc::new(agent_module_loop::Agent::new(
+                Arc::new(NullProvider),
+                AgentConfig::default(),
+                agent_module_loop::skill::SkillRegistry::new(),
+                agent_module_loop::tool::ToolRegistry::new(),
+                Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
+            ));
+            agent.set_team_id(Some(id));
+            agent.set_workspace_mirror(Arc::clone(&shared));
+            agent
+        }));
+        (manager, mirror)
+    }
+
+    /// 组合根那一跳：`workspace.backend_event` 里的 `WorkspaceSessions` 回执要
+    /// 喂进**该人格**的镜像（这是重启后"已存激活对话自己出现"的入口）。
+    ///
+    /// 守两个方向：合法回执补种；他人格的回执不能落到 `t` 的镜像里。
+    #[tokio::test]
+    async fn workspace_sessions_reply_seeds_persona_mirror() {
+        let (manager, mirror) = manager_with_mirror();
+        assert!(mirror.is_empty() && !mirror.is_seeded());
+
+        // ① 别人格的回执：路由到不存在的 id → 丢弃，`t` 的镜像保持空。
+        let foreign = echo_module::ModuleEvent::new(
+            agent_module_workspace::MODULE_ID,
+            agent_module_workspace::events::BACKEND_EVENT,
+            serde_json::json!({
+                "WorkspaceSessions": {
+                    "team_id": "other",
+                    "sessions": [{ "id": "evil", "name": "Evil" }],
+                    "active": "evil",
+                }
+            }),
+        );
+        assert!(workspace_from_module_event(&manager, &foreign));
+        assert!(!mirror.is_seeded(), "他人格的回执不碰本人格的镜像");
+
+        // ② 本人格的回执：补种 + 跑宿主的后半段（通道注册是异步 spawn 的）。
+        let own = echo_module::ModuleEvent::new(
+            agent_module_workspace::MODULE_ID,
+            agent_module_workspace::events::BACKEND_EVENT,
+            serde_json::json!({
+                "WorkspaceSessions": {
+                    "team_id": "t",
+                    "sessions": [{ "id": "proj", "name": "Proj", "directories": ["/srv/proj"] }],
+                    "active": "proj",
+                    "active_conversation": null,
+                }
+            }),
+        );
+        assert!(workspace_from_module_event(&manager, &own));
+        assert!(mirror.is_seeded());
+        assert_eq!(mirror.snapshot().active.as_deref(), Some("proj"));
+        // 通道注册由 spawn 完成，等一拍。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let running = manager.get("t").expect("persona t");
+        assert!(
+            running
+                .agent
+                .trunk
+                .all()
+                .iter()
+                .any(|s| s.id == "local:workspace:proj:local_user"),
+            "恢复后通道会话已注册"
+        );
+
+        // ③ 坏载荷：不覆盖。
+        let broken = echo_module::ModuleEvent::new(
+            agent_module_workspace::MODULE_ID,
+            agent_module_workspace::events::BACKEND_EVENT,
+            serde_json::json!({
+                "WorkspaceSessions": { "team_id": "t", "sessions": "not-a-list" }
+            }),
+        );
+        assert!(workspace_from_module_event(&manager, &broken));
+        assert_eq!(
+            mirror.snapshot().active.as_deref(),
+            Some("proj"),
+            "坏载荷不覆盖合法状态"
+        );
+    }
+    #[tokio::test]
+    async fn workspace_invalid_change_does_not_claim_or_replace_the_mirror() {
+        let (manager, mirror) = manager_with_mirror();
+        let change = |payload| {
+            workspace_from_module_event(
+                &manager,
+                &echo_module::ModuleEvent::new(
+                    agent_module_workspace::MODULE_ID,
+                    agent_module_workspace::events::CHANGED,
+                    payload,
+                ),
+            )
+        };
+        let malformed = serde_json::json!({"team_id": "t"});
+        assert!(change(malformed.clone()));
+        assert!(!mirror.is_seeded());
+        assert!(change(serde_json::json!({
+            "team_id": "t", "sessions": [{"id":"proj", "name":"Proj"}], "active":"proj"
+        })));
+        assert!(change(malformed));
+        assert_eq!(mirror.snapshot().active.as_deref(), Some("proj"));
+        assert!(change(serde_json::json!({"team_id": "t", "sessions": []})));
+        assert!(mirror.is_empty());
+    }
+
+    /// 门控不因"恢复"被绕开：白名单里没有工作区的人格**不发起**拉取。
+    ///
+    /// 反向用例（默认无名单 → 允许）在同一测试里先跑一次：否则"永远返回 false"
+    /// 的实现也能骗过这条断言。
+    #[tokio::test]
+    async fn restore_workspace_sessions_skips_gated_personas() {
+        let (manager, _mirror) = manager_with_mirror();
+        let host = Arc::new(agent_module_loop::modules::ModuleHost::new_without_skill_prompt());
+        assert!(
+            restore_workspace_sessions(&manager, &host),
+            "无名单（= 允许）→ 发起拉取"
+        );
+
+        // 收紧到"只允许工具模块"：工作区在名单外。
+        let running = manager.get("t").expect("persona t");
+        running
+            .agent
+            .apply_capabilities(&agent_module_loop::TeamMember {
+                name: "T".into(),
+                enabled: true,
+                enabled_modules: vec!["echo-agent.tools.builtin".into()],
+                ..Default::default()
+            })
+            .await;
+        assert!(
+            !restore_workspace_sessions(&manager, &host),
+            "名单外的人格不拉取（恢复不扩大权限）"
+        );
+    }
+
+    /// **端到端**：`restore_workspace_sessions` 真的把模块里的已存激活会话拉回
+    /// 宿主的镜像（真实 workspace 模块 + 真实事件桥，只有人格是测试造的）。
+    ///
+    /// 这正是重启现场：文档在装配**之前**就落盘，镜像初始化时是空的，只有宿主
+    /// 主动拉一次，面板才能看到「本地当前对话」。
+    #[tokio::test]
+    async fn restore_workspace_sessions_pulls_the_persisted_active() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-core-workspace-restore-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("state dir");
+        // 上一次运行留下的文档（装配前落盘 = 重启时磁盘上就有的那一份）。
+        {
+            let store = agent_module_workspace::store::WorkspaceStore::load(Some(
+                dir.join("echo-workspaces-t.json"),
+            ));
+            store
+                .upsert(agent_module_workspace::wire::WorkspaceSessionInfo {
+                    id: "proj".into(),
+                    name: "Proj".into(),
+                    directories: vec!["/srv/proj".into()],
+                    ..Default::default()
+                })
+                .expect("persist workspace");
+            store
+                .set_active(Some("proj".into()), None)
+                .expect("persist active");
+        }
+
+        let (manager, mirror) = manager_with_mirror();
+        assert!(mirror.is_empty() && !mirror.is_seeded(), "重启：镜像空着");
+
+        let host = Arc::new(agent_module_loop::modules::ModuleHost::new_without_skill_prompt());
+        // 配置与事件出口**必须**在 mount 之前（mount 取的是当时的值）。
+        host.set_configs([(
+            agent_module_workspace::MODULE_ID,
+            serde_json::json!({ "state_dir": dir.to_string_lossy() }),
+        )]);
+        let sink_manager = Arc::clone(&manager);
+        host.set_event_sink(Arc::new(move |event: echo_module::ModuleEvent| {
+            workspace_from_module_event(&sink_manager, &event);
+        }));
+        host.register_and_mount(agent_module_workspace::module("0.0.0"))
+            .expect("mount workspace module");
+
+        assert!(
+            restore_workspace_sessions(&manager, &host),
+            "有人格允许工作区 → 发出了拉取"
+        );
+        // 回执与补种是异步的（事件桥同步派发，通道注册再 spawn 一拍）。
+        for _ in 0..50 {
+            if mirror.is_seeded() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(mirror.is_seeded(), "回执补种了镜像");
+        assert_eq!(mirror.snapshot().active.as_deref(), Some("proj"));
+        assert_eq!(mirror.snapshot().sessions.len(), 1);
+        let running = manager.get("t").expect("persona t");
+        assert!(
+            running
+                .agent
+                .trunk
+                .all()
+                .iter()
+                .any(|s| s.id == "local:workspace:proj:local_user"),
+            "已存激活对话的通道被恢复注册"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

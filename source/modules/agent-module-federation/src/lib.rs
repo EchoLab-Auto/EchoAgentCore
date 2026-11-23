@@ -79,7 +79,7 @@ pub async fn handle_command(
 }
 
 pub fn module(version: &str) -> std::sync::Arc<dyn echo_module::Module> {
-    use echo_module::{BuiltinModule, Inject, ServiceSlot};
+    use echo_module::{BuiltinModule, ServiceSlot};
 
     // **零参数**（全模块化 S6）：出口集合与事件出口都是装配期构造的进程级
     // 对象，经服务表解析（[`host_keys::PORTS`] / [`host_keys::EVENTS`]）。

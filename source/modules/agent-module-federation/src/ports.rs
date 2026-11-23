@@ -377,10 +377,13 @@ mod tests {
         std::fs::write(&existing, "x").unwrap();
         assert!(path_within_roots(
             existing.to_str().unwrap(),
-            &[root.clone()]
+            std::slice::from_ref(&root)
         ));
         let fresh = root.join("nested").join("new.txt");
-        assert!(path_within_roots(fresh.to_str().unwrap(), &[root.clone()]));
+        assert!(path_within_roots(
+            fresh.to_str().unwrap(),
+            std::slice::from_ref(&root)
+        ));
         // 根外绝对路径拒绝。
         assert!(!path_within_roots("/etc/hostname", &[root]));
     }
@@ -416,7 +419,7 @@ mod tests {
         let outside = format!("/etc/echo-fed-nonexistent-{}", std::process::id());
         symlink(&outside, &dangling).expect("create dangling symlink");
         assert!(
-            !path_within_roots(dangling.to_str().unwrap(), &[root.clone()]),
+            !path_within_roots(dangling.to_str().unwrap(), std::slice::from_ref(&root)),
             "悬空链接指向根外时必须拒绝"
         );
         // 链接 + 子路径同样拒绝（父链回退不得放行）。
@@ -434,7 +437,7 @@ mod tests {
         symlink("/etc", &link).expect("create symlink");
         assert!(!path_within_roots(
             link.join("hostname").to_str().unwrap(),
-            &[root.clone()]
+            std::slice::from_ref(&root)
         ));
         assert!(!path_within_roots(link.to_str().unwrap(), &[root]));
     }
