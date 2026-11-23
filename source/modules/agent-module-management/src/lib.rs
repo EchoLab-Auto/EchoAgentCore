@@ -815,6 +815,9 @@ async fn serve_management_ws(
     let started = std::time::Instant::now();
     let mut events_out: u64 = 0;
     let mut commands_in: u64 = 0;
+    // 坏帧回执条数上限：坏帧多是客户端 bug「每帧都发」，前几条足够定位，
+    // 之后只留服务端 warn，避免把一条错配置的连接变成刷屏器。
+    let mut malformed_out: u32 = 0;
     // 初值只兜底「select 因其它原因直接落出循环」，正常路径都会被下面覆盖。
     #[allow(unused_assignments)]
     let mut close_reason = "loop exited without a recorded reason";
@@ -880,9 +883,17 @@ async fn serve_management_ws(
                                         let _ = bridge.send_command(cmd);
                                     }
                                     None => {
+                                        // 合法的 `WsMessage::Event` 帧（客户端误发）：
+                                        // 已知形状，忽略即可。
+                                    }
+                                    Some(InboundFrame::Malformed { reason }) => {
                                         // 合并端诊断增强：疑似联邦帧到达管理
                                         // 连接（未知 peer 令牌 + 空管理令牌的
                                         // 兼容分支）——明确记录并断开。
+                                        //
+                                        // 必须放在这里：联邦帧不是合法的
+                                        // `WsMessage`，会落到 Malformed 分支，
+                                        // 若只在 `None` 分支检测就永远命中不了。
                                         if merged_hint
                                             && serde_json::from_str::<agent_module_federation::FedFrame>(
                                                 &text,
@@ -896,6 +907,31 @@ async fn serve_management_ws(
                                             );
                                             close_reason = "federation frame on management link";
                                             break;
+                                        }
+                                        // 静默丢弃的代价是「命令发出去、没人应答、前端
+                                        // 永远等」——2026-11 排查模块调用通道时正是栽在
+                                        // 这里（连未知命令都不回帧，发送方无从判断是自己
+                                        // 拼错还是宿主不认识）。
+                                        // 日志只在解析处打一次（带 serde 原因与帧片段），
+                                        // 这里只负责回执，不重复记同一件事。
+                                        if malformed_out < 5 {
+                                            malformed_out += 1;
+                                            let frame = crate::protocol::serialize_event(
+                                                &crate::protocol::BackendEvent::Error {
+                                                    session_id: None,
+                                                    message: reason,
+                                                },
+                                            );
+                                            if write
+                                                .send(tokio_tungstenite::tungstenite::Message::Text(
+                                                    frame,
+                                                ))
+                                                .await
+                                                .is_err()
+                                            {
+                                                close_reason = "event write failed (peer gone)";
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -974,16 +1010,36 @@ async fn serve_management_ws(
 #[derive(Debug)]
 pub(crate) enum InboundFrame {
     Command(crate::protocol::BackendCommand),
+    /// 帧**无法解析**：非法 JSON 或未知命令变体。
+    ///
+    /// 与「合法但非命令」（`WsMessage::Event`，返回 `None`）严格区分：后者
+    /// 是已知形状、忽略即可；前者意味着发送方与宿主**对协议的认知不一致**
+    /// （版本落后者、拼错变体名、按未发布的变体实现）——必须回一条显式
+    /// 错误，否则发送方只能等到超时，排查时没有任何抓手。
+    Malformed { reason: String },
 }
 
 /// Parse one inbound WS text frame.
 ///
-/// Returns `None` for non-command frames (events, malformed payloads) —
-/// those are ignored by the management channel.
+/// - 命令帧 → `Some(Command)`
+/// - 事件帧（客户端误发）→ `None`：已知形状，忽略
+/// - 解析失败 → `Some(Malformed)`：由调用方回 `BackendEvent::Error`
 pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
-    match crate::protocol::deserialize_message(text) {
-        Some(crate::protocol::WsMessage::Command(cmd)) => Some(InboundFrame::Command(cmd)),
-        _ => None,
+    match serde_json::from_str::<crate::protocol::WsMessage>(text) {
+        Ok(crate::protocol::WsMessage::Command(cmd)) => Some(InboundFrame::Command(cmd)),
+        Ok(crate::protocol::WsMessage::Event(_)) => None,
+        Err(error) => {
+            // 截断片段：整帧可能很大（附件 base64），日志里只要够定位的头部。
+            let snippet: String = text.chars().take(200).collect();
+            warn!(
+                %error,
+                snippet = %snippet,
+                "failed to deserialize inbound Panel frame"
+            );
+            Some(InboundFrame::Malformed {
+                reason: format!("无法解析的命令帧：{error}（片段：{snippet}）"),
+            })
+        }
     }
 }
 
@@ -1066,9 +1122,34 @@ mod tests {
     }
 
     #[test]
-    fn ignores_malformed_frames() {
-        assert!(handle_inbound_text("not json").is_none());
-        assert!(handle_inbound_text("").is_none());
+    fn malformed_frames_carry_a_reason() {
+        // 静默丢弃的反面：坏帧必须给出可读原因，调用方才能回一条错误帧。
+        for text in ["not json", "", r#"{"type":"command","payload":{"TotallyUnknownOp":{}}}"#] {
+            match handle_inbound_text(text) {
+                Some(InboundFrame::Malformed { reason }) => {
+                    assert!(!reason.is_empty(), "reason must not be empty for {text:?}");
+                }
+                other => panic!("expected malformed frame for {text:?}, got {other:?}"),
+            }
+        }
+    }
+
+    /// 联邦帧必须落到 `Malformed`（而非 `None`）。
+    ///
+    /// 合并端口的「未知令牌联邦帧 → 断开」检测挂在 `Malformed` 分支上：它依赖
+    /// 联邦帧不是合法 `WsMessage` 这一事实。若哪天这里改回「非命令帧一律
+    /// `None`」，那段检测会变成死代码，而线上表现是「联邦帧被当噪声忽略」。
+    #[test]
+    fn federation_frame_lands_in_malformed() {
+        let fed = r#"{"type":"Ping","payload":{"sent_at_ms":0}}"#;
+        assert!(
+            serde_json::from_str::<agent_module_federation::FedFrame>(fed).is_ok(),
+            "test fixture must be a valid federation frame"
+        );
+        assert!(matches!(
+            handle_inbound_text(fed),
+            Some(InboundFrame::Malformed { .. })
+        ));
     }
 
     /// unit 变体的标准线格式：裸字符串。
@@ -1160,6 +1241,50 @@ mod tests {
             BackendCommand::SwitchModel {
                 model: "gpt-x".into()
             }
+        );
+        let _ = bridge;
+        ws.close(None).await.ok();
+    }
+
+    /// 坏帧必须在链路上拿到一条**显式错误**，而不是被静默丢弃。
+    ///
+    /// 这条测试锁定的是排查体验：发送方发出一帧后如果既没命令送达、也没错误
+    /// 回来，就只能靠超时猜（2026-11 排查 `InvokeModuleOp` 时正是如此）。
+    #[tokio::test]
+    async fn malformed_frame_gets_an_explicit_error() {
+        let (bridge, _handle, addr) = start_test_server().await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+            .await
+            .expect("connect");
+
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            r#"{"type":"command","payload":{"TotallyUnknownOp":{}}}"#.into(),
+        ))
+        .await
+        .expect("send");
+
+        let mut error = None;
+        for _ in 0..20 {
+            let next = tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                ws.next(),
+            )
+            .await;
+            let Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) = next else {
+                continue;
+            };
+            if let Some(crate::protocol::WsMessage::Event(
+                crate::protocol::BackendEvent::Error { message, .. },
+            )) = crate::protocol::deserialize_message(&text)
+            {
+                error = Some(message);
+                break;
+            }
+        }
+        let message = error.expect("malformed frame must produce a BackendEvent::Error");
+        assert!(
+            message.contains("TotallyUnknownOp") || message.contains("unknown variant"),
+            "error must name the offending frame: {message}"
         );
         let _ = bridge;
         ws.close(None).await.ok();

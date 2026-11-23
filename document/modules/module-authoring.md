@@ -302,6 +302,82 @@ SDK 侧实现 `InstanceModule`（`echo-module-sdk`）：`configure`（收配置�
 **模型可见面**。两者独立：可以声明工具而关闭某个能力位（该工具的调用会被
 宿主拦下），但通常应保持一致。
 
+
+## 面板界面（`panel-ui`）
+
+模块要不要界面由**模块自己**决定：在仓里放一个 `panel-ui/` 目录，Panel 壳只提供
+插槽（入口按钮 / 覆盖层 / 边栏卡片 / 通用钩子），不写任何模块的业务 UI。
+
+```text
+panel-ui/
+├── panel-extension.json     # { "id": "vendor.group.module", "entry": "index.ts" }
+├── index.ts                 # definePanelExtension + registerPanelExtension
+└── components/...
+```
+
+`index.ts` 只能引用 Panel 的**公开 SDK**（`@echo-agent/panel` /
+`@echo-agent/panel/components/*`），穿透私有路径会在构建期被拦下。完整的 API 面
+（`entries` / `overlays` / `railCards` / `hooks`）与插件写法见 Panel 仓的
+`docs/ui-extensions.md`——**本节只讲 Core 侧的三件套约束**，因为那些是 Panel 文档
+看不到、又最容易踩的。
+
+### 1. 装配在**构建期**，不在运行期
+
+Panel 不做运行期脚本下载：扩展在 `npm run build` 时被 vite 收进产物。传递路径：
+
+```text
+panel/scripts/install.sh --ui-extension <dir>   # 可重复，Panel 仓
+   └─ 写入 $XDG_STATE_HOME/echo-agent-panel/ui-extensions（冒号分隔）
+        └─ panel/scripts/update.sh 读回 → export PANEL_UI_EXTENSIONS
+             └─ web/extension-build.ts 生成虚拟模块 virtual:panel-extensions
+                  └─ 扩展被编进 web/dist/assets
+```
+
+由此产生一个**静默失效模式**：模块在 Core 里挂载成功、`ModulesList` 里也有它，
+但本部署没配扩展 → 界面上没有任何入口，构建与启动都不报错。判断方法只有两条：
+构建日志的 `==> Panel UI extensions (N)` 这一行，以及产物里有没有扩展 chunk。
+装完模块后界面上看不到东西，先查这里，别怀疑模块本身。
+
+### 2. 两条数据通路，别混用
+
+| 通路 | 方向 | 用途 | 发起方 |
+| --- | --- | --- | --- |
+| `ModuleEvent` | 模块 → 宿主 → Panel 广播 | 状态变化、增量投影 | 模块主动 `Emit`，无请求方 |
+| `InvokeModuleOp` | Panel → 宿主 → 模块 | 取权威快照、按需查询 | **必回** `ModuleInvokeResult` |
+
+`InvokeModuleOp` 由宿主的通用通道分发（`module` + `method` + 自由 JSON
+`payload`，约定 `team_id` / `session_id` 两个键），宿主不认识具体 method，只按
+`module` 找到模块送进它的命令分发表；**无论成功失败都会回一条
+`ModuleInvokeResult`**（未挂载 / 未声明 method 也回 `ok:false` 加原因）。
+
+反过来，模块对普通命令返回的 `Ok(value)` 会被宿主**丢弃**——`apply_command` 只
+把 `Err` 转成错误事件，成功值没有下行通道。所以：
+
+- 面板要看到的内容 → 走 `Emit`（`ModuleEvent`）
+- 面板要主动问的内容 → 走 `InvokeModuleOp`（`ModuleInvokeResult`）
+- 别指望"处理命令时 return Ok(数据)"能把数据送到界面
+
+### 3. 门控三问：显隐判据不要写错
+
+扩展的 `when` 决定入口显隐，Panel 提供三个**语义不同**的判据：
+
+| 判据 | 回答的问题 | 数据来源 | 踩坑 |
+| --- | --- | --- | --- |
+| `moduleMounted(state, id)` | 这台部署**有**这个模块吗 | Core 的 `ModulesList` | 只反映挂载，不反映"界面是否编入产物" |
+| `teamModuleEnabled(team, id)` | 这个**人格**允许用吗 | 人格配置白名单 | 空名单 = 不限制 |
+| `teamToolAvailable(team, tool)` | 这个具体**工具**可用吗 | 人格配置 | 空名单同样 = 不限制，**没有模块时也可能返回 true** |
+
+最后一行是唯一的真坑：只判 `teamToolAvailable` 会在未装模块的部署上显示一个点不
+动的死入口。判据应是「`moduleMounted` **且** `teamModuleEnabled`」，工具级白名单
+再叠在上面。
+
+### 4. 排查清单
+
+- 界面上没有入口 → 构建日志的扩展数量？产物 `assets` 里有没有扩展 chunk？
+- 入口在但数据永远加载中 → `ModuleInvokeResult` 有没有回来？宿主版本是否认识该
+  method？Core 日志里应有分发记录。
+- 入口在但点了没反应 → 判据是否只用了 `teamToolAvailable`？
+
 ## 实践与验证
 
 - **最小报错即修正**：`InvokeOutcome::Error{code, message}` 的 `message` 是模型可见文本——写清"发生了什么、应该怎么做"（与内置工具的错误口径一致）。
