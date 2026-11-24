@@ -329,7 +329,7 @@ dependencies = [
 [[package]]
 name = "agent-module-workspace"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?rev=b59972a3285057a85cff4cbef3bb5a2e15bf08f6#b59972a3285057a85cff4cbef3bb5a2e15bf08f6"
+source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?rev=fbb765a#fbb765a1ba50fd23ecd8bc74f3b186fd9ac3904a"
 dependencies = [
  "echo-context",
  "echo-defs",
