@@ -477,16 +477,23 @@ SDK 侧实现 `InstanceModule`（`echo-module-sdk`）：`configure`（收配置�
 
 ```text
 panel-ui/
-├── panel-extension.json     # { "id": "vendor.group.module", "entry": "index.ts" }
 ├── index.ts                 # definePanelExtension + registerPanelExtension
+├── vite.config.ts           # externalize 共享模块 + 内联 CSS
+├── package.json             # npm run build → dist/index.js
 └── components/...
 ```
 
 `index.ts` 只能引用 Panel 的**公开 SDK**（`@echo-agent/panel` /
-`@echo-agent/panel/components/*`），穿透私有路径会在构建期被拦下。完整的 API 面
-（`entries` / `overlays` / `railCards` / `hooks`）与插件写法见 Panel 仓的
-`docs/ui-extensions.md`——**本节只讲 Core 侧的三件套约束**，因为那些是 Panel 文档
-看不到、又最容易踩的。
+`@echo-agent/panel/components/*`）。这是**约定，不是构建期强制**——扩展是独立
+vite 构建，没有任何插件能看见 Panel 的源码树，穿透私有路径会一路构建成功，到
+用户浏览器里才失败。完整的 API 面（`entries` / `overlays` / `mainViews` /
+`railCards` / `hooks`）与插件写法见 Panel 仓的 `docs/ui-extensions.md`——**本节
+只讲 Panel 文档看不到、又最容易踩的那几条**（Core 侧校验、运行期装配、import map
+的封闭性）。
+
+> 早先的 `panel-extension.json`（`{ id, entry }`）已无读者：它是构建期注入时代
+> 给 vite 插件看的清单，改成运行期装配之后没有任何代码读它。写过它的模块可以
+> 直接删掉那个文件。
 
 ### 1. 装配在**运行期**：模块自己构建，向 Core 登记
 
@@ -508,16 +515,16 @@ panel-ui/
                                               import() <base>/panel-extensions/<id>/index.js
 ```
 
-三件套约束（都在 Core 侧校验，写错当场报）：
+三条约束（前两条 Core 校验，第三条是构建约定）：
 
-| 约束 | 为什么 |
-|---|---|
-| `bundle` 必须是**站点相对路径**（无协议、无前导 `/`、无 `..`） | 否则一个被投毒的模块描述就能让面板加载任意远程脚本 |
-| 产物文件名**固定**，不带 hash | 面板按固定路径 `import()`；名字一变所有已构建的扩展失联 |
-| `sdk_version` 必填，加载前逐字比对 | UI 在运行期加载，API 用错不会在构建期报错，只会在用户浏览器里崩 |
+| 约束 | 校验方 | 为什么 |
+|---|---|---|
+| `bundle` 必须是**站点相对路径**（无协议、无前导 `/`、无 `..`） | Core 登记时拒绝 | 否则一个被投毒的模块描述就能让面板加载任意远程脚本 |
+| `sdk_version` 必填，加载前逐字比对 | Core 登记时查非空；Panel 加载前逐字比 | UI 在运行期加载，API 用错不会在构建期报错，只会在用户浏览器里崩 |
+| 产物文件名**固定**，不带 hash | 模块自己的 vite 配置（Core 不查） | 面板按固定路径 `import()`；名字一变所有已构建的扩展失联 |
 
-**进程外模块**（`kind = "stdio"` / `"dylib"`，如 checklist）拿不到 `Ctx`，
-所以走协议 `Register` 的 `Contribution::Custom`：
+**进程外模块**（部署配置里 `kind = "stdio"` / `"dylib"`，如 checklist）拿不到
+`Ctx`，所以走协议 `Register` 的 `Contribution::Custom`：
 
 ```json
 { "custom_kind": "panel_ui",
@@ -527,6 +534,11 @@ panel-ui/
                "sdk_version": "1" } }
 ```
 
+> 两个 `kind` 不是同一个字段，别混：模块自己 `module.toml` 里的 `kind = "tool"`
+> 是**模块类型**（决定它提供什么能力）；`kind = "stdio"` 写在宿主部署侧的
+> `modules.toml` 里，是**装载方式**（进程外子进程）。checklist 的 `module.toml`
+> 写的是 `tool`，它的 `modules.toml` 行才是 `stdio`。
+
 `custom_kind = "panel_ui"` 是本宿主的词汇（框架只搬运、不解释）——所以框架仓
 不需要为面板 UI 加变体。宿主在 `core/src/panel_ui.rs` 里解释它。
 
@@ -534,6 +546,32 @@ panel-ui/
 但 bundle 没部署到 `<static_dir>/panel-extensions/<id>/` → 面板 `import()` 404。
 判断方法：面板设置页「面板 UI 扩展」小节会列出加载失败的那条与 URL；不再需要
 去翻构建日志。
+
+### 1b. 裸标识符只有 import map 覆盖的那几个
+
+扩展产物保留 `import ... from 'vue'` 是**正确**的——浏览器会拿裸标识符去
+`index.html` 的 import map 里查。但那张表是**封闭的**：表里没有的名字，浏览器
+直接报 "Failed to resolve module specifier"，而构建不会报任何错。
+
+当前 12 条（真值在 Panel 仓 `web/panel-shared.entries.json`，vite 由它生成 import
+map，改它必须同步改 `PANEL_UI_SDK_VERSION`）：
+
+| 裸标识符 | 说明 |
+|---|---|
+| `vue` | 唯一实例，两份 vue = 两套响应式系统 |
+| `@echo-agent/panel` | 单例（`state` / `dispatch` / 注册表） |
+| `@echo-agent/panel/components/{LoadHint,PanelIcon,PanelSidebar,SessionSwitcher}` | 壳的 4 个公开组件 |
+| `@echolab-auto/ui-frame` / `/doc` | ui-frame 根入口 |
+| `@echolab-auto/ui-frame/components/{NeumorphismButton,NeumorphismSelect,NeumorphismSpinner,NeumorphismTag}` | 4 个公开组件 |
+
+壳里有 42 个 `.vue`，**只有上表这 8 个组件能被扩展引用**。用其余组件（或壳里
+任何一个非导出模块）时：vite 构建成功，浏览器运行到那条 import 才失败。要加新
+共享模块，得改 Panel 仓的 `panel-shared.entries.json` 并重建面板——不是加一行
+externalize 就行。
+
+其余一切都必须打进扩展自己的产物（`npm run build` 里能看到它被 inline）。CSS
+不能走 import：浏览器原生 ES 模块不支持 `import "x.css"`，样式要内联进 JS（各
+模块 `vite.config.ts` 里的 `inlineCss` 插件就是干这个）。
 
 ### 2. 两条数据通路，别混用
 
@@ -560,7 +598,7 @@ panel-ui/
 
 | 判据 | 回答的问题 | 数据来源 | 踩坑 |
 | --- | --- | --- | --- |
-| `moduleMounted(state, id)` | 这台部署**有**这个模块吗 | Core 的 `ModulesList` | 只反映挂载，不反映"界面是否编入产物" |
+| `moduleMounted(state, id)` | 这台部署**有**这个模块吗 | Core 的 `ModulesList` | 只反映挂载，不反映 bundle 是否部署到静态目录 |
 | `teamModuleEnabled(team, id)` | 这个**人格**允许用吗 | 人格配置白名单 | 空名单 = 不限制 |
 | `teamToolAvailable(team, tool)` | 这个具体**工具**可用吗 | 人格配置 | 空名单同样 = 不限制，**没有模块时也可能返回 true** |
 
@@ -570,10 +608,18 @@ panel-ui/
 
 ### 4. 排查清单
 
-- 界面上没有入口 → 构建日志的扩展数量？产物 `assets` 里有没有扩展 chunk？
+扩展界面在运行期加载，所以"界面没出来"的现场**都不在构建日志里**：
+
+- 界面上没有入口 → 面板设置页「面板 UI 扩展」小节：加载了几个、哪个失败、为什么
+  （含完整 URL）。清单为空 = 模块没登记（Core 日志有登记/登记失败的记录）；
+  清单有但失败 = bundle 没部署到 `<static_dir>/panel-extensions/<id>/`，或
+  `sdk_version` 不符。
 - 入口在但数据永远加载中 → `ModuleInvokeResult` 有没有回来？宿主版本是否认识该
   method？Core 日志里应有分发记录。
 - 入口在但点了没反应 → 判据是否只用了 `teamToolAvailable`？
+- 设置页显示加载成功、但界面上某处渲染时崩 → 十有八九用了 import map 没覆盖的
+  裸标识符或壳的私有组件（见 1b 那张表），浏览器控制台会有 "Failed to resolve
+  module specifier" 或组件未定义。
 
 ## 实践与验证
 

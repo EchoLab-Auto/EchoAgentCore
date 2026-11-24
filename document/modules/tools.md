@@ -236,9 +236,11 @@ data_dir = "/home/me/.local/share/echo-agent-core/checklists"
   `checklist` 工具。进程外形态下宿主**没有**任何清单专用接线（没有命令域
   接缝、没有状态绑定）；工具本身由模块的 `Contribution::Custom` 声明、宿主
   经 `RemoteTool` 适配进注册表。
-- **面板**：清单入口与面板由模块自己的 `panel-ui/` 扩展提供
-  （`PANEL_UI_EXTENSIONS` 装配），Panel 壳只给插槽（入口按钮 / 覆盖层 /
-  事件钩子 / 命令发送）。壳里**没有任何清单代码**：不认识的模块也能长出界面。
+- **面板**：清单入口与面板由模块自己的 `panel-ui/` 扩展提供（运行期加载：模块
+  `mount` 时经 `Contribution::Custom{custom_kind:"panel_ui"}` 登记 bundle 路径，
+  Panel 从 `<static_dir>/panel-extensions/<id>/` 惰性 import），Panel 壳只给插槽
+  （入口按钮 / 覆盖层 / 事件钩子 / 命令发送）。壳里**没有任何清单代码**：不认识
+  的模块也能长出界面。
 - **模型摘要**：模块通过 `ModuleTextBlock` 把当前会话的限额摘要注入系统
   提示词；摘要只在 `checklist` 工具对该人格**可用**时出现，工具关闭后不会
   要求模型调用不可用工具（面板仍可只读观察既有清单）。

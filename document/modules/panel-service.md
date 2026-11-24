@@ -124,14 +124,21 @@ pub trait PanelService: Send + Sync {
 |---|---|
 | `bundle` 必须是站点相对路径（无协议 / 无前导 `/` / 无 `..`） | 面板变成任意脚本加载器——一个被投毒的模块描述就能在用户浏览器里执行外部代码 |
 | `sdk_version` 非空，加载前逐字比对 | 运行期加载的 API 用错只在用户浏览器里崩；版本握手是唯一拦截点 |
-| 产物文件名不带 hash（由模块构建约定） | 面板按固定路径 `import()`，名字一变所有已构建的扩展失联 |
+| 产物文件名不带 hash（由模块构建约定，**不**由 Core 校验） | 面板按固定路径 `import()`，名字一变所有已构建的扩展失联 |
+
+校验码在 `core/src/panel_ui.rs::validate`：只查前两条 + `id` 非空、不含空白或 `/`。
+"文件名固定"是构建约定——Core 拿到 `panel-extensions/x/index-v2.js` 也会照收，
+因为"固定"这件事只有模块自己的 vite 配置说了算。
 
 ### 进程外模块怎么参与
 
-`kind = "stdio"` / `"dylib"` 的模块拿不到 `Ctx`，无法直接调注册表，所以经协议
-`Register` 的 `Contribution::Custom { custom_kind: "panel_ui", name: <id>,
+部署侧 `kind = "stdio"` / `"dylib"` 的模块拿不到 `Ctx`，无法直接调注册表，所以经
+协议 `Register` 的 `Contribution::Custom { custom_kind: "panel_ui", name: <id>,
 payload: { name, bundle, sdk_version } }` 上报。`panel_ui` 是本宿主的词汇，
 框架只搬运、不解释——所以框架仓不需要为它加变体。
+
+（注意两个 `kind` 不是同一个字段：模块 `module.toml` 里的 `kind = "tool"` 是模块
+类型，`modules.toml` 里的 `kind = "stdio"` 是装载方式。）
 
 ## 边界
 
