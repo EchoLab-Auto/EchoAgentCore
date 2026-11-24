@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-federation"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-loop"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-federation",
  "agent-module-management",
@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-management"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-federation",
  "anyhow",
@@ -135,7 +135,7 @@ dependencies = [
 [[package]]
 name = "agent-module-panel"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?rev=180d35999c120944ec95d2da66ba0c9c095f629c#180d35999c120944ec95d2da66ba0c9c095f629c"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?rev=86eb1a8f82f2db460d596051ab3929beff17610f#86eb1a8f82f2db460d596051ab3929beff17610f"
 dependencies = [
  "anyhow",
  "echo-context",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-provider-llm"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-management",
  "async-trait",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-sanitize"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "aho-corasick",
  "echo-context",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-self-update"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-management",
  "echo-context",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-session"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-management",
  "async-trait",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-shell"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-management",
  "agent-module-tools",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-skills"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-management",
  "async-trait",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-tools"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-management",
  "async-trait",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "agent-module-transcript"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-management",
  "chrono",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "echo-agent-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agent-module-federation",
  "agent-module-loop",
@@ -1110,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "echo-config"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "thiserror 2.0.21",
  "toml",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "echo-defs"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "echo-protocol"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "echo-context",
  "echo-defs",
@@ -1209,7 +1209,7 @@ dependencies = [
 
 [[package]]
 name = "echo-session"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "echo-defs",
@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "echo-test-utils"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "echo-defs",
@@ -1235,7 +1235,7 @@ dependencies = [
 [[package]]
 name = "echo-web-server"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?rev=180d35999c120944ec95d2da66ba0c9c095f629c#180d35999c120944ec95d2da66ba0c9c095f629c"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?rev=86eb1a8f82f2db460d596051ab3929beff17610f#86eb1a8f82f2db460d596051ab3929beff17610f"
 dependencies = [
  "anyhow",
  "axum",
@@ -3316,7 +3316,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

@@ -1635,6 +1635,29 @@ pub struct WorkspaceGitInfo {
     pub ahead: u32,
     #[serde(default)]
     pub behind: u32,
+    /// 上游引用全名（`origin/main` 这类）；`None` = 没配上游。
+    ///
+    /// ## 为什么 `ahead` / `behind` 需要它作注解
+    ///
+    /// 没配上游时那两个数**恒为 0**，与"和上游同步"的 0 长得一模一样。
+    /// 面板据此决定要不要画箭头：`upstream` 为 `None` 就一个箭头都不画，
+    /// 而不是给用户一个"永远同步"的假安心。
+    #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+    pub upstream: Option<String>,
+    /// `ahead` / `behind` 的**基准时刻**（unix 秒；取不到为 `None`）。
+    ///
+    /// ## 为什么必须回传它
+    ///
+    /// 这两个数字算的是 `HEAD` 与**本地记录的远端**之差，而那条记录只有
+    /// `git fetch` 才更新。不标明基准时间，一条陈旧的记录会长期伪装成
+    /// 「5 个提交没推上去」——2026-11 现场：`origin` 指向的镜像挂了几天，
+    /// `origin/main` 停在旧提交，卡片一直显示 ↑5，而远端其实早就收到了。
+    ///
+    /// 面板据此写「相对于 X 分钟前的远端」，超过阈值时提示点一下刷新。
+    #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+    pub fetched_at: Option<i64>,
     /// 已暂存（索引区）文件数。
     #[serde(default)]
     pub staged: u32,
