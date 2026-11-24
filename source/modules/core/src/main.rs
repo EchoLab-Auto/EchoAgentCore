@@ -1709,6 +1709,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 面板启动时经面板服务 `echo-agent.panel-ui.list` 拿到清单再 import()。
     // 与 `panel_services` 同样是"必须在任何 mount 之前 provide"。
     let panel_ui: std::sync::Arc<crate::panel_ui::PanelUiTable>;
+    // 面板 UI 注册面的句柄（外部模块登记用；与 provide 进 `Ctx` 的是同一张表）。
+    let panel_ui_registrar: std::sync::Arc<dyn echo_defs::panel_ui::PanelUiRegistrar>;
+    // 外部模块 UI 贡献的撤销句柄：必须活到进程结束（下划线前缀让它**不被
+    // 判定为未使用**——但变量本身仍然活着，这是 RAII 的用法）。
+    let _external_panel_ui_keep: Vec<echo_context::Disposer>;
     {
         use echo_module::MountContext;
 
@@ -1782,6 +1787,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 必须先存在（实例在块外创建，见 `panel_services` 的声明处）。
         panel_services = crate::panel_services::PanelServiceTable::new();
         panel_ui = crate::panel_ui::PanelUiTable::new();
+        panel_ui_registrar = panel_ui.registrar();
         _host_service_keep = crate::host_services::register(
             &ctx,
             crate::host_services::HostWiring {
@@ -2127,6 +2133,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             // trait 方法。两者并列挂在宿主上（不是把后者包装成前者），命令 /
             // 文本块 / 事件三个消费面因此都能同时问到两种承载。
             module_host.set_external_modules(runtime.started.handles.clone());
+
+            // 外部模块的面板 UI 贡献（2026-11）：进程外模块拿不到 `Ctx`，只能
+            // 经协议 `Register` 上报 `Contribution::Custom { kind: "panel_ui" }`。
+            // 各模块的 bundle 由部署脚本复制到面板静态目录，这里只登记清单。
+            //
+            // 撤销句柄必须活到进程结束（与 `_host_service_keep` 同理：drop 即
+            // 注销，面板上的入口会跟着消失）。
+            _external_panel_ui_keep = crate::panel_ui::register_external_contributions(
+                &panel_ui,
+                &panel_ui_registrar,
+                &runtime.started.handles,
+            );
 
             // 事件消费：框架侧的 `ModuleHandle::take_events` 队列此前**零消费
             // 方**（封顶 1024 就是为防无人读时堆积）。这里接上出口——转成

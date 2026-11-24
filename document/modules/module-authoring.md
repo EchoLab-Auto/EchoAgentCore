@@ -488,22 +488,52 @@ panel-ui/
 `docs/ui-extensions.md`——**本节只讲 Core 侧的三件套约束**，因为那些是 Panel 文档
 看不到、又最容易踩的。
 
-### 1. 装配在**构建期**，不在运行期
+### 1. 装配在**运行期**：模块自己构建，向 Core 登记
 
-Panel 不做运行期脚本下载：扩展在 `npm run build` 时被 vite 收进产物。传递路径：
+（2026-11 改。此前是构建期注入——`PANEL_UI_EXTENSIONS` 列模块源码目录，vite
+把它们编进面板产物。那个方案让"改一行 UI"变成"重建整个面板"，而且忘了配环境
+变量就静默变纯壳：模块在 Core 里挂着、界面上一个入口都没有，构建与启动都不
+报错。新方案把方向反过来。）
 
 ```text
-panel/scripts/install.sh --ui-extension <dir>   # 可重复，Panel 仓
-   └─ 写入 $XDG_STATE_HOME/echo-agent-panel/ui-extensions（冒号分隔）
-        └─ panel/scripts/update.sh 读回 → export PANEL_UI_EXTENSIONS
-             └─ web/extension-build.ts 生成虚拟模块 virtual:panel-extensions
-                  └─ 扩展被编进 web/dist/assets
+模块 panel-ui/                      Core（注册表）                Panel（运行期）
+  npm run build ──► dist/index.js
+  mount 时 register ──────────────► PanelUiContribution
+                                     { id, name, bundle, sdk_version }
+                                           │
+  部署脚本复制 dist → <static_dir>/panel-extensions/<id>/
+                                           │
+                         面板服务 echo-agent.panel-ui.list ──► 清单
+                                                                │
+                                              import() <base>/panel-extensions/<id>/index.js
 ```
 
-由此产生一个**静默失效模式**：模块在 Core 里挂载成功、`ModulesList` 里也有它，
-但本部署没配扩展 → 界面上没有任何入口，构建与启动都不报错。判断方法只有两条：
-构建日志的 `==> Panel UI extensions (N)` 这一行，以及产物里有没有扩展 chunk。
-装完模块后界面上看不到东西，先查这里，别怀疑模块本身。
+三件套约束（都在 Core 侧校验，写错当场报）：
+
+| 约束 | 为什么 |
+|---|---|
+| `bundle` 必须是**站点相对路径**（无协议、无前导 `/`、无 `..`） | 否则一个被投毒的模块描述就能让面板加载任意远程脚本 |
+| 产物文件名**固定**，不带 hash | 面板按固定路径 `import()`；名字一变所有已构建的扩展失联 |
+| `sdk_version` 必填，加载前逐字比对 | UI 在运行期加载，API 用错不会在构建期报错，只会在用户浏览器里崩 |
+
+**进程外模块**（`kind = "stdio"` / `"dylib"`，如 checklist）拿不到 `Ctx`，
+所以走协议 `Register` 的 `Contribution::Custom`：
+
+```json
+{ "custom_kind": "panel_ui",
+  "name": "echo-agent.checklist",
+  "payload": { "name": "任务清单",
+               "bundle": "panel-extensions/echo-agent.checklist/index.js",
+               "sdk_version": "1" } }
+```
+
+`custom_kind = "panel_ui"` 是本宿主的词汇（框架只搬运、不解释）——所以框架仓
+不需要为面板 UI 加变体。宿主在 `core/src/panel_ui.rs` 里解释它。
+
+**剩下的静默失效模式**（仍有，但判断入口清楚了）：模块挂载成功、清单里也有它，
+但 bundle 没部署到 `<static_dir>/panel-extensions/<id>/` → 面板 `import()` 404。
+判断方法：面板设置页「面板 UI 扩展」小节会列出加载失败的那条与 URL；不再需要
+去翻构建日志。
 
 ### 2. 两条数据通路，别混用
 

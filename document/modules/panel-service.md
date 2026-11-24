@@ -102,6 +102,37 @@ pub trait PanelService: Send + Sync {
 
 回执在 `store.ts::dispatch` 里最先被认领（`consumeServiceResult`）：命中即消费，返回值归调用方解释，壳不把它塞进任何 `state` 字段——那是模块的数据，壳不认识。
 
+## 姊妹接缝：面板 UI 贡献（`echo-agent.host.panel_ui_registrar`）
+
+服务通道解决"面板要读数据"，UI 贡献解决"面板要显示模块界面"。两者同源——
+都是"模块登记、Core 保管、面板消费"，但载荷不同：
+
+| | 面板服务 | 面板 UI 贡献 |
+|---|---|---|
+| 载荷 | 一个可调用的 trait 对象 | 一份描述（bundle 路径 + SDK 版本） |
+| 面板侧动作 | `InvokeService` 调方法，等回执 | `import()` 加载 ES bundle |
+| 契约 | `echo_defs::panel_service` | `echo_defs::panel_ui` |
+| 键 | `...panel_service_registrar` / `..._invoker` | `...panel_ui_registrar` |
+
+清单由组合根自己登记成面板服务 `echo-agent.panel-ui`（方法 `list`）：清单是
+注册表的**投影**，不该寄生在任何模块上——否则"列出 UI 模块"会依赖那个模块是否
+挂载，一个模块没装面板就看不到别人也有界面。
+
+### 三条硬约束（登记时校验，不是文档约定）
+
+| 约束 | 拦住的后果 |
+|---|---|
+| `bundle` 必须是站点相对路径（无协议 / 无前导 `/` / 无 `..`） | 面板变成任意脚本加载器——一个被投毒的模块描述就能在用户浏览器里执行外部代码 |
+| `sdk_version` 非空，加载前逐字比对 | 运行期加载的 API 用错只在用户浏览器里崩；版本握手是唯一拦截点 |
+| 产物文件名不带 hash（由模块构建约定） | 面板按固定路径 `import()`，名字一变所有已构建的扩展失联 |
+
+### 进程外模块怎么参与
+
+`kind = "stdio"` / `"dylib"` 的模块拿不到 `Ctx`，无法直接调注册表，所以经协议
+`Register` 的 `Contribution::Custom { custom_kind: "panel_ui", name: <id>,
+payload: { name, bundle, sdk_version } }` 上报。`panel_ui` 是本宿主的词汇，
+框架只搬运、不解释——所以框架仓不需要为它加变体。
+
 ## 边界
 
 - 它**不是**模块间通信通道：模块之间要互相调用走 `ServiceKey` + `Ctx::provide`（进程内），本通道的消费者只有命令泵。

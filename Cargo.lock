@@ -150,7 +150,7 @@ dependencies = [
 [[package]]
 name = "agent-module-prodoc"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#ba600137069e7e298289590e626f3cafeef76cf2"
+source = "git+https://github.com/EchoLab-Auto/agent-module-prodoc?branch=main#5c94b9a89930d231fd39775fbd0b7a5ff77b278f"
 dependencies = [
  "echo-defs",
  "echo-module",
@@ -269,7 +269,7 @@ dependencies = [
 [[package]]
 name = "agent-module-subagent"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#ca6c89dc07e54e31a795177ca56bbab4134c4525"
+source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#dd5cb9acece20365fff74e9f3247f5fe6eb25525"
 dependencies = [
  "agent-module-federation",
  "agent-module-tools",
@@ -329,9 +329,10 @@ dependencies = [
 [[package]]
 name = "agent-module-workspace"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?rev=1549b4ab97a05febc60e7f988a414a867099d4a5#1549b4ab97a05febc60e7f988a414a867099d4a5"
+source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?rev=b59972a3285057a85cff4cbef3bb5a2e15bf08f6#b59972a3285057a85cff4cbef3bb5a2e15bf08f6"
 dependencies = [
  "echo-context",
+ "echo-defs",
  "echo-module",
  "serde",
  "serde_json",
@@ -3315,7 +3316,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

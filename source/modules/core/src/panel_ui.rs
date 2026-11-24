@@ -192,6 +192,96 @@ impl PanelUiRegistrar for TableHandle {
     }
 }
 
+/// **外部模块**（进程外）的 UI 贡献：从 `Contribution::Custom` 里收集并登记。
+///
+/// ## 为什么走 `Custom` 而不是给注册表加一个模块可直接调用的 trait
+///
+/// 进程外模块拿不到 `Ctx`，只能经协议 `Register` 上报贡献。框架的
+/// `Contribution::Custom { custom_kind, payload }` 就是"宿主自定义贡献"的唯一
+/// 入口（框架只搬运、不解释），宿主在这里解释 `custom_kind = "panel_ui"`。
+///
+/// 用 `Custom` 而不是给框架加变体的理由与框架设计一致：面板 UI 是**本宿主**
+/// 的领域概念，框架不该认识它。加一个变体意味着所有框架使用者都要跟着改。
+///
+/// ## 线上形状
+///
+/// ```json
+/// { "custom_kind": "panel_ui",
+///   "payload": { "name": "工作区会话",
+///                "bundle": "panel-extensions/echo-agent.workspace/index.js",
+///                "sdk_version": "1" } }
+/// ```
+///
+/// `id` 取自贡献的 `name` 字段（`Contribution::Custom.name` 参与 `Invoke`
+/// 寻址，正好承载扩展 id——两者本来就是同一个字符串）。
+///
+/// 返回撤销句柄；模块卸载时由调用方（组合根）drop。
+pub(crate) fn register_external_contributions(
+    table: &Arc<PanelUiTable>,
+    registrar: &Arc<dyn PanelUiRegistrar>,
+    handles: &[echo_module_host::ModuleHandle],
+) -> Vec<Disposer> {
+    let mut keeps = Vec::new();
+    for handle in handles {
+        for contribution in handle.contributions() {
+            let echo_module_host::api::Contribution::Custom {
+                kind,
+                name,
+                payload,
+            } = contribution
+            else {
+                continue;
+            };
+            if kind != PANEL_UI_CONTRIBUTION_KIND {
+                continue;
+            }
+            let parsed = PanelUiContribution {
+                id: name.clone(),
+                name: payload
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(name.as_str())
+                    .to_string(),
+                bundle: payload
+                    .get("bundle")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                sdk_version: payload
+                    .get("sdk_version")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            };
+            match registrar.register(parsed.clone()) {
+                Ok(disposer) => {
+                    tracing::debug!(
+                        extension = %parsed.id,
+                        bundle = %parsed.bundle,
+                        "外部模块的面板 UI 贡献已登记"
+                    );
+                    keeps.push(disposer);
+                }
+                Err(error) => {
+                    // 外部模块的声明由它自己写，宿主只校验：坏声明不进表，
+                    // 面板上少一块入口，但不影响模块本身工作。
+                    tracing::warn!(
+                        module = handle.module_id(),
+                        extension = %parsed.id,
+                        %error,
+                        "外部模块的面板 UI 贡献登记失败"
+                    );
+                }
+            }
+        }
+    }
+    let _ = table;
+    keeps
+}
+
+/// `Contribution::Custom` 里本宿主认的分类名。
+pub(crate) const PANEL_UI_CONTRIBUTION_KIND: &str = "panel_ui";
+
 /// 面板服务 `echo-agent.panel-ui`：把当前贡献清单交给面板。
 ///
 /// ## 为什么由 Core 提供而不是某个模块
