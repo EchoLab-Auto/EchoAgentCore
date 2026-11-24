@@ -78,8 +78,12 @@ tags_of() {
     for f in "$dir"/source/*/Cargo.toml "$dir"/crates/*/Cargo.toml; do
         if [[ -f "$f" ]]; then files+=("$f"); fi
     done
-    grep -ho 'echo-fabric-arch", *tag *= *"[^"]*"' "${files[@]}" 2>/dev/null \
-        | sed 's/.*tag *= *"//; s/"$//' | sort -u | tr '\n' ' '
+    # 必须排掉注释行：Cargo.toml 里常留着"本机验证用"的旧 tag 备用行（取消
+    # 注释即切换），`grep -o` 会把它们当成真实声明，于是同一仓报出两个 tag。
+    # 实测 agent-module-workspace 就是这样被误判成 tag 漂移的。
+    grep -h 'echo-fabric-arch", *tag *= *"[^"]*"' "${files[@]}" 2>/dev/null \
+        | grep -v '^[[:space:]]*#' \
+        | sed -n 's/.*tag *= *"\([^"]*\)".*/\1/p' | sort -u | tr '\n' ' '
 }
 
 # Cargo.lock 里真正锁定的 rev（比 tag 更真实：tag 可以被移动）。
