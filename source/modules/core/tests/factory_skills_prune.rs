@@ -44,6 +44,10 @@ fn read_script(name: &str) -> String {
 /// 定位靠两端的锚行（`for _skill_dst in` … `unset _skill_dst`）：这段代码在
 /// install.sh 与 update.sh 里是**逐字相同**的（两条安装路径必须同语义），
 /// 抽出来执行等于测的就是线上那一份。
+///
+/// 唯一允许的差异是源层的**变量名**：update.sh 只有受管检出一种源（`$SOURCE_DIR`），
+/// 而 install.sh 两种模式各有源层（`--mode source` 是受管检出、`--mode binary`
+/// 是产物解包目录），因此统一走 `$SKILLS_SOURCE`。判据本身必须逐字相同。
 fn prune_snippet(script: &str) -> String {
     let lines: Vec<&str> = script.lines().collect();
     let start = lines
@@ -103,6 +107,9 @@ fn run_prune(snippet: &str, tag: &str) -> (Vec<String>, String) {
         .arg("-c")
         .arg(format!("set -euo pipefail\n{snippet}"))
         .env("SOURCE_DIR", root.join("source"))
+        // install.sh 用 SKILLS_SOURCE 抽象"出厂技能源层"（两种安装模式各有来源），
+        // update.sh 直接用 SOURCE_DIR/skills——两个都喂同一个目录。
+        .env("SKILLS_SOURCE", root.join("source").join("skills"))
         .env("BUILTIN_SKILLS_DIR", &builtin)
         .output()
         .expect("run prune snippet");
@@ -170,6 +177,13 @@ fn both_scripts_share_the_same_prune_rule() {
         prune_snippet(script)
             .lines()
             .map(|line| line.trim_start().to_string())
+            // 源层的变量名允许不同：install.sh 两种模式各有源层，走
+            // `$SKILLS_SOURCE`；update.sh 只有受管检出，直接用
+            // `$SOURCE_DIR/skills`。判据（"源里有同名 SKILL.md 就保留"）必须一致。
+            .map(|line| {
+                line.replace("$SKILLS_SOURCE", "$SOURCE_DIR/skills")
+                    .replace("${SKILLS_SOURCE}", "$SOURCE_DIR/skills")
+            })
             .collect()
     };
     assert_eq!(

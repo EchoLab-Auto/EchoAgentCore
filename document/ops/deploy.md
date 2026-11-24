@@ -8,10 +8,15 @@ y: 3600
 
 # 部署与自更新
 
-> **定位**：本文是部署与运维手册——安装（install.sh 源码路径、install-binary.sh 预构建路径、curl | bash 一键）、容器化部署（npm + Docker）、systemd 服务布局、受控自更新与回滚、日常体检。读者：部署与运维 EchoAgent 的操作者。
+> **定位**：本文是部署与运维手册——安装（`scripts/install.sh` 的 `--mode binary`／`--mode source` 两种模式、curl | bash 一键）、容器化部署（npm + Docker）、systemd 服务布局、受控自更新与回滚、日常体检。读者：部署与运维 EchoAgent 的操作者。
 > 相关文档：[协议与数据流](../protocol/protocol.md)、[框架（内核机制）](../core/frame.md)（进程结构）、[开发指南](../dev/guide.md)。
 
-EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。源码托管于受管 git 仓库，更新走 oneshot 更新单元（构建 → 原子替换 → 重启）——这是**源码安装**的形态；**二进制安装**没有源码检出，更新方式改为重跑安装器，自更新模块在配置里显式关闭（见「二进制安装」一节）。
+EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。安装器是同一个 `scripts/install.sh`，由 `--mode` 选择形态（**默认 `binary`**）：
+
+- `--mode source`：源码托管于受管 git 仓库，更新走 oneshot 更新单元（构建 → 原子替换 → 重启）；
+- `--mode binary`：下载预构建产物落盘，没有源码检出，更新方式是重跑安装器，自更新模块在 `modules.toml` 里显式关闭（见「二进制安装」一节）。
+
+合并成一个入口（2026-11）的原因是两条路共享同一套布局与同一份 unit/core.toml 模板——共享的东西写两遍必然漂移。
 
 ## 服务与文件布局
 
@@ -27,7 +32,7 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 
 ## 安装（install.sh）
 
-两仓库各自提供 `scripts/install.sh`（Linux + systemd user，无需 root、不动系统目录；`--dry-run` 可预演全部路径）：
+`scripts/install.sh` 是唯一安装入口（Linux + systemd user，无需 root、不动系统目录；`--dry-run` 可预演全部路径）。`--mode binary|source` 选形态，`--binary` / `--source` 是别名，**缺省 `binary`**；模式专属参数用错只告警不拒绝（外部编排脚本常把一整组开关一起传进来，硬拒绝会让无害组合直接失败）：
 
 - 尊重 `ECHO_PREFIX` / `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_STATE_HOME`
 - 已存在的配置文件保留；重复执行 = 刷新二进制、updater 与服务单元；`--overwrite-config` 以最新模板重写 core.toml（旧文件备份为 `core.toml.bak-<epoch>`；`management_access_token` 沿用旧值，Panel/对端无需换令牌）
@@ -35,7 +40,7 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 - 服务默认挂在 `default.target`；开机免登录自启需 `sudo loginctl enable-linger "$USER"`
 - **CLI 入口（launcher）**：`~/.local/bin/echo-agent-core`（包装脚本自动注入 `--config`，即上方「管理子命令」的入口）——该目录必须在 PATH 中。安装脚本结束时会检测、缺失即打印修复命令；首装后**同一会话**里若提示 `command not found`：`export PATH="$HOME/.local/bin:$PATH"` 或重开终端/重新登录即可（登录 shell 经 `~/.profile` 自动加入；注意 `~/.profile` 的 PATH 片段只在登录时加载，且要求目录当时已存在）。若重新登录后仍找不到，把该 export 一行加进 `~/.profile`；也始终可用绝对路径 `~/.local/bin/echo-agent-core`
 - 卸载：`./scripts/uninstall.sh`（保留配置与用户数据——媒体库 `media/`、用户技能层 `skills/`）/ `--purge`（连配置目录与数据一起删）
-- 重装：`./scripts/reinstall.sh`——uninstall（保留配置与用户数据）→ install 一步接力，二进制/服务单元全部换新而 core.toml、会话历史、媒体库与用户技能不动；`--overwrite-config` 可同步重置配置（见上），`--dry-run` 分别预演两步而不改动系统；同样兼容 curl | bash 运行
+- 重装 = 先卸再装：`./scripts/uninstall.sh && ./scripts/install.sh [--mode source]`。`uninstall` 默认保留 `core.toml`、会话历史、媒体库与用户技能层，所以装回来配置还在；二进制与服务单元全部换新。没有单独的 `reinstall.sh`——它原来的三步（卸载→重装→刷新）就是这两条命令，写出来比藏一层转发更清楚（此前它还会在源码安装里先删掉自己的检出目录，见下）
 
 ### curl | bash 一键安装/卸载（免 clone）
 
@@ -51,11 +56,11 @@ curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scr
 
 机制与要点：
 
-- **bootstrap 接力**：非 git 检出环境（curl 管道）运行时，脚本先把仓库浅克隆到临时目录、exec 其中的 install/uninstall 脚本接力——后续流程与本地运行完全一致（前置依赖自动安装 → 受管检出 → 构建 → systemd 服务）
-- **前置依赖自动装**：git/cc/pkg-config 等系统命令经发行版包管理器（apt/dnf/pacman/zypper）自动补齐；cargo 缺失时走官方 rustup 用户级安装（无需 root）；`--no-deps` 只检查不安装
+- **bootstrap 接力（仅源码模式）**：源码模式需要仓库里的资产（受管检出源头、`update.sh`、config 与 unit 模板），因此非 git 检出环境（curl 管道）运行时脚本先把仓库浅克隆到临时目录、exec 其中的 install/uninstall 脚本接力。**二进制模式不 clone、也不要求 git**——它的全部输入都在 release 产物里
+- **前置依赖自动装（仅源码模式）**：git/cc/pkg-config 等系统命令经发行版包管理器（apt/dnf/pacman/zypper）自动补齐；cargo 缺失时走官方 rustup 用户级安装（无需 root）；`--no-deps` 只检查不安装。二进制模式只检查 `tar`/`install`/`sha256sum`/`curl`，缺了就报错让人装（不自动装包）
 - **首装自动生成 `management_access_token`**（32 字节随机 hex）——暴露 management WS 到局域网开箱即有认证；token 在 `core.toml` 可查，重装/卸载（不带 `--purge`）不丢
 - **私有仓库**：`ECHO_REPOSITORY_URL` 指定 SSH 或镜像地址（`ECHO_REPOSITORY_URL=git@github.com:... curl ... | bash`）；公开仓库匿名可直接跑
-- 全程约 10-20 分钟（rustup + release 构建）；构建期不影响现有服务
+- 耗时：二进制模式约 1 分钟（只下载 15MB 产物 + 落盘）；源码模式约 10-20 分钟（rustup + release 构建），构建期不影响现有服务
 
 ### 国内网络（镜像加速）
 
@@ -85,22 +90,23 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 
 长驻 `echo-agent-core.service` 与 oneshot 更新单元均设 `NoNewPrivileges=true`——agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），两个单元都限制被攻破进程/构建脚本的提权面。
 
-## 二进制安装（install-binary.sh）
+## 二进制安装（`--mode binary`，默认）
 
 **不装编译链**的投放路径：下载预构建产物解包落盘，不需要 rust / cargo / git / cc。
+既然是默认值，`install.sh` 不带参数就是这条路径；`--binary` 与 `--mode binary` 等价，纯为可读性写的。
 适用场景是新机器（干净的服务器、临时验证环境）与"不想为了跑服务装一整套 Rust 工具链"的部署。
 
 ```bash
 # 一键（自动取 latest release，按 uname -m 选 x86_64 / aarch64）
-curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install-binary.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install.sh | bash
 
 # 指定版本
-curl -fsSL .../install-binary.sh | bash -s -- --version v0.2.0
+curl -fsSL .../install.sh | bash -s -- --version v0.2.0
 
 # 本地 tarball / 直链
-./scripts/install-binary.sh --artifact ./echo-agent-core-0.2.0-linux-x86_64.tar.gz
-./scripts/install-binary.sh --artifact https://example.com/artifact.tar.gz
-./scripts/install-binary.sh --dry-run          # 只打印计划，不联网不落盘
+./scripts/install.sh --artifact ./echo-agent-core-0.2.0-linux-x86_64.tar.gz
+./scripts/install.sh --artifact https://example.com/artifact.tar.gz
+./scripts/install.sh --dry-run          # 只打印计划，不联网不落盘
 ```
 
 预构建产物由 `.github/workflows/release.yml` 在 tag `v*` 上生成，每个架构一个
@@ -117,8 +123,9 @@ tarball（`echo-agent-core-<ver>-linux-<arch>.tar.gz`）加 `.sha256` 侧车。�
 
 ### 与源码安装的关系
 
-两者**布局完全一致**（同一套路径推导、同一个 launcher、同一份 unit 模板、同一份
-core.toml 模板），受 `source/modules/core/tests/install_binary_script.rs` 守护：
+两者**布局完全一致**（同一套路径推导 `derive_paths`、同一个 launcher、同一份 unit
+模板、同一份 core.toml 模板），受 `source/modules/core/tests/install_binary_mode.rs`
+守护（该测试数 `derive_paths` 的定义次数：出现第二份 = 两种模式开始漂移）：
 
 - `scripts/uninstall.sh` 对两种安装通用；
 - 装过一种再装另一种 = **原地换装**，不会并存两套；
@@ -129,7 +136,7 @@ core.toml 模板），受 `source/modules/core/tests/install_binary_script.rs` �
 | 项 | 源码安装 | 二进制安装 |
 | --- | --- | --- |
 | 工作目录（unit `WorkingDirectory`） | `~/.local/share/echo-agent-core/source` | `~/.local/share/echo-agent-core` |
-| 更新方式 | `echo-agent-core-update.service` 跑 `cargo build` | 重跑 `install-binary.sh`（幂等） |
+| 更新方式 | `echo-agent-core-update.service` 跑 `cargo build` | 重跑 `install.sh --mode binary`（幂等） |
 | 自更新模块 | 启用 | 在 `modules.toml` 里 `enabled = false` |
 
 ### 内嵌 Panel（零配置）
@@ -196,10 +203,15 @@ bind = "127.0.0.1:18081"     # 可选；默认 127.0.0.1:8080
 ### 国内网络
 
 ```bash
-# 只加速产物下载（脚本本身仍从 raw.githubusercontent.com 取，可按需套代理）
-curl -fsSL .../install-binary.sh | bash -s -- --mirror https://ghfast.top/https://github.com
+# `--cn-mirror` 在二进制模式下顺带把产物下载指向同一个 GitHub 代理
+# （两种模式只记一个开关，不必分别记 --mirror）
+curl -fsSL .../install.sh | bash -s -- --cn-mirror
+
+# 只加速产物下载：--mirror 支持两种写法
+curl -fsSL .../install.sh | bash -s -- --mirror https://ghfast.top/https://github.com
+curl -fsSL .../install.sh | bash -s -- --mirror https://proxy.example
 # 或环境变量
-ECHO_DOWNLOAD_MIRROR=https://ghfast.top/https://github.com ./scripts/install-binary.sh
+ECHO_DOWNLOAD_MIRROR=https://ghfast.top/https://github.com ./scripts/install.sh
 ```
 
 ## 容器化部署
@@ -304,8 +316,8 @@ docker build \
 - 只同步**含 `SKILL.md`** 的目录——`.sources.json` 之类来源记录不进只读层
 - 目标先清后写：有 `rsync` 时 `rsync -a --delete --exclude='/.git/'`，否则 `rm -rf` + `cp -a`，最后再 `rm -rf <目标>/.git`
 - **绝不带 `.git`**：Git 安装的技能带 `0400` 只读的 `.git/objects/pack/*`，原先整体 `cp -a` 在同路径覆盖时打不开写 → `Permission denied` → 更新在 `installing` 阶段整体失败（二进制已构建却没装上，服务仍跑旧版），且首次能过、此后每次必败。运行期只用 `SKILL.md`，git 历史归用户层管理
-- 目标目录不存在（旧部署未迁移过）时整段跳过，由下次 install/reinstall 补齐
-- **仅 `update.sh` 走这套规则**：`install.sh` 仍是整体 `cp -a "$SOURCE_DIR/skills/."`，不逐技能、不排除 `.git`（清空与补齐语义不同——它负责首次铺设出厂层，重复执行前需先 `uninstall`；`reinstall` 会先跑 `uninstall` 清掉该层，故正常重装路径不受影响）
+- 目标目录不存在（旧部署未迁移过）时整段跳过，由下次 install 补齐
+- **仅 `update.sh` 走这套规则**：`install.sh` 仍是整体 `cp -a "$SOURCE_DIR/skills/."`，不逐技能、不排除 `.git`（清空与补齐语义不同——它负责首次铺设出厂层，重复执行前需先 `uninstall`；重装走的就是 `uninstall` + `install`，那一层会被清掉，故正常重装路径不受影响）
 
 ### 进程外模块二进制同步
 
@@ -412,4 +424,4 @@ journalctl --user -u echo-agent-core-update.service
 
 ### 回滚
 
-更新失败时 update.sh **自动回滚**（无需人工介入）：本次事务的 `.rollback` 在成功收尾后删除、失败即被回滚消费，不参与长期留存。**被中断**的更新（进程被杀、机器断电）会留下 `<binary>.rollback*` / `.bak-*` / `.old` 一类残片，由下次运行的 `prune_backups` 按保留数回收（见「备份留存」）。需要人工回到更早版本时，从 git 仓库构建旧提交后 `reinstall` 重装。
+更新失败时 update.sh **自动回滚**（无需人工介入）：本次事务的 `.rollback` 在成功收尾后删除、失败即被回滚消费，不参与长期留存。**被中断**的更新（进程被杀、机器断电）会留下 `<binary>.rollback*` / `.bak-*` / `.old` 一类残片，由下次运行的 `prune_backups` 按保留数回收（见「备份留存」）。需要人工回到更早版本时，从 git 仓库检出旧提交后先 `uninstall` 再 install 重装。

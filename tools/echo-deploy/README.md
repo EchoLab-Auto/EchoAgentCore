@@ -368,7 +368,7 @@ system 作用域下所有 state/ledger 目录同样要求私有且属 root；`in
 - 回滚是**组合回滚**（回到旧 release + 旧单元），不是数据回滚：配置/数据库/会话/媒体
   不做逆向迁移；`reversible_data` 是操作者声明。
 - 本工具不写 `update-status`，只注入路径；内容契约属于 Core 自更新模块。
-- 旧的仓库根 `scripts/install.sh`/`update.sh`/`uninstall.sh`/`reinstall.sh` **尚未被替换**，
+- 旧的仓库根 `scripts/install.sh`/`update.sh`/`uninstall.sh` **尚未被替换**，
   旧安装也没有自动接管路径（见 DESIGN）。`tools/echo-deploy/scripts/` 里的入口只转交固定子命令，
   不联网、不提权、不直接调 systemctl/docker。
 

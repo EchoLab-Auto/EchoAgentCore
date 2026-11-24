@@ -1,11 +1,16 @@
-//! Guard: `--overwrite-config`（install/reinstall 的配置重置开关）与脚本
-//! 语法完整性。
+//! Guard: `--overwrite-config`（安装器的配置重置开关）与脚本语法完整性。
 //!
 //! 背景（2026-10）：重装默认保留 core.toml；需要以最新模板重置配置时用
-//! `reinstall.sh --overwrite-config`（旧文件备份为 core.toml.bak-<epoch>；
+//! `install.sh --overwrite-config`（旧文件备份为 core.toml.bak-<epoch>；
 //! `management_access_token` 沿用旧值，Panel/对端无需换令牌）。脚本在 CI
 //! 中没有执行覆盖——这里用 `bash -n` 做语法门禁、并对 flag 接线做存在性
 //! 守护（重命名/删码后文档与帮助不脱节）。
+//!
+//! 2026-11 删除了 `scripts/reinstall.sh`：它的三步（卸载→重装→刷新）就是
+//! `uninstall.sh` + `install.sh` 两条命令，而它在源码安装下会先删掉自己的
+//! 检出目录（`$DATA_DIR/source`）再 exec 那个已不存在的 `install.sh`，必然
+//! 半路失败；默认模式改成 binary 之后它还会把源码部署静默降级。这条路径
+//! 改成在文档里写出两条命令，不再藏一层转发。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -26,10 +31,10 @@ fn read_script(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-/// install.sh / reinstall.sh / uninstall.sh / update.sh 必须通过 `bash -n`。
+/// install.sh / uninstall.sh / update.sh 必须通过 `bash -n`。
 #[test]
 fn install_scripts_are_bash_syntax_clean() {
-    for name in ["install.sh", "reinstall.sh", "uninstall.sh", "update.sh"] {
+    for name in ["install.sh", "uninstall.sh", "update.sh"] {
         let path = repo_root().join("scripts").join(name);
         let status = Command::new("bash")
             .arg("-n")
@@ -40,8 +45,11 @@ fn install_scripts_are_bash_syntax_clean() {
     }
 }
 
-/// `--overwrite-config` 接线：install.sh 解析并实现（备份 + 令牌沿用）；
-/// reinstall.sh 帮助说明并通过 `"$@"` 原样转发。
+/// `--overwrite-config` 接线：install.sh 解析并实现（备份 + 令牌沿用）。
+///
+/// 顺带钉住"没有第二层转发"：安装器只有一个入口，`scripts/` 下不该再出现
+/// `reinstall.sh` 这种把卸载与安装缝在一起、又要把参数原样转发下去的包装——
+/// 它没法知道自己该转发给哪种模式（源码装法下它还会删掉自己的检出目录）。
 #[test]
 fn overwrite_config_flag_is_wired() {
     let install = read_script("install.sh");
@@ -65,15 +73,19 @@ fn overwrite_config_flag_is_wired() {
         install.contains("Kept existing management_access_token"),
         "重写应沿用既有 management_access_token"
     );
-
-    let reinstall = read_script("reinstall.sh");
+    // `-h` 必须由安装器自己在**任何**系统改动之前拦截（此前 help 会先跑一遍
+    // 卸载，见本文件模块注释里那段历史）。判据是"解析循环里有独立分支"。
     assert!(
-        reinstall.contains("--overwrite-config"),
-        "reinstall.sh 帮助应说明该 flag（原样转发给 install.sh）"
+        install.contains("        -h|--help)\n            usage\n            exit 0"),
+        "install.sh 应在参数解析阶段就处理 -h/--help（不进入安装流程）"
     );
+
+    // 没有 reinstall.sh 这一层转发：卸载与安装是两条各自可预演的命令。
     assert!(
-        reinstall.contains("-h|--help"),
-        "reinstall.sh 应在执行卸载前拦截帮助（帮助/预演不产生系统改动）"
+        !repo_root().join("scripts/reinstall.sh").exists(),
+        "不应再有 scripts/reinstall.sh：重装 = uninstall.sh + install.sh，\
+         多一层包装只会让\"往哪种模式转发\"无人可判（源码装法下它还会先删掉\
+         自己的检出目录）"
     );
 }
 
@@ -169,7 +181,7 @@ fn module_binary_lists_match_the_workspace() {
 ///
 /// 清单功能不受影响：它作为 Core 的 git 依赖编进二进制，走内置形态
 /// （Core 不再认识这个模块：没有依赖、没有内置目录项，只有 modules.toml）。
-/// 想要独立产物请用二进制安装（`install-binary.sh` 会写启用行）。
+/// 想要独立产物请用二进制安装（`install.sh --mode binary` 的产物带它）。
 ///
 /// 这条测试是**反向**的：断言两个脚本都不再有这张表、也不再把外部模块放进
 /// `cargo build -p`。将来若有人（包括我）顺手把表加回来，这里会立刻红。
@@ -180,7 +192,7 @@ fn source_install_ships_only_the_core_binary() {
         assert!(
             !script.contains("EXTERNAL_MODULE_BINARIES"),
             "{name} 不应再有 EXTERNAL_MODULE_BINARIES：源码安装只带 Core 本体。\
-             外部模块二进制只随二进制安装（release.yml + install-binary.sh）落地。\
+             外部模块二进制只随二进制安装（release.yml + install.sh --mode binary）落地。\
              清单在源码安装下走内置形态，功能不受影响。"
         );
         assert!(
@@ -193,7 +205,7 @@ fn source_install_ships_only_the_core_binary() {
 }
 
 /// 外部仓模块二进制只属于**二进制安装**链路：release.yml 打包 +
-/// `install-binary.sh` 解包。
+/// `install.sh --mode binary` 解包。
 ///
 /// 与上一条的分工：源码安装刻意不带它，所以"谁真的会用它"必须在这里钉死。
 ///
@@ -202,13 +214,13 @@ fn source_install_ships_only_the_core_binary() {
 /// 1. 它不再在 Core 的依赖图里 —— 所以 release.yml 不能再用 `-p`，必须
 ///    单独克隆 + 构建。断言盯的是"独立构建"，不是某个 `-p` 字面量：
 ///    把依赖加回来反而会让这条设计失效。
-/// 2. `install-binary.sh` 不再自动写启用行 —— 产物里带着二进制，但能力
+/// 2. 安装器不再自动写启用行 —— 产物里带着二进制，但能力
 ///    默认关。断言反向盯这一点：出现 `enabled = true` 的启用行就红。
 #[test]
 fn binary_install_chain_ships_external_modules_without_enabling_them() {
     let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release.yml");
-    let binary = read_script("install-binary.sh");
+    let binary = read_script("install.sh");
 
     // 1) release.yml：独立拉取 + 独立 workspace 构建。
     assert!(
@@ -237,16 +249,16 @@ fn binary_install_chain_ships_external_modules_without_enabling_them() {
         "release.yml **不能**再 `-p` 它：那意味着它又回到了 Core 的依赖图里"
     );
 
-    // 2) install-binary.sh：装二进制，但**不**自动启用。
+    // 2) install.sh：装二进制，但**不**自动启用。
     assert!(
         binary.contains("agent-module-checklist"),
-        "install-binary.sh 仍应知道产物里的模块目录名（解包时校验）"
+        "安装器仍应知道产物里的模块目录名（解包时校验）"
     );
     // 清单那一行必须是**注释掉的**（其他模块的启用行不受这条约束：
     // 内嵌 Panel 仍默认启用）。
     assert!(
         !binary.contains(r#"'id = "echo-agent.checklist"'"#),
-        "install-binary.sh 不应再写未注释的清单启用行：默认不启用是这次的决定"
+        "安装器不应再写未注释的清单启用行：默认不启用是这次的决定"
     );
     assert!(
         binary.contains(r#"'# id = "echo-agent.checklist"'"#),
@@ -271,12 +283,19 @@ fn module_directory_install_and_rollback_are_wired() {
         install.contains(r#"MODULES_DIR="$LIBEXEC_DIR/modules""#),
         "install.sh 应以 libexec/modules 作为模块根"
     );
+    // 落盘只有一个函数（`install_one_module`）：两种安装模式共用同一套
+    // `modules/<包名>/<包名>` 约定，否则用户手工往 modules/ 放二进制时
+    // 还得先判断这台机器是用哪种模式装的。
     assert!(
         install.contains(r#"install -d -m 755 "$module_dir""#),
         "install.sh 应按包名建子目录"
     );
     assert!(
-        install.contains(r#"mv -f "$module_temporary" "$module_dir/$_module""#),
+        install.contains(r#"module_dir="$MODULES_DIR/$module_name""#),
+        "install.sh 的落盘函数应按包名拼出 modules/<包名>/<包名>"
+    );
+    assert!(
+        install.contains(r#"mv -f "$module_temporary" "$module_dir/$module_name""#),
         "install.sh 应原子替换模块二进制"
     );
     // 路径是 `$MODULES_DIR/$_module/$_module`（`modules/<包名>/<包名>`）。

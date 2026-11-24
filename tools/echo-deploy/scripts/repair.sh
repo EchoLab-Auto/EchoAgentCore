@@ -25,7 +25,7 @@ clone, build or install anything, and it does not elevate privileges. Recovery
 uses the same trusted execution config; it cannot switch adapters or configs
 mid-transaction.
 
-Legacy reinstall flags such as --overwrite-config, --no-start, --no-deps and
+Legacy installer flags such as --overwrite-config, --no-start, --no-deps and
 --dry-run are rejected rather than forwarded.
 
 Environment:

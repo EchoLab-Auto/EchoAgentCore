@@ -21,8 +21,9 @@ y: 216
   自己的版本为准
 - **写入只走用户层**：`SaveSkill` / `DeleteSkill` / Git 安装技能
   （`.sources.json`）都落在 `skills_dir`——出厂层永不被运行期写
-- **安装/自更新**：install.sh 把出厂技能从受管检出拷到
-  `$DATA_DIR/skills-builtin/`（配置写入两层）；update.sh 只刷新出厂层，
+- **安装/自更新**：install.sh 把出厂技能拷到
+  `$DATA_DIR/skills-builtin/`（配置写入两层；`--mode source` 从受管检出拷，
+  `--mode binary` 从 release 产物的 `skills/` 拷）；update.sh 只刷新出厂层，
   用户层（`$DATA_DIR/skills/`）不受自更新影响——用户自定义技能不会被
   update 冲掉，出厂技能也无需寄居受管 git 检出。出厂层同步按技能目录逐个
   进行、只取带 `SKILL.md` 的目录且剔除 `.git`（`scripts/update.sh`）——

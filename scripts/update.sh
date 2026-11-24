@@ -522,8 +522,7 @@ cargo "${module_build_args[@]}" --manifest-path "$SOURCE_DIR/Cargo.toml"
 PHASE=installing
 # 出厂技能同步（2026-10 技能分层）：自更新只滚出厂层——把新检出里的
 # skills/ 刷新到只读层 skills-builtin/；用户技能层（skills/ 数据目录）
-# 绝不触碰。目录不存在（旧部署未迁移过）时静默跳过，由下次 install/
-# reinstall 补齐。
+# 绝不触碰。目录不存在（旧部署未迁移过）时静默跳过，由下次 install 补齐。
 BUILTIN_SKILLS_DIR="$DATA_HOME/echo-agent-core/skills-builtin"
 if [[ "$UPDATE_SCOPE" != modules && -d "$BUILTIN_SKILLS_DIR" && -d "$SOURCE_DIR/skills" ]]; then
     # 逐技能目录同步，且**绝不带 .git**（2026-10-18 实况：一次 git 安装的

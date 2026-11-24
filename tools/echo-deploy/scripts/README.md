@@ -64,9 +64,8 @@ ECHO_DEPLOY_TOOL=/opt/echo-deploy scripts/update.sh \
 
 ## Legacy flags
 
-The old repository `scripts/install.sh`, `scripts/update.sh`,
-`scripts/uninstall.sh` and `scripts/reinstall.sh` are **not replaced** by these
-entrypoints yet. Their build, dependency bootstrap, config rewrite, service
+The old repository `scripts/install.sh`, `scripts/update.sh` and
+`scripts/uninstall.sh` are **not replaced** by these entrypoints yet. Their build, dependency bootstrap, config rewrite, service
 activation and rollback paths have no equivalent here. Legacy flags are
 rejected with exit code 2 instead of being forwarded:
 

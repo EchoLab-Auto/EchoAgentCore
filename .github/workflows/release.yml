@@ -4,7 +4,7 @@
 #   - docker.yml   出容器镜像
 #   - npm-publish  出「用 docker compose 编排三个镜像」的 CLI
 #   - 本工作流     出**原生 tarball**：解包即用，不需要 rust / cargo / git，
-#                  也不需要 docker。消费方是 `scripts/install-binary.sh`。
+#                  也不需要 docker。消费方是 `scripts/install.sh --mode binary`。
 #
 # 触发：推 tag `v*`（如 v0.1.0）或手动。手动触发只跑构建、不发布 Release
 # （便于先看产物对不对）。
@@ -314,7 +314,7 @@ jobs:
             exit 1
           fi
 
-          # 目录结构是 install-binary.sh 的输入契约：
+          # 目录结构是 install.sh（--mode binary）的输入契约：
           #   bin/     Core 二进制（装到 <prefix>/libexec/echo-agent-core/）
           #   web/     Panel 前端（装到 <prefix>/libexec/echo-agent-core/web，
           #            即 Core 二进制同级——内嵌模块自动发现的第一命中项）
@@ -332,7 +332,7 @@ jobs:
           # 安装器按这个相对路径解包。来源是**下一步独立构建**的产物
           # （`modules-out/`），不是 Core 那棵 target 目录——Core 不认识它。
           #
-          # 装进产物 ≠ 默认启用：`install-binary.sh` 不再自动写 modules.toml
+          # 装进产物 ≠ 默认启用：安装器不再自动写 modules.toml 的启用行
           # 的启用行。二进制在，能力默认关；要用就加一行。
           install -d -m 755 stage/modules/agent-module-checklist
           install -m 755 modules-out/agent-module-checklist \
