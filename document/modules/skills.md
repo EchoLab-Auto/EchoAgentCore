@@ -34,6 +34,34 @@ y: 216
 - 文件 = YAML-ish frontmatter + Markdown 正文：`name` / `description` / `keywords` / `always`（**须写在 `metadata:` 块内、带缩进**——顶层 `always` 被忽略；`SaveSkill` 写回时自动生成该块）/ `category` / `package`（**Package 标签**：声明后技能属于该包，随包级门控与工具一起启停——见 [模块化设计](./modules.md)「Package」章节；QQ 包示例 `package: echo-agent.instance.qq`）
 - **渐进披露**：名称与描述进入系统提示词的技能清单，正文仅在常驻或触发时注入——控制提示词体积
 
+## 两条来源：目录发现 与 模块注册
+
+技能有两条互相独立的来源，合并成一张表（`SkillRegistry::set_contributed`
+按 `owner` 整体替换）：
+
+| 来源 | 方向 | 谁交 | 归属（owner） |
+| --- | --- | --- | --- |
+| **目录发现** | 拉 | `skills.dir` 扫 `skills_dir` / `skills_dirs` | 文件本身（无 owner） |
+| **模块注册** | 推 | 模块在自己的 `mount` 里 | 模块 id |
+
+- **注册接缝**：`echo_defs::skill::SkillRegistrar`（键
+  `echo-agent.host.skill_registrar`，由 `skills.dir` 提供）。
+  模块只交「SKILL.md 正文 + 兜底名」，**解析在技能模块内部**——模块因此
+  不必依赖解析器，也不会出现两份 frontmatter 规则。
+- **归属跟着生存期走**：模块 `mount` 时登记、卸载时 `unregister` 撤销。
+  `modules.toml` 里 `enabled = false` 的模块，它的技能**不会**出现在提示词里
+  （改造前是硬编码清单，关掉模块技能照样在，模型被教一个不存在的工具）。
+- **宿主不再持清单**：`builtin_modules::skill_contributions()` 已删除；新增
+  带技能的模块不需要改 Core，只要在自己的 `mount` 里调 `register_markdown`。
+- **同 owner 以推为准**：进程外模块经 `Register` 帧（拉）与自己的登记（推）
+  同名时，推的那份更晚、更具体，覆盖拉的那份。
+- **降级而非失败**：接缝缺席（宿主没挂 `skills.dir`）时模块只记 warn，
+  自身功能不受影响；`module.toml` 里用 `optional_requires` 声明它——软依赖
+  **参与拓扑排序**（保证技能模块先挂载）但不参与 `mount_when_ready` 的缺失
+  判定（关掉技能目录不该让业务模块起不来）。
+- **现网实例**：`echo-agent.subagent`（`subagent-delegation`）与
+  `echo-agent.prodoc`（`prodoc-format`）。
+
 ## 常驻与触发
 
 - **常驻技能**（`metadata.always: true` 且启用）：每轮对话都注入正文（`always_enabled`；实例：`subagent-delegation`）

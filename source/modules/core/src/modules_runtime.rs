@@ -56,20 +56,15 @@ pub struct ModuleRuntime {
 /// 也让"每次调用读最新贡献"这件事自然成立（热替换后 `Register` 会重发）。
 pub struct ModuleSkillContributions {
     handles: Vec<echo_module_host::ModuleHandle>,
-    /// 编译内置模块的技能（无 stdio 句柄，内容随 Core 二进制）。
-    builtin: Vec<(String, Vec<echo_defs::skill::Skill>)>,
 }
 
 impl ModuleSkillContributions {
     /// `started` 为 `None` = 进程里没有外部模块运行时（没配 `modules.toml`），
-    /// 此时只剩 `builtin` 一层。
-    pub fn new(
-        started: Option<&StartedModules>,
-        builtin: Vec<(String, Vec<echo_defs::skill::Skill>)>,
-    ) -> Self {
+    /// 此时这张表为空——内置模块的技能不在这里，它们由模块自己在 `mount`
+    /// 里经 `echo_defs::skill::SKILL_REGISTRAR` 登记（2026-11）。
+    pub fn new(started: Option<&StartedModules>) -> Self {
         Self {
             handles: started.map(|s| s.handles.clone()).unwrap_or_default(),
-            builtin,
         }
     }
 }
@@ -80,7 +75,6 @@ impl agent_module_skills::host_keys::SkillContributionSource for ModuleSkillCont
         self.handles
             .iter()
             .map(|handle| handle.contributed_skills())
-            .chain(self.builtin.iter().cloned())
             .filter(|(_, skills)| !skills.is_empty())
             .collect()
     }

@@ -18,7 +18,12 @@ requires = [
     "echo-agent.host.prompt_store",
 ]
 # 技能运行时与提示词刷新器：其它模块读技能清单走这两个键。
+#
+# `echo-agent.host.skill_registrar`（2026-11）：**反向**接缝——模块在自己的
+# `mount` 里把 SKILL.md 正文交出来，归属跟着模块的生存期走。此前归属写在
+# 宿主的硬编码清单里，于是"模块被禁用、技能还在"，且新增模块必须改 Core。
 provides = [
     "echo-agent.host.prompt_refresher.skills",
     "echo-agent.skills.runtime",
+    "echo-agent.host.skill_registrar",
 ]

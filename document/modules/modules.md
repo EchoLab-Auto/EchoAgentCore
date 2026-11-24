@@ -13,7 +13,7 @@ link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "wo
 
 ## 设计原则
 
-模块化是 Core 的组合方式：每个内置模块以 `ModuleManifest` 注册进 `ModuleHost`（`source/modules/echo-agent/src/modules.rs`），可启用/禁用/热加载，且纳入 persona 能力白名单语义。
+模块化是 Core 的组合方式：每个内置模块以 `ModuleManifest` 注册进 `ModuleHost`（目录在组合根 `source/modules/core/src/builtin_modules.rs`，模块 id 常量在 `source/modules/agent-module-loop/src/modules.rs`），可启用/禁用/热加载，且纳入 persona 能力白名单语义。
 
 1. **一切皆模块**：LLM provider、TurnRunner、工具、技能、模块实例、编排、management server 均为模块，无特权核心模块
 2. 模块 = manifest + 生命周期钩子；注册是可逆副作用（disposer）

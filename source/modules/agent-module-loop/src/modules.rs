@@ -535,6 +535,25 @@ pub struct ModuleHost {
     external: parking_lot::RwLock<Vec<echo_module_host::ModuleHandle>>,
 }
 
+/// 把外部模块**握手自述**里的服务键补进描述符。
+///
+/// 只动三件**声明**（`required_services` / `optional_services` /
+/// `provided_services`）——它们本来就是"模块自己说它要什么、给什么"，外面的
+/// 来源只有握手这一处。`pending_services`（注册表按挂载事实算）、`state` /
+/// `restarts` / `generation` / `error`（监督器的事实）都不在覆盖范围：自述说
+/// 的"我想依赖谁"不能冒充"此刻缺不缺"。
+///
+/// 抽成独立的自由函数是为了可测：真句柄要拉起子进程才存在，而这里要守的
+/// 不变量（哪些字段被覆盖、哪些不被覆盖）与进程无关。
+fn apply_claim_services(
+    d: &mut ModuleDescriptor,
+    claim: &echo_module_host::api::ModuleManifestClaim,
+) {
+    d.required_services = claim.requires.clone();
+    d.optional_services = claim.optional_requires.clone();
+    d.provided_services = claim.provides.clone();
+}
+
 /// 目录工厂：每次调用产出一批**全新**模块实例。
 pub type PersonaCatalogFn = Arc<dyn Fn() -> Vec<Arc<dyn echo_module::Module>> + Send + Sync>;
 
@@ -1470,6 +1489,25 @@ impl ModuleHost {
                 }
             }
         }
+        // 外部模块（`stdin`/`dylib` 子进程）的**服务键**只有握手里有。
+        //
+        // 注册表里它们的身份是**合成占位**：构造目录时还没握手，只能填 id /
+        // 命令 / 运输形态，`required_services` 与 `provided_services` 都是空。
+        // 框架的 `set_identity_claim` 只覆盖身份字段（名字 / kind / package…），
+        // 服务键那半边留在清单里——不在这里补，面板的依赖树会把每个外部模块
+        // 画成孤立节点，也不会把它们 `provides` 的键当成边的起点（消费方那条
+        // 边因此凭空消失）。
+        let external = self.external.read();
+        for d in &mut ds {
+            let Some(claim) = external
+                .iter()
+                .find(|h| h.module_id() == d.id)
+                .and_then(|h| h.manifest_claim())
+            else {
+                continue;
+            };
+            apply_claim_services(d, &claim);
+        }
         ds
     }
 
@@ -2143,6 +2181,41 @@ mod tests {
         assert_eq!(d.generation, 7);
         // 运行态失败原因补进 error（面板「失败」徽标读它）。
         assert_eq!(d.error.as_deref(), Some("crash loop"));
+    }
+
+    /// 外部模块的服务键来自**握手自述**：只覆盖声明三键，不碰挂载事实。
+    ///
+    /// 守的是两件事：
+    /// 1. 声明半边不漏（否则面板依赖树把每个外部模块画成孤立节点，它们
+    ///    `provides` 的键也当不成边的起点）；
+    /// 2. 不越权（`pending_services` 是注册表按挂载事实算的，`state` / `error`
+    ///    是监督器的——自述说"我想依赖 loop"不等于"此刻缺 loop"）。
+    #[test]
+    fn claim_services_fill_declarations_only() {
+        let manifest =
+            echo_module::ModuleManifest::builtin("ext.mod", "外部模块", "0", "tool", "");
+        let mut d = ModuleDescriptor::from(&manifest);
+        d.pending_services = vec!["loop".to_string()];
+        d.state = "ready".into();
+        d.error = Some("boom".into());
+
+        let claim = echo_module_host::api::ModuleManifestClaim {
+            id: "ext.mod".into(),
+            name: "外部模块".into(),
+            requires: vec!["loop".to_string()],
+            optional_requires: vec!["nice".to_string()],
+            provides: vec!["ext.service".to_string()],
+            ..Default::default()
+        };
+        super::apply_claim_services(&mut d, &claim);
+
+        assert_eq!(d.required_services, vec!["loop".to_string()]);
+        assert_eq!(d.optional_services, vec!["nice".to_string()]);
+        assert_eq!(d.provided_services, vec!["ext.service".to_string()]);
+        // 挂载事实不被自述覆盖。
+        assert_eq!(d.pending_services, vec!["loop".to_string()]);
+        assert_eq!(d.state, "ready");
+        assert_eq!(d.error.as_deref(), Some("boom"));
     }
 
     /// stop / start 转发到控制面；未接线时给可读错误而不是静默 no-op。
