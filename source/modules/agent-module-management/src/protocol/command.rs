@@ -125,6 +125,10 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::InvokeService { .. }
         | BackendCommand::SaveWorkspaceSession { .. }
         | BackendCommand::DeleteWorkspaceSession { .. }
+        // 工作区 git fetch：**写**操作（连远端、改 .git/FETCH_HEAD）。
+        // 与上面那条只读的 RequestWorkspaceGitStatus 分开正是为了这里能把它
+        // 排除出 PANEL_READONLY_COMMANDS、并且不让模型触发（见该命令的文档）。
+        | BackendCommand::FetchWorkspaceGit { .. }
         | BackendCommand::ActivateWorkspaceSession { .. }
         | BackendCommand::SaveFederationPeer { .. }
         | BackendCommand::DeleteFederationPeer { .. }

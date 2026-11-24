@@ -96,6 +96,7 @@ impl Agent {
             | BackendCommand::DeleteWorkspaceSession { team_id, .. }
             | BackendCommand::ActivateWorkspaceSession { team_id, .. }
             | BackendCommand::RequestWorkspaceGitStatus { team_id, .. }
+            | BackendCommand::FetchWorkspaceGit { team_id, .. }
             | BackendCommand::RequestWorkspaceFiles { team_id, .. }
             | BackendCommand::SetSessionApi { team_id, .. }
             | BackendCommand::ClearSessionApi { team_id, .. }
@@ -123,6 +124,7 @@ impl Agent {
                 | BackendCommand::DeleteWorkspaceSession { .. }
                 | BackendCommand::ActivateWorkspaceSession { .. }
                 | BackendCommand::RequestWorkspaceGitStatus { .. }
+                | BackendCommand::FetchWorkspaceGit { .. }
                 | BackendCommand::RequestWorkspaceFiles { .. }
                 | BackendCommand::SetSessionApi { .. }
                 | BackendCommand::ClearSessionApi { .. }
@@ -665,6 +667,7 @@ impl Agent {
             | BackendCommand::DeleteWorkspaceSession { .. }
             | BackendCommand::ActivateWorkspaceSession { .. }
             | BackendCommand::RequestWorkspaceGitStatus { .. }
+            | BackendCommand::FetchWorkspaceGit { .. }
             | BackendCommand::RequestWorkspaceFiles { .. }
             | BackendCommand::RequestBrowseDirectories { .. } => {
                 self.emit(BackendEvent::Error {

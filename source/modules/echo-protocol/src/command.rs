@@ -608,6 +608,38 @@ pub enum BackendCommand {
         #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         directories: Option<Vec<String>>,
     },
+    /// 让某会话的工作区目录执行 `git fetch`，然后回一份刷新后的
+    /// `BackendEvent::WorkspaceGitStatus`（与 [`Self::RequestWorkspaceGitStatus`]
+    /// 同一个事件，面板侧无需新增 reducer）。
+    ///
+    /// ## 为什么单开一条命令而不是给上面那条加 `fetch: true`
+    ///
+    /// 两者语义不同：上面那条是**纯读**（本地 git 子进程），这条会连远端、
+    /// 改 `.git/FETCH_HEAD`。混在一起有三个后果：
+    ///
+    /// 1. `PANEL_READONLY_COMMANDS` 里那条只读命令会连带获得网络写能力；
+    /// 2. 模型可触发的读命令会变成可触发的网络操作（`command_clearance`
+    ///    把它归 Frontend 正是为了挡住这个）；
+    /// 3. 超时预算差一个量级——本地采集 5s 封顶，fetch 远端要几十秒。
+    ///
+    /// ## 为什么必须有它
+    ///
+    /// `ahead` / `behind` 是 **`HEAD` 与本地记录的 `origin/main` 之差**，而
+    /// 那个记录只有 fetch 才更新。不提供 fetch 入口时，卡片上的「↑5」
+    /// 会长期是假的——远端早就收到了，本地还以为没推（2026-11 现场：镜像
+    /// 失效导致 `origin/main` 停在几天前）。
+    ///
+    /// `directories` 与 [`Self::RequestWorkspaceGitStatus`] 同义（本机路径或
+    /// `node://<peer>/<路径>`）；跨机目录由对端执行 fetch。
+    FetchWorkspaceGit {
+        #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+        team_id: Option<String>,
+        session_id: String,
+        #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+        directories: Option<Vec<String>>,
+    },
     /// 请求列出某工作区目录下的文件与子目录（文件浏览器，只读）。
     /// `path` 必须是该会话某个工作区目录本身或其后代（服务端以
     /// canonical 路径前缀校验，越界拒绝）。响应 `BackendEvent::WorkspaceFiles`。
@@ -832,6 +864,7 @@ impl BackendCommand {
             Self::DeleteWorkspaceSession { .. } => "DeleteWorkspaceSession",
             Self::ActivateWorkspaceSession { .. } => "ActivateWorkspaceSession",
             Self::RequestWorkspaceGitStatus { .. } => "RequestWorkspaceGitStatus",
+            Self::FetchWorkspaceGit { .. } => "FetchWorkspaceGit",
             Self::RequestWorkspaceFiles { .. } => "RequestWorkspaceFiles",
             Self::RequestBrowseDirectories { .. } => "RequestBrowseDirectories",
             Self::RequestProDocBundle { .. } => "RequestProDocBundle",
