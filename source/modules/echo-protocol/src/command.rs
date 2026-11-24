@@ -569,6 +569,16 @@ pub enum BackendCommand {
         #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         team_id: Option<String>,
         session_id: String,
+        /// 只刷新这些目录（与 `WorkspaceGitInfo.directory` 同一写法：本机绝对
+        /// 路径或 `node://<peer>/<路径>`）；缺省 / 空 = 全部目录。
+        ///
+        /// 为什么需要：一个工作区常有 5 个仓库，改完其中一个点刷新，其余四个
+        /// 也要各跑 5～6 条 git 子进程（跨机目录还得过一遍网络）。面板的
+        /// 「刷新此目录」靠它把开销收敛到真正变了的那一个；不认得的路径
+        /// （不在该会话目录里）由模块忽略，不报错。
+        #[serde(default)]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+        directories: Option<Vec<String>>,
     },
     /// 请求列出某工作区目录下的文件与子目录（文件浏览器，只读）。
     /// `path` 必须是该会话某个工作区目录本身或其后代（服务端以

@@ -1637,6 +1637,20 @@ pub struct WorkspaceGitInfo {
     #[serde(default)]
     #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
     pub last_commit: Option<String>,
+    /// 最近一次提交的**提交者时间**（RFC 3339，如 `2026-10-19T10:23:45+08:00`）。
+    ///
+    /// 与 `last_commit` 分开传而不是塞进那个字符串：面板要算"3 分钟前"这类
+    /// 相对时间，塞进摘要就只能靠解析字符串——一改摘要格式就静默失效。
+    /// 取不到（老 git / 无提交）时为 None，面板不显示时间而不是显示假时间。
+    #[serde(default)]
+    #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+    pub last_commit_time: Option<String>,
+    /// stash 条目数（`git stash list` 的行数；没有 stash 时为 0）。
+    ///
+    /// 为什么单独一列：stash 是"我以为处理了、其实还挂在那儿"的东西，
+    /// 攒到十几个才发现通常已经忘了哪个是哪个。只读计数，不碰内容。
+    #[serde(default)]
+    pub stash: u32,
     /// 采集失败原因（目录不存在 / git 不可用等；非仓库时为 None）。
     #[serde(default)]
     #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
@@ -2112,6 +2126,8 @@ mod session_history_tests {
                 worktree: "M".into(),
             }],
             last_commit: Some("abc1234 init".into()),
+            last_commit_time: Some("2026-10-19T10:23:45+08:00".into()),
+            stash: 2,
             error: None,
         };
         let value = serde_json::to_value(&info).expect("serialize");
@@ -2119,6 +2135,10 @@ mod session_history_tests {
         assert_eq!(entry["path"], "a.rs");
         assert_eq!(entry["index"], "M", "索引列字符原样（空格 = 无变更）");
         assert_eq!(entry["worktree"], "M", "工作区列字符原样");
+        // 新增的两列（2026-11）：提交时间与 stash 数。面板靠它们显示相对时间
+        // 与「stash 2」，字段名一改就静默变成"没有时间 / 没有 stash"。
+        assert_eq!(value["last_commit_time"], "2026-10-19T10:23:45+08:00");
+        assert_eq!(value["stash"], 2);
         // 老载荷（无 changed_entries）必须仍能反序列化：跨机对端可能还是旧版。
         let legacy: WorkspaceGitInfo = serde_json::from_value(serde_json::json!({
             "directory": "/srv/old",
@@ -2127,6 +2147,41 @@ mod session_history_tests {
         .expect("legacy payload");
         assert!(legacy.changed_entries.is_empty());
         assert!(legacy.changed_files.is_empty());
+        // 老对端不发这两列 → 缺省 0 / None（不是解析失败）
+        assert_eq!(legacy.stash, 0);
+        assert_eq!(legacy.last_commit_time, None);
+    }
+
+    /// 单目录刷新的载荷：`directories` 缺省 = 全部目录（老前端 / 手写帧兼容）。
+    #[test]
+    fn request_git_status_accepts_optional_directory_filter() {
+        use crate::command::BackendCommand;
+        let all: BackendCommand = serde_json::from_value(serde_json::json!({
+            "RequestWorkspaceGitStatus": { "session_id": "core" }
+        }))
+        .expect("legacy payload");
+        match all {
+            BackendCommand::RequestWorkspaceGitStatus { directories, .. } => {
+                assert_eq!(directories, None, "缺省 = 全部目录");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let some: BackendCommand = serde_json::from_value(serde_json::json!({
+            "RequestWorkspaceGitStatus": {
+                "session_id": "core",
+                "directories": ["/srv/repo", "node://gpu/root/repo"],
+            }
+        }))
+        .expect("filtered payload");
+        match some {
+            BackendCommand::RequestWorkspaceGitStatus { directories, .. } => {
+                assert_eq!(
+                    directories,
+                    Some(vec!["/srv/repo".to_string(), "node://gpu/root/repo".to_string()])
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }
 

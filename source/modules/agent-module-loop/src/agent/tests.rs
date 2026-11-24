@@ -4339,6 +4339,7 @@ async fn workspace_commands_lifecycle() {
         .apply_command(BackendCommand::RequestWorkspaceGitStatus {
             team_id: Some("t".into()),
             session_id: "core".into(),
+            directories: None,
         })
         .await;
 
