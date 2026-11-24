@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use agent_module_management::protocol::timeline_text::elide_reasoning_for_wire;
-use agent_module_management::protocol::{BackendCommand, BackendEvent};
+use agent_module_management::protocol::{BackendCommand, BackendEvent, SessionInfo};
 use echo_session::CompactionPhase;
 
 use crate::store::TrunkStore;
@@ -84,6 +84,28 @@ pub trait SessionCommandHost: Send + Sync {
         session_id: &'a str,
         keep_recent: usize,
     ) -> BoxFuture<'a, Result<String, String>>;
+
+    /// 会话列表快照（面板服务的 `list`，2026-11）。
+    ///
+    /// `team_id = None` 时**跨全部人格**遍历（与 `RequestState` 的口径一致）：
+    /// 面板的会话切换器只显示当前人格，但侧边栏的"标签存活"判断与「当前会话」
+    /// 卡片要看得到别的 agent 的会话，只回当前人格会让它们误判成"会话没了"。
+    ///
+    /// ## 为什么这项能力在宿主
+    ///
+    /// 两件模块做不了的事：
+    /// 1. **跨人格遍历**：注册表与各人格的 `TrunkStore` 实例都在宿主手里，
+    ///    模块只有类型（`resolve_trunk` 一次只能拿一个人格）；
+    /// 2. **`NodeIdentity`**：`SessionInfo.node_id` / `region_name` 是联邦归属，
+    ///    由组合根在装配期注入（`Agent::node_identity()`）。
+    ///
+    /// 组装规则（`Session::info()` 的字段映射、`last_message` 从哪来）仍在
+    /// 模块里——宿主只调它。这与 `session_view_host::state_snapshot` 里那段
+    /// 会话遍历是**同一份逻辑**，实现侧应复用而不是抄第二遍。
+    fn sessions_snapshot<'a>(
+        &'a self,
+        team_id: Option<String>,
+    ) -> BoxFuture<'a, Result<Vec<SessionInfo>, String>>;
 }
 
 /// 一条命令要作用的对象：`(team_id, trunk)`。
@@ -437,6 +459,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(session_id.to_string());
+        }
+        fn sessions_snapshot<'a>(
+            &'a self,
+            _team_id: Option<String>,
+        ) -> BoxFuture<'a, Result<Vec<SessionInfo>, String>> {
+            Box::pin(async { Ok(Vec::new()) })
         }
         fn quiesce_session<'a>(
             &'a self,

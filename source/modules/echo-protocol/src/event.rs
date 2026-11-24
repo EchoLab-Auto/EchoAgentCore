@@ -936,6 +936,34 @@ pub enum BackendEvent {
         #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
         error: Option<String>,
     },
+    /// **面板服务调用回执**（`InvokeService` 的结构化结果）。
+    ///
+    /// 与 [`Self::ModuleInvokeResult`] 的差别只有寻址维度（服务名 vs 模块 id）
+    /// 与 `request_id`：
+    ///
+    /// - `request_id` 由调用方生成并**原样带回**，是前端唯一的配对依据。
+    ///   不能靠 `(service, method)` 配对——同一个服务允许并发调用同一方法
+    ///   （工作区面板刷新与预取就会撞在一起），那时候回执分不清是谁的。
+    /// - 失败**也带** `request_id`。这是 2026-11 `InvokeModuleOp` 的教训：
+    ///   失败回执里没有配对 id，前端只能一路等到超时，排查时也看不出
+    ///   "是没发出去、还是发了被拒"。
+    ServiceInvokeResult {
+        /// 服务名（回显请求里的 `service`）。
+        service: String,
+        /// 方法名（回显请求里的 `method`）。
+        method: String,
+        /// 调用方生成的配对 id（回显请求里的 `request_id`）。
+        request_id: String,
+        /// 是否成功。
+        ok: bool,
+        /// 返回值（失败时为 `null`，原因在 `error`）。
+        #[serde(default)]
+        data: serde_json::Value,
+        /// 失败原因（成功时缺省）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-bindings", ts(optional = nullable))]
+        error: Option<String>,
+    },
     /// **模块事件**（echo-fabric-arch v0.7 的事件通道出口）。
     ///
     /// 模块在运行期 `emit` 的东西（注册表自己也会发 `module.mounted` /
@@ -1827,6 +1855,7 @@ impl BackendEvent {
             Self::ModulesList { .. } => "ModulesList",
             Self::ModuleOpResult { .. } => "ModuleOpResult",
             Self::ModuleInvokeResult { .. } => "ModuleInvokeResult",
+            Self::ServiceInvokeResult { .. } => "ServiceInvokeResult",
             Self::ModuleEvent { .. } => "ModuleEvent",
             Self::TeamsList { .. } => "TeamsList",
             Self::ApiTestResult { .. } => "ApiTestResult",

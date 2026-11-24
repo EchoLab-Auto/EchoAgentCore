@@ -93,6 +93,13 @@ pub(crate) struct HostWiring {
     /// 组装的，所以这里是 `Option` 而不是"先塞空实现后回填"。
     pub skill_contributions:
         Option<Arc<dyn agent_module_skills::host_keys::SkillContributionSource>>,
+    /// 面板服务注册表（2026-11）。
+    ///
+    /// 由组合根创建并**同时**做两件事：把它 provide 进 `Ctx`（模块据此登记
+    /// 自己的服务）、把它递进命令泵的 `ProcessCommandHost`（`InvokeService`
+    /// 据此分发）。两处必须是同一个实例——分开造会得到"模块登记进 A、
+    /// 命令泵去 B 里查"的空表，而那不是报错，是静默查不到。
+    pub panel_services: Arc<crate::panel_services::PanelServiceTable>,
 }
 
 /// 工作区模块的跨机查询接缝：把三个语义方法映射到联邦查询出口。
@@ -323,6 +330,24 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         );
     }
 
+    // ── 面板服务注册表（2026-11）──
+    //
+    // **两个键、同一张表**：模块拿登记面（只能登记），命令泵拿分发面（只能
+    // 分发）。拆成两个 trait 是为了让权限显式——给出去的能力不该同时包含
+    // "遍历并调用别人的服务"。
+    put(
+        &mut keep,
+        ctx,
+        &echo_defs::panel_service::PANEL_SERVICE_REGISTRAR,
+        wiring.panel_services.registrar(),
+    );
+    put(
+        &mut keep,
+        ctx,
+        &echo_defs::panel_service::PANEL_SERVICE_INVOKER,
+        wiring.panel_services.invoker(),
+    );
+
     keep
 }
 
@@ -445,7 +470,13 @@ pub(crate) fn provided_keys() -> Vec<String> {
         PROVIDER_HOST.name().to_string(),
         SELF_UPDATE_EVENTS.name().to_string(),
         INSTANCE_CONTROL.name().to_string(),
-        // ── 2. 组合根早期注册 ──
+        // 面板服务注册表（2026-11）：两个键共享一张表。
+        echo_defs::panel_service::PANEL_SERVICE_REGISTRAR
+            .name()
+            .to_string(),
+        echo_defs::panel_service::PANEL_SERVICE_INVOKER
+            .name()
+            .to_string(),
         // provider 实例：键由 provider 模块声明（`PROVIDER_KEY`），值由组合根
         // 按配置构建——两侧同源，见该常量的文档。
         echo_defs::llm::LLM_PROVIDER_SERVICE_KEY.to_string(),

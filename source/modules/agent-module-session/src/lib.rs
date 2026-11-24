@@ -55,6 +55,8 @@ use echo_module::{BuiltinModule, Module, ModuleManifest};
 pub mod commands;
 pub mod store;
 
+pub mod panel_service;
+
 pub use commands::{SessionCommandHandler, SessionCommandHost};
 pub use store::{PersistLoadError, TrunkStore};
 
@@ -120,6 +122,9 @@ pub fn module(version: &str) -> Arc<dyn Module> {
     // 命令域要的宿主接缝：mount 时绑定（宿主在装配期填），处理命令时取用。
     let command_host = ServiceSlot::<Arc<dyn SessionCommandHost>>::new();
     let (bind_host, serve_host) = (command_host.clone(), command_host.clone());
+    // 命令域与面板服务要**同一份**接缝：两个使用者各持一个 clone，来源相同
+    // 才不会出现"命令能跑、服务说未挂载"的错位。
+    let serve_host_for_service = command_host.clone();
     Arc::new(
         BuiltinModule::new(manifest, move |mctx| {
             let Some(ctx) = &mctx.ctx else {
@@ -134,7 +139,36 @@ pub fn module(version: &str) -> Arc<dyn Module> {
             // 接缝是**可选**的：嵌入式部署（无 Agent）照样挂载，只是命令域
             // 无人认领 → 命令泵会回落到宿主兜底分支并明确报错。
             let keep_host = bind_host.bind(mctx, &SESSION_COMMAND_HOST_KEY)?;
-            Ok(vec![keep_factory, keep_host])
+            // 面板服务（2026-11）：把会话列表登记成 `echo-agent.sessions`。
+            //
+            // **注册表也是可选的**：嵌入式部署没有宿主注册表，这时不挂服务
+            // （面板本来也不会连过来）。这里只 warn 不 fail——面板服务是
+            // 附加能力，缺了不该让整个会话模块挂不上（那会连聊天一起停）。
+            let catalog = panel_service::SessionCatalog::new(serve_host_for_service.clone());
+            let keep_catalog = match mctx.service(&echo_defs::panel_service::PANEL_SERVICE_REGISTRAR)
+            {
+                Some(registrar) => match registrar.register(Arc::new(catalog)) {
+                    Ok(disposer) => Some(disposer),
+                    Err(error) => {
+                        tracing::warn!(
+                            module = MODULE_ID,
+                            %error,
+                            "面板服务登记失败（服务名/方法声明不合法）"
+                        );
+                        None
+                    }
+                },
+                None => {
+                    tracing::debug!(
+                        module = MODULE_ID,
+                        "宿主未提供面板服务注册表；会话列表服务不可用（嵌入式部署常见）"
+                    );
+                    None
+                }
+            };
+            let mut keeps = vec![keep_factory, keep_host];
+            keeps.extend(keep_catalog);
+            Ok(keeps)
         })
         // 接缝是可选注入：宿主没绑也能挂（命令落兜底分支）。
         .with_commands(commands::COMMANDS)
@@ -245,6 +279,22 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
         {
             Box::pin(async { Ok(String::new()) })
+        }
+        fn sessions_snapshot<'a>(
+            &'a self,
+            _team_id: Option<String>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<agent_module_management::protocol::SessionInfo>,
+                            String,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
         }
     }
 

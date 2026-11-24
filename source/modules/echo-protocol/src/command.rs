@@ -520,6 +520,34 @@ pub enum BackendCommand {
         #[serde(default)]
         payload: serde_json::Value,
     },
+    /// 调用一个**面板服务**（按服务名寻址，2026-11）。
+    ///
+    /// 与 `InvokeModuleOp` 的区别是**寻址方式**：那条按模块 id 找实现者（面板
+    /// 得知道是谁在做），这条按服务名找能力（面板只管"谁会列会话"，实现者
+    /// 换模块不用改面板）。服务由模块在自己的 `mount` 里登记，归属跟着挂载
+    /// 状态走——模块被禁用，服务一起消失。
+    ///
+    /// 响应为 [`crate::event::BackendEvent::ServiceInvokeResult`]（**必发**：
+    /// 服务未登记 / 方法未声明 / 服务自己失败都回显式原因）。
+    ///
+    /// `request_id` **内建在协议里**（不是塞进 `payload`）：一个服务有多个
+    /// 方法，回执只能靠它配对——靠"事件名对应命令名"的映射表表达不了多方法，
+    /// 而让模块自己在 payload 里塞 id 又会在失败回执里丢掉它（2026-11
+    /// `workspace.deleteConversation` 的现场：失败回执没有 id，前端只能等超时）。
+    ///
+    /// **Frontend-only**（类别判定，fail-closed）：与通用模块调用同一理由
+    /// ——服务通道是"模块对面板开放的能力"，模型不可控它。
+    InvokeService {
+        /// 服务名（`PanelService::name()`，如 `echo-agent.sessions`）。
+        service: String,
+        /// 方法名（必在该服务的 `methods()` 里）。
+        method: String,
+        /// 方法参数（JSON；缺省空对象）。服务自行约定形状。
+        #[serde(default)]
+        payload: serde_json::Value,
+        /// 调用方生成的配对 id；回执原样带回。
+        request_id: String,
+    },
     // ---- 工作区会话（workspace 模块：基于工作空间的会话管理）----
     /// 请求某 persona 的工作区会话列表。
     /// 响应 `BackendEvent::WorkspaceSessions`。
@@ -798,6 +826,7 @@ impl BackendCommand {
             Self::RequestInstanceStatus { .. } => "RequestInstanceStatus",
             Self::InvokeInstanceOp { .. } => "InvokeInstanceOp",
             Self::InvokeModuleOp { .. } => "InvokeModuleOp",
+            Self::InvokeService { .. } => "InvokeService",
             Self::RequestWorkspaceSessions { .. } => "RequestWorkspaceSessions",
             Self::SaveWorkspaceSession { .. } => "SaveWorkspaceSession",
             Self::DeleteWorkspaceSession { .. } => "DeleteWorkspaceSession",
@@ -927,6 +956,12 @@ mod tests {
                 module: "echo-agent.checklist".into(),
                 method: "checklist.snapshot".into(),
                 payload: serde_json::json!({"team_id": "alix"}),
+            },
+            BackendCommand::InvokeService {
+                service: "echo-agent.sessions".into(),
+                method: "list".into(),
+                payload: serde_json::json!({"team_id": "alix"}),
+                request_id: "rq-1".into(),
             },
         ];
         for cmd in &samples {

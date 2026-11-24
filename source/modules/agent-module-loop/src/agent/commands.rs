@@ -320,6 +320,30 @@ impl Agent {
                     }),
                 }
             }
+            // 面板服务调用（`InvokeService`，2026-11）：**正常路径不经过这里**
+            // ——它在进程级命令泵里就被消化了（`process_commands::try_handle`：
+            // 服务没有归属人格，落到 agent 只会多绕一圈）。落到这里只有两种
+            // 情况：命令泵的 manager 还没就绪（启动早期），或本部署根本没装
+            // 服务注册表（嵌入式用法）。两种都必须回显式原因——静默会让面板
+            // 一路等到超时，排查时也看不出"是没发出去、还是发了没人接"。
+            BackendCommand::InvokeService {
+                service,
+                method,
+                request_id,
+                ..
+            } => {
+                self.emit(BackendEvent::ServiceInvokeResult {
+                    service: service.clone(),
+                    method: method.clone(),
+                    request_id: request_id.clone(),
+                    ok: false,
+                    data: serde_json::Value::Null,
+                    error: Some(
+                        "面板服务命令未在进程级被处理（服务注册表未就绪，或本部署未装）"
+                            .to_string(),
+                    ),
+                });
+            }
             BackendCommand::RestartModule { id } => {
                 // 防自锁：重启管理面模块 = 先卸下 management WS，Panel 立即
                 // 断连且无法经界面恢复（与禁用同一条约束）。

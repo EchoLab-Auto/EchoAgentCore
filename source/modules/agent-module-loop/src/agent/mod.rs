@@ -905,6 +905,41 @@ impl Agent {
             .clone()
     }
 
+    /// 本 agent 与其它**已运行人格**的会话身份列表。
+    ///
+    /// ## 为什么跨人格
+    ///
+    /// 面板的会话切换器只显示当前 agent（按 `team_id` 过滤），但另外两处要看
+    /// 全部：侧边栏标签的"会话还活着吗"判断，以及「当前会话」卡片。只回当前
+    /// agent 会让它们把别的 agent 的会话误判成"已消失"。（2026-11 前这份逻辑
+    /// 只存在于 `session_view_host::state_snapshot`，抽取到这里是为了让面板
+    /// 服务的 `list` 与 `RequestState` 用**同一份**遍历，而不是各写一遍——
+    /// 两份的字段口径迟早分叉。）
+    ///
+    /// ## 调用方负责先 `ensure_metadata()`
+    ///
+    /// 那是异步 IO（读落盘元信息），不能藏在同步方法里。没有它时
+    /// `trunk.all()` 只回内存里已有的会话（重启后通常是空的）。
+    pub fn collect_sessions(&self) -> Vec<crate::event::SessionInfo> {
+        let mut out = Vec::new();
+        let identity = self.node_identity();
+        for session in self.trunk.all() {
+            out.push(session_view_row(&session, &identity));
+        }
+        if let Some(manager) = self.registry() {
+            for running in manager.all() {
+                if running.agent.team_id() == self.team_id() {
+                    continue; // 已由上方覆盖
+                }
+                let identity = running.agent.node_identity();
+                for session in running.agent.trunk.all() {
+                    out.push(session_view_row(&session, &identity));
+                }
+            }
+        }
+        out
+    }
+
     /// 注入联邦出口集合（组合根装配期；`AgentBuilder::federation` 调用）。
     pub fn set_federation(&self, ports: std::sync::Arc<crate::federation::FederationPorts>) {
         *self
@@ -2019,4 +2054,22 @@ mod session_api_persistence_tests {
         );
         let _ = std::fs::remove_file(&path);
     }
+}
+
+/// 一个会话的 `SessionInfo` 投影（列表展示只需要"最后一句"）。
+///
+/// 单独抽出来的理由：`collect_sessions` 要在两条遍历路径上用**同一条**规则
+/// ——同一份逻辑抄两遍的话，某天给 `SessionInfo` 加字段时只会改一处。
+fn session_view_row(
+    session: &Session,
+    identity: &crate::NodeIdentity,
+) -> crate::event::SessionInfo {
+    let last = session
+        .history
+        .lock()
+        .last()
+        .cloned()
+        .map(|message| message.content)
+        .unwrap_or_default();
+    session.info(last, identity)
 }

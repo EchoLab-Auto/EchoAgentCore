@@ -30,6 +30,7 @@ mod module_tag;
 mod module_upgrade_cmd;
 mod modules_runtime;
 mod node;
+mod panel_services;
 mod port_cmd;
 
 /// 管理面模块（Phase 3 ⑧：已外迁为独立 crate，组合根只负责启动它）。
@@ -1698,6 +1699,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 管理面 WS 起监听后立刻被卸掉，面板连不上）。与 `loop_runner` 同一模式：
     // 声明在外层、赋值在内层。
     let _host_service_keep: Vec<echo_context::Disposer>;
+    // 面板服务注册表（2026-11）：声明在**块外**，因为两处要用同一个实例——
+    // 块内的 `HostWiring`（据此 provide 两个键，模块在上面登记）与块外的
+    // 命令泵（`ProcessCommandHost::panel_services`，据此分发）。分开放会得到
+    // "模块登记进 A、命令泵去 B 里查"的空表，而那不是报错，是静默查不到。
+    let panel_services: std::sync::Arc<crate::panel_services::PanelServiceTable>;
     {
         use echo_module::MountContext;
 
@@ -1766,6 +1772,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         //
         // 顺序要求：**必须在任何 mount 之前**。注册晚了的表现为模块
         // `MissingService{available}` 挂不上（错误里带着当时已有的键，好查）。
+        //
+        // 面板服务注册表也走这条顺序：模块在自己的 `mount` 里登记服务，登记表
+        // 必须先存在（实例在块外创建，见 `panel_services` 的声明处）。
+        panel_services = crate::panel_services::PanelServiceTable::new();
         _host_service_keep = crate::host_services::register(
             &ctx,
             crate::host_services::HostWiring {
@@ -1796,6 +1806,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     ),
                 )
                     as std::sync::Arc<dyn agent_module_skills::host_keys::SkillContributionSource>),
+                panel_services: panel_services.clone(),
             },
         );
 
@@ -2439,6 +2450,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 惰性解析的代价是每条命令一次 `Weak::upgrade` —— 可忽略。
     let pump_slot = agent_manager_slot.clone();
     let pump_gate = deployment_gate.clone();
+    // 面板服务分发面（2026-11）：与登记表同一个实例（见上面
+    // `PanelServiceTable::new()` 那段注释）。`Some(...)` 表示本部署装了
+    // 注册表——嵌入式用法没有组合根，那边是 `None`。
+    let pump_panel_services = Some(panel_services.invoker());
     let pump = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         loop {
@@ -2465,6 +2480,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         admin: manager.clone(),
                         registry: manager,
                         emitter: pump_core.clone(),
+                        panel_services: pump_panel_services.clone(),
                     };
                     if agent_module_loop::process_commands::try_handle(&cmd, &host).await {
                         continue;

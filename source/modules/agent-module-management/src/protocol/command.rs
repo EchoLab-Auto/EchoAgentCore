@@ -119,6 +119,10 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         BackendCommand::InvokeInstanceOp { .. }
         // 通用模块调用：同上——任意模块、任意方法都是人在环的管理/读取面。
         | BackendCommand::InvokeModuleOp { .. }
+        // 面板服务调用（2026-11）：按服务名寻址的同一条通道，同样是人在环的
+        // 读取面。模块只把**只读**能力登记成服务（写操作走各自模块的私有
+        // 方法），所以作用面比 InvokeModuleOp 更窄。
+        | BackendCommand::InvokeService { .. }
         | BackendCommand::SaveWorkspaceSession { .. }
         | BackendCommand::DeleteWorkspaceSession { .. }
         | BackendCommand::ActivateWorkspaceSession { .. }

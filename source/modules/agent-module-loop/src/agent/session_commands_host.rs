@@ -226,6 +226,40 @@ impl SessionCommandHost for AgentSessionCommandHost {
                 .await
         })
     }
+
+    fn sessions_snapshot<'a>(
+        &'a self,
+        team_id: Option<String>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Vec<agent_module_management::protocol::SessionInfo>, String>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            // `team_id` 指定时只取那一个人格；**解析失败就报错**，不回退到
+            // 自身——回退会把 A 人格的列表当成 B 人格的答出去（与 clear /
+            // archive 的同一条纪律）。
+            if let Some(id) = team_id {
+                let agent = self.resolve_agent(Some(&id))?;
+                // 列表只要身份：走元信息档，大文件用 `IgnoredAny` 跳过正文。
+                agent.trunk.ensure_metadata().await;
+                return Ok(agent.collect_sessions());
+            }
+            // 未指定 = 跨全部人格（面板侧边栏的"标签存活"判断要看得到别的
+            // agent 的会话）。遍历顺序与 `RequestState` 一致：自身优先。
+            let agent = Arc::clone(&self.agent);
+            agent.trunk.ensure_metadata().await;
+            if let Some(manager) = agent.registry() {
+                for running in manager.all() {
+                    running.agent.trunk.ensure_metadata().await;
+                }
+            }
+            Ok(agent.collect_sessions())
+        })
+    }
 }
 
 #[cfg(test)]

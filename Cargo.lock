@@ -213,6 +213,7 @@ name = "agent-module-session"
 version = "0.3.1"
 dependencies = [
  "agent-module-management",
+ "async-trait",
  "chrono",
  "dashmap",
  "echo-context",

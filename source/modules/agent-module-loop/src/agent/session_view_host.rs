@@ -102,48 +102,20 @@ impl SessionViewHost for AgentSessionViewHost {
             //（SessionInfo.team_id / emit 的 annotate_team），Panel 按当前
             // agent 过滤展示。只遍历默认 agent 会让其他人格的会话缺失
             //（或混入主 agent 会话，刷新后侧边栏串显）。
-            let mut emitted_sessions = 0usize;
-            for s in agent.trunk.all() {
-                let last = s
-                    .history
-                    .lock()
-                    .last()
-                    .cloned()
-                    .map(|m| m.content)
-                    .unwrap_or_default();
-                let identity = agent.node_identity();
-                events.push(BackendEvent::SessionUpdated {
-                    session: s.info(last, &identity),
-                });
-                emitted_sessions += 1;
-            }
-            if let Some(mgr) = agent.registry() {
-                for running in mgr.all() {
-                    if running.agent.team_id() == agent.team_id() {
-                        continue; // 已由上方覆盖
-                    }
-                    let identity = running.agent.node_identity();
-                    for s in running.agent.trunk.all() {
-                        let last = s
-                            .history
-                            .lock()
-                            .last()
-                            .cloned()
-                            .map(|m| m.content)
-                            .unwrap_or_default();
-                        events.push(BackendEvent::SessionUpdated {
-                            session: s.info(last, &identity),
-                        });
-                        emitted_sessions += 1;
-                    }
-                }
-            }
+            //
+            // 遍历规则收在 `Agent::collect_sessions`（2026-11）：面板服务的
+            // `list` 与这里的 `RequestState` 必须是**同一份**口径，两份实现
+            // 迟早分叉。
+            let sessions = agent.collect_sessions();
             // DEBUG：这是「面板重连后的一次全量快照」，频次跟随连接抖动
             //（实测 151 条/天），不是状态变化——默认级别不该看见。
             tracing::debug!(
-                sessions = emitted_sessions,
+                sessions = sessions.len(),
                 "state sessions emitted for all personas"
             );
+            for session in sessions {
+                events.push(BackendEvent::SessionUpdated { session });
+            }
             // 实例清单 + 实例管理状态（TUI 启动时要拿到持久化的值）。
             events.push(crate::agent::instance_list_event(&agent));
             for name in agent.instances.names() {

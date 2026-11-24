@@ -32,7 +32,7 @@ use crate::event::BackendEvent;
 
 /// 进程级命令的执行环境。
 ///
-/// 三者都是组合根在装配期就能拿到的：`admin` / `registry` 是同一个
+/// 前三个都是组合根在装配期就能拿到的：`admin` / `registry` 是同一个
 /// `AgentManager` 的两个面向，`emitter` 是那个"没有人格身份"的管理面 agent
 /// （命令泵本来就把它当默认接收者）。
 pub struct ProcessCommandHost {
@@ -42,6 +42,12 @@ pub struct ProcessCommandHost {
     pub registry: Arc<dyn AgentRegistry>,
     /// 事件出口：没有人格归属的 `TeamsList` / `Error` 从这里发。
     pub emitter: Arc<Agent>,
+    /// 面板服务分发面（`InvokeService`，2026-11）。
+    ///
+    /// `Option` 是**部署差异**而不是"待回填"：嵌入式部署（没有 Core 组合根）
+    /// 不装服务表，那种部署里 `InvokeService` 应当回一条明确错误，而不是假装
+    /// 成功（空结果会被人误读成"这个服务没有数据"）。
+    pub panel_services: Option<Arc<dyn echo_defs::panel_service::PanelServiceInvoker>>,
 }
 
 impl ProcessCommandHost {
@@ -82,6 +88,45 @@ pub async fn try_handle(cmd: &BackendCommand, host: &ProcessCommandHost) -> bool
         // 与配置持久化），这里只负责把管理面递进去。
         BackendCommand::RenameApi { from, to } => {
             host.emitter.rename_api(from, to, Some(&host.admin)).await;
+            true
+        }
+        // 面板服务调用（`InvokeService`，2026-11）：与上面几条同一层级——
+        // 服务由模块登记、没有归属人格，落到 `Agent::apply_command` 只会多绕
+        // 一圈（且人格被禁用的部署里根本没人接）。
+        //
+        // **必回一条 `ServiceInvokeResult`**：服务未登记 / 方法未声明 / 服务
+        // 自己失败都要让调用方拿到显式原因。这是 2026-11 `InvokeModuleOp` 的
+        // 教训——面板曾经因为"命令发出去了、没人应答"一路等到 20s 超时。
+        BackendCommand::InvokeService {
+            service,
+            method,
+            payload,
+            request_id,
+        } => {
+            let result = match &host.panel_services {
+                Some(invoker) => invoker.invoke(service, method, payload.clone()).await,
+                None => Err(
+                    "面板服务通道未接线（宿主未装服务注册表；嵌入式部署无此能力）".to_string(),
+                ),
+            };
+            match result {
+                Ok(data) => host.emit(BackendEvent::ServiceInvokeResult {
+                    service: service.clone(),
+                    method: method.clone(),
+                    request_id: request_id.clone(),
+                    ok: true,
+                    data,
+                    error: None,
+                }),
+                Err(error) => host.emit(BackendEvent::ServiceInvokeResult {
+                    service: service.clone(),
+                    method: method.clone(),
+                    request_id: request_id.clone(),
+                    ok: false,
+                    data: serde_json::Value::Null,
+                    error: Some(error),
+                }),
+            }
             true
         }
         _ => false,
