@@ -23,7 +23,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
@@ -84,7 +84,7 @@ agent-module-subagent = { git = "https://github.com/EchoLab-Auto/agent-module-su
 # Core 只做通用接线）；crate 名保持 agent-module-workspace 不变。
 agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", rev = "fbb765a" }
 agent-module-management = { package = "agent-module-management", path = "source/modules/agent-module-management" }
-agent-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", rev = "86eb1a8f82f2db460d596051ab3929beff17610f" }
+agent-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", rev = "1616236191c4f960f523eb8c8885549798b433a1" }
 agent-module-session = { path = "source/modules/agent-module-session" }
 agent-module-prodoc = { git = "https://github.com/EchoLab-Auto/agent-module-prodoc", branch = "main" }
 agent-module-transcript = { path = "source/modules/agent-module-transcript" }
