@@ -2168,6 +2168,8 @@ mod session_history_tests {
             branch: Some("main".into()),
             ahead: 1,
             behind: 2,
+            upstream: Some("origin/main".into()),
+            fetched_at: Some(1_762_000_000),
             staged: 1,
             modified: 1,
             untracked: 1,
@@ -2191,6 +2193,10 @@ mod session_history_tests {
         // 与「stash 2」，字段名一改就静默变成"没有时间 / 没有 stash"。
         assert_eq!(value["last_commit_time"], "2026-10-19T10:23:45+08:00");
         assert_eq!(value["stash"], 2);
+        // 再新增两列（2026-11 晚）：上游引用与 ahead/behind 的基准时刻。少了它们，
+        // 面板无法区分「没配上游」与「同步」，也判断不出这条基准有多旧。
+        assert_eq!(value["upstream"], "origin/main");
+        assert_eq!(value["fetched_at"], 1_762_000_000_i64);
         // 老载荷（无 changed_entries）必须仍能反序列化：跨机对端可能还是旧版。
         let legacy: WorkspaceGitInfo = serde_json::from_value(serde_json::json!({
             "directory": "/srv/old",
@@ -2199,9 +2205,11 @@ mod session_history_tests {
         .expect("legacy payload");
         assert!(legacy.changed_entries.is_empty());
         assert!(legacy.changed_files.is_empty());
-        // 老对端不发这两列 → 缺省 0 / None（不是解析失败）
+        // 老对端不发这几列 → 缺省 0 / None（不是解析失败）
         assert_eq!(legacy.stash, 0);
         assert_eq!(legacy.last_commit_time, None);
+        assert_eq!(legacy.upstream, None, "老对端：按「没配上游」处理");
+        assert_eq!(legacy.fetched_at, None, "老对端：基准时刻未知");
     }
 
     /// 单目录刷新的载荷：`directories` 缺省 = 全部目录（老前端 / 手写帧兼容）。
