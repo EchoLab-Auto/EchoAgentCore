@@ -31,6 +31,7 @@ mod module_upgrade_cmd;
 mod modules_runtime;
 mod node;
 mod panel_services;
+mod panel_ui;
 mod port_cmd;
 
 /// 管理面模块（Phase 3 ⑧：已外迁为独立 crate，组合根只负责启动它）。
@@ -1704,6 +1705,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 命令泵（`ProcessCommandHost::panel_services`，据此分发）。分开放会得到
     // "模块登记进 A、命令泵去 B 里查"的空表，而那不是报错，是静默查不到。
     let panel_services: std::sync::Arc<crate::panel_services::PanelServiceTable>;
+    // 面板 UI 贡献注册表（2026-11）：模块 `mount` 时登记自己的前端 bundle，
+    // 面板启动时经面板服务 `echo-agent.panel-ui.list` 拿到清单再 import()。
+    // 与 `panel_services` 同样是"必须在任何 mount 之前 provide"。
+    let panel_ui: std::sync::Arc<crate::panel_ui::PanelUiTable>;
     {
         use echo_module::MountContext;
 
@@ -1776,6 +1781,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 面板服务注册表也走这条顺序：模块在自己的 `mount` 里登记服务，登记表
         // 必须先存在（实例在块外创建，见 `panel_services` 的声明处）。
         panel_services = crate::panel_services::PanelServiceTable::new();
+        panel_ui = crate::panel_ui::PanelUiTable::new();
         _host_service_keep = crate::host_services::register(
             &ctx,
             crate::host_services::HostWiring {
@@ -1807,6 +1813,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 )
                     as std::sync::Arc<dyn agent_module_skills::host_keys::SkillContributionSource>),
                 panel_services: panel_services.clone(),
+                panel_ui: panel_ui.clone(),
             },
         );
 

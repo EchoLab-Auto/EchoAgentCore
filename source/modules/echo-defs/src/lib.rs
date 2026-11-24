@@ -50,6 +50,7 @@ pub mod module_id;
 pub mod module_instance;
 pub mod node;
 pub mod panel_service;
+pub mod panel_ui;
 pub mod pricing;
 pub mod prompt;
 pub mod registry;

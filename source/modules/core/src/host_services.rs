@@ -100,6 +100,12 @@ pub(crate) struct HostWiring {
     /// 据此分发）。两处必须是同一个实例——分开造会得到"模块登记进 A、
     /// 命令泵去 B 里查"的空表，而那不是报错，是静默查不到。
     pub panel_services: Arc<crate::panel_services::PanelServiceTable>,
+    /// 面板 UI 贡献注册表（2026-11）。
+    ///
+    /// 模块在 `mount` 里登记自己的前端 bundle（`PanelUiRegistrar`），面板启动
+    /// 时经面板服务 `echo-agent.panel-ui.list` 拿到清单再 `import()`。归属跟着
+    /// 挂载状态走：模块被禁用，贡献随 `Disposer` 撤销，面板上的入口自然消失。
+    pub panel_ui: Arc<crate::panel_ui::PanelUiTable>,
 }
 
 /// 工作区模块的跨机查询接缝：把三个语义方法映射到联邦查询出口。
@@ -347,6 +353,26 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         &echo_defs::panel_service::PANEL_SERVICE_INVOKER,
         wiring.panel_services.invoker(),
     );
+    // ── 面板 UI 贡献注册表（2026-11）──
+    //
+    // 与上面两个键同一条纪律：必须在任何模块 mount 之前 provide，否则模块
+    // `mount` 里 `service()` 返回 `None` —— 按设计那不算致命错误（嵌入式
+    // 部署没有宿主），于是这类 bug 会静默。所以注册侧一律打 debug 日志。
+    put(
+        &mut keep,
+        ctx,
+        &echo_defs::panel_ui::PANEL_UI_REGISTRAR,
+        wiring.panel_ui.registrar(),
+    );
+    // 清单服务（`echo-agent.panel-ui.list`）由**组合根**登记：它是注册表的
+    // 投影，不属于任何模块。做在模块里会让"列出 UI 模块"依赖那个模块是否
+    // 挂载——一个模块没装，面板就看不到别人也有 UI。
+    match wiring.panel_services.registrar().register(Arc::new(
+        crate::panel_ui::CorePanelUiService::new(wiring.panel_ui.clone()),
+    )) {
+        Ok(disposer) => keep.push(disposer),
+        Err(error) => warn!(%error, "panel-ui list service registration failed"),
+    }
 
     keep
 }
@@ -477,6 +503,7 @@ pub(crate) fn provided_keys() -> Vec<String> {
         echo_defs::panel_service::PANEL_SERVICE_INVOKER
             .name()
             .to_string(),
+        echo_defs::panel_ui::PANEL_UI_REGISTRAR.name().to_string(),
         // provider 实例：键由 provider 模块声明（`PROVIDER_KEY`），值由组合根
         // 按配置构建——两侧同源，见该常量的文档。
         echo_defs::llm::LLM_PROVIDER_SERVICE_KEY.to_string(),
