@@ -1757,13 +1757,26 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             // 事件在宿主侧翻译成会话子系统动作（镜像刷新 / 通道注册 /
             // 广播 / 清历史），消费掉就不再作为 `ModuleEvent` 透传——它们是
             // 宿主内部协议，不是给面板看的模块事件。
+            //
+            // 例外（2026-11「目录选择器永远转圈」修复）：模块拼好的原生事件
+            // 若**没有归属人格**（`BrowseDirectories` 这类全局只读查询），宿主
+            // 消化不了也找不到出口，必须原样送到汇聚点。面板只把 `ModuleEvent`
+            // 当展示日志，包一层照样到不了业务 reducer——所以这里发的是
+            // **原生 `BackendEvent`**，不是 `ModuleEvent`。
             let workspace_manager = gating_manager.clone();
             module_host.set_event_sink(std::sync::Arc::new(
                 move |event: echo_module::ModuleEvent| {
                     crate::host_services::gating_from_module_event(&gating_manager, &event);
-                    if crate::host_services::workspace_from_module_event(&workspace_manager, &event)
-                    {
-                        return;
+                    match crate::host_services::workspace_from_module_event(
+                        &workspace_manager,
+                        &event,
+                    ) {
+                        crate::host_services::WorkspaceEventOutcome::Handled => return,
+                        crate::host_services::WorkspaceEventOutcome::Passthrough(backend_event) => {
+                            sink(backend_event);
+                            return;
+                        }
+                        crate::host_services::WorkspaceEventOutcome::NotMine => {}
                     }
                     sink(
                         agent_module_management::protocol::BackendEvent::ModuleEvent {

@@ -82,7 +82,7 @@ agent-module-shell = { path = "source/modules/agent-module-shell" }
 agent-module-subagent = { git = "https://github.com/EchoLab-Auto/agent-module-subagent", branch = "main" }
 # 工作区会话模块已迁出为独立仓库 agent-module-workspace（业务逻辑全在那边，
 # Core 只做通用接线）；crate 名保持 agent-module-workspace 不变。
-agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", rev = "fbb765a" }
+agent-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", rev = "e0a6e33" }
 agent-module-management = { package = "agent-module-management", path = "source/modules/agent-module-management" }
 agent-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", rev = "b5eb646a89ba002e61516b45d455e849b0ae75f0" }
 agent-module-session = { path = "source/modules/agent-module-session" }

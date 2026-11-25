@@ -549,13 +549,34 @@ pub(crate) fn gating_from_module_event(
     }
 }
 
-/// 工作区模块事件 → 宿主动作（返回 `true` = 本事件已被工作区桥消费，
-/// 不再作为 `ModuleEvent` 透传给面板）。
+/// 工作区模块事件的处理结果。
+///
+/// 三态而不是 `bool` 的原因（2026-11「目录选择器永远转圈」修复）：工作区里
+/// **有些事件不属于任何人格**——`BrowseDirectories`（目录选择器的浏览回执）
+/// 就是典型：它是个全局只读查询，模块按线格式回 `{"BrowseDirectories":{…}}`，
+/// 里面没有 `team_id`。此前这条事件在宿主侧只打一条 debug 日志就丢了，面板
+/// 于是永远停在「读取中…」（本机与联邦一起坏，用户报的是"联邦浏览不能用"，
+/// 实际本机也坏）。
+///
+/// 面板侧只把 `ModuleEvent` 当**展示日志**（`state.ts` 的 `ModuleEvent` 分支
+/// 只 push 进 `moduleEvents`），不会解包成业务事件——所以这类事件必须由宿主
+/// 直接以**原生 `BackendEvent`** 送出去，包成 `ModuleEvent` 一样坏。
+pub(crate) enum WorkspaceEventOutcome {
+    /// 不是工作区事件：调用方继续走默认的 `ModuleEvent` 透传。
+    NotMine,
+    /// 宿主已消化：不透传。
+    Handled,
+    /// 模块拼好的原生 `BackendEvent`，但解析不出归属人格 → 送事件汇聚点。
+    Passthrough(agent_module_management::protocol::BackendEvent),
+}
+
+/// 工作区模块事件 → 宿主动作。
 ///
 /// 三类事件（协议见模块仓 `agent-module-workspace` 的模块文档）：
 ///
 /// - `workspace.backend_event`：载荷是**要发给前端的 `BackendEvent`**（模块
-///   自己拼好了线形状）——按 `team_id` 找到人格出口，事件原样进面板；
+///   自己拼好了线形状）——按 `team_id` 找到人格出口，事件原样进面板；找不到
+///   人格时经 [`WorkspaceEventOutcome::Passthrough`] 直送汇聚点（见枚举注释）；
 /// - `workspace.changed`：模块推来全量快照 → 写进该人格的镜像，再跑宿主的
 ///   那半段（确保会话通道 + 广播 `SessionUpdated` / `WorkspaceSessions`）；
 /// - `workspace.conversation_deleted`：清空被删对话的通道历史。
@@ -565,7 +586,7 @@ pub(crate) fn gating_from_module_event(
 pub(crate) fn workspace_from_module_event(
     manager: &Arc<AgentManager>,
     event: &echo_module::ModuleEvent,
-) -> bool {
+) -> WorkspaceEventOutcome {
     match event.name.as_str() {
         agent_module_workspace::events::BACKEND_EVENT => {
             let team_id = event
@@ -590,22 +611,37 @@ pub(crate) fn workspace_from_module_event(
                             running.agent.adopt_workspace_sessions(reply);
                         }
                     }
-                    match team_id.and_then(|id| manager.get(&id)) {
+                    match team_id {
                         // 有人格归属 → 走它的出口（team 标注由 `Agent::emit` 负责）。
-                        Some(running) => running.agent.emit(backend_event),
-                        // 无人格归属（浏览目录这类全局命令）→ 交给事件汇聚点。
-                        None => tracing::debug!(
-                            name = %event.name,
-                            "workspace backend event without a resolvable persona; dropped"
-                        ),
+                        Some(id) => match manager.get(&id) {
+                            Some(running) => {
+                                running.agent.emit(backend_event);
+                                WorkspaceEventOutcome::Handled
+                            }
+                            // 归属人格刚被禁/删：透传会让面板出现幽灵数据，
+                            // 保持丢弃（与改动前一致，只是日志挂了 id 便于排查）。
+                            None => {
+                                tracing::debug!(
+                                    team_id = %id,
+                                    "workspace backend event targets an unknown persona; dropped"
+                                );
+                                WorkspaceEventOutcome::Handled
+                            }
+                        },
+                        // 事件本身没有归属人格（`BrowseDirectories` 这类全局
+                        // 只读查询）→ 直送事件汇聚点。不能丢，也不能包成
+                        // `ModuleEvent`（面板只把它当展示日志，见枚举注释）。
+                        None => WorkspaceEventOutcome::Passthrough(backend_event),
                     }
                 }
-                Err(error) => tracing::warn!(
-                    %error,
-                    "workspace.backend_event 载荷不是合法的 BackendEvent（模块与宿主线格式漂移？）"
-                ),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "workspace.backend_event 载荷不是合法的 BackendEvent（模块与宿主线格式漂移？）"
+                    );
+                    WorkspaceEventOutcome::Handled
+                }
             }
-            true
         }
         agent_module_workspace::events::CHANGED => {
             let snapshot = match agent_module_loop::agent::workspace_mirror::WorkspaceSnapshot::try_from_event_payload(
@@ -614,7 +650,7 @@ pub(crate) fn workspace_from_module_event(
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     tracing::warn!(%error, "workspace.changed 载荷无效，保留现有镜像");
-                    return true;
+                    return WorkspaceEventOutcome::Handled;
                 }
             };
             let team_id = event
@@ -629,7 +665,7 @@ pub(crate) fn workspace_from_module_event(
                     "workspace.changed 指向未知人格（人格刚被禁/删？），快照丢弃"
                 ),
             }
-            true
+            WorkspaceEventOutcome::Handled
         }
         agent_module_workspace::events::CONVERSATION_DELETED => {
             let team_id = event
@@ -654,16 +690,16 @@ pub(crate) fn workspace_from_module_event(
                 })
             else {
                 tracing::warn!("workspace.conversation_deleted 缺 conversation 载荷");
-                return true;
+                return WorkspaceEventOutcome::Handled;
             };
             if let Some(running) = manager.get(team_id) {
                 running
                     .agent
                     .clear_workspace_conversation_channel(workspace_id, &conversation);
             }
-            true
+            WorkspaceEventOutcome::Handled
         }
-        _ => false,
+        _ => WorkspaceEventOutcome::NotMine,
     }
 }
 
@@ -912,7 +948,10 @@ mod tests {
                 }
             }),
         );
-        assert!(workspace_from_module_event(&manager, &foreign));
+        assert!(matches!(
+            workspace_from_module_event(&manager, &foreign),
+            WorkspaceEventOutcome::Handled
+        ));
         assert!(!mirror.is_seeded(), "他人格的回执不碰本人格的镜像");
 
         // ② 本人格的回执：补种 + 跑宿主的后半段（通道注册是异步 spawn 的）。
@@ -928,7 +967,10 @@ mod tests {
                 }
             }),
         );
-        assert!(workspace_from_module_event(&manager, &own));
+        assert!(matches!(
+            workspace_from_module_event(&manager, &own),
+            WorkspaceEventOutcome::Handled
+        ));
         assert!(mirror.is_seeded());
         assert_eq!(mirror.snapshot().active.as_deref(), Some("proj"));
         // 通道注册由 spawn 完成，等一拍。
@@ -952,7 +994,10 @@ mod tests {
                 "WorkspaceSessions": { "team_id": "t", "sessions": "not-a-list" }
             }),
         );
-        assert!(workspace_from_module_event(&manager, &broken));
+        assert!(matches!(
+            workspace_from_module_event(&manager, &broken),
+            WorkspaceEventOutcome::Handled
+        ));
         assert_eq!(
             mirror.snapshot().active.as_deref(),
             Some("proj"),
@@ -973,14 +1018,20 @@ mod tests {
             )
         };
         let malformed = serde_json::json!({"team_id": "t"});
-        assert!(change(malformed.clone()));
+        assert!(matches!(change(malformed.clone()), WorkspaceEventOutcome::Handled));
         assert!(!mirror.is_seeded());
-        assert!(change(serde_json::json!({
-            "team_id": "t", "sessions": [{"id":"proj", "name":"Proj"}], "active":"proj"
-        })));
-        assert!(change(malformed));
+        assert!(matches!(
+            change(serde_json::json!({
+                "team_id": "t", "sessions": [{"id":"proj", "name":"Proj"}], "active":"proj"
+            })),
+            WorkspaceEventOutcome::Handled
+        ));
+        assert!(matches!(change(malformed), WorkspaceEventOutcome::Handled));
         assert_eq!(mirror.snapshot().active.as_deref(), Some("proj"));
-        assert!(change(serde_json::json!({"team_id": "t", "sessions": []})));
+        assert!(matches!(
+            change(serde_json::json!({"team_id": "t", "sessions": []})),
+            WorkspaceEventOutcome::Handled
+        ));
         assert!(mirror.is_empty());
     }
 
@@ -1056,7 +1107,8 @@ mod tests {
         )]);
         let sink_manager = Arc::clone(&manager);
         host.set_event_sink(Arc::new(move |event: echo_module::ModuleEvent| {
-            workspace_from_module_event(&sink_manager, &event);
+            // 返回值在这里无意义（测试不断言透传），显式丢弃以满足 must_use 语义。
+            let _ = workspace_from_module_event(&sink_manager, &event);
         }));
         host.register_and_mount(agent_module_workspace::module("0.0.0"))
             .expect("mount workspace module");
