@@ -1546,6 +1546,18 @@ async fn session_commands_require_explicit_team_id() {
         errors.iter().all(|m| m.contains("team_id")),
         "errors must explain the missing team_id: {errors:?}"
     );
+    // 回执必须**点名命令**（2026-11）：17 条会话命令共用这条规则，不说命令名
+    // 时排障只能靠猜哪条没带 team_id（用户报障现场是一串命令同时被拒）。
+    for (index, name) in ["RequestTrunkTimeline", "RequestContext", "ClearHistory"]
+        .iter()
+        .enumerate()
+    {
+        assert!(
+            errors[index].contains(name),
+            "error #{index} must name {name}: {}",
+            errors[index]
+        );
+    }
 }
 
 #[tokio::test]

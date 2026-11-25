@@ -186,10 +186,17 @@ impl Agent {
         if Self::requires_explicit_team(&cmd) {
             match Self::command_team_id(&cmd) {
                 None => {
+                    // **点名命令**（2026-11）：同一条规则管着 17 条命令，此前
+                    // 一律回同一句话，"到底哪条命令没带 team_id" 只能靠猜
+                    // （用户报障时连串命令同时被拒，看不出源头）。命令名进
+                    // 回执与日志，界面上看得见、事后 journalctl 也查得到。
+                    let command = cmd.kind_name();
+                    tracing::warn!(command, "拒绝会话命令：缺少 team_id（本部署没有默认人格）");
                     self.emit(BackendEvent::Error {
                         session_id: None,
-                        message: "该命令必须指定 team_id（没有默认智能体；请在前端选择智能体）"
-                            .into(),
+                        message: format!(
+                            "命令 {command} 缺少 team_id：本部署没有默认智能体，请先在面板选择/创建智能体"
+                        ),
                     });
                     return;
                 }
