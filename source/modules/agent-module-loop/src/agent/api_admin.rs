@@ -20,6 +20,40 @@
 use super::*;
 use agent_module_provider_llm::api_admin::{self as admin_api, ApiAdminHost, ApiSnapshot};
 
+/// 本 agent **生效 API** 的唯一解析口径（2026-11）。
+///
+/// 顺序：persona 引用（`[agent.teams.<id>].api_profile`）命中 → 用该 profile；
+/// 否则全局激活项（`active_api`）→ 顶层默认字段。
+///
+/// 返回 `(resolved, metering_key)`：`metering_key` 是计量归属名（persona 引用
+/// 命中时为该 profile 名，否则为全局激活名）——provider 构建时它被烘焙进计量
+/// 包装器，所以必须与解析结果一起给出，否则用量会记到别人名下。
+///
+/// ## 为什么要有这一处
+///
+/// 同一条规则此前分散在三个地方（`apply_persona_api` / `rebuild_provider` /
+/// `api_config_events`），其中 `rebuild_provider` 漏了 persona 引用——于是
+/// 管理面每做一次 API 变更就把该 persona 顶回全局激活项，面板仍按
+/// `teams.<id>.api_profile` 显示，实际路由已经换人（2026-11 用户报障：
+/// "面板显示的 provider 与实际使用的不一致"）。规则只留这一份实现，
+/// 调用方各自执行副作用。
+pub(crate) fn resolve_effective_api(
+    mut cfg: AgentConfig,
+    reference: Option<&str>,
+) -> (AgentConfig, String) {
+    let reference = reference.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(name) = reference {
+        if cfg.apply_named_profile(name) {
+            return (cfg, name.to_string());
+        }
+        // 引用悬空（profile 被删/改名）：回落全局激活项。是否告知用户由调用方
+        // 决定（`apply_persona_api` 会 emit Error，重建路径不刷屏）。
+    }
+    cfg.apply_active_profile();
+    let key = cfg.active_api.clone();
+    (cfg, key)
+}
+
 impl Agent {
     /// Current API configuration summary (for the TUI settings form).
     pub async fn api_config(&self) -> AgentConfig {
@@ -43,15 +77,31 @@ impl Agent {
     /// 拆出来是为了让"面板重连的全量快照"（`RequestState`）能把这几条事件
     /// 和其它快照事件**按序装进一份列表**再一次性发出——而不是在模块里
     /// 先调一个 emit 再调另一个（顺序就成了调用顺序的副作用）。
+    ///
+    /// 生效 provider / model / thinking 一律经 [`resolve_effective_api`] 解析
+    /// **一次**，三者同源。此前 provider 由模块侧的 `apply_active_profile`
+    /// 算出、model 取 `active_model()`，persona 引用与全局激活不一致时事件里
+    /// 会出现"provider 属于 A、model 属于 B"——面板据此显示，与实际路由打架
+    /// （2026-11 用户报障）。
     pub async fn api_config_events(&self) -> Vec<BackendEvent> {
         let mut cfg = self.api_config().await;
         if let Some(snapshot) = self.api_pool_store_snapshot().await {
+            // 池与全局激活项取共享存储：发事件的可能是任意 persona，其内存
+            // 快照可能落后于管理面。
             cfg.api_profiles = snapshot.profiles;
             cfg.active_api = snapshot.active_api;
         }
-        let model = self.active_model().await;
+        let reference = self.model.persona_api.read().await.clone();
+        let (resolved, _key) = resolve_effective_api(cfg.clone(), reference.as_deref());
+        let model = resolved.model.clone();
+        // 已解析过的值直接进快照顶层字段；`active_api` / `profiles` 保持池原样
+        // （面板要据此画"全局激活"与下拉项）。
+        let mut event_cfg = resolved;
+        event_cfg.active_api = cfg.active_api.clone();
+        event_cfg.api_profiles = cfg.api_profiles.clone();
+        event_cfg.system_prompt = cfg.system_prompt.clone();
         // 事件形状（谁带生效值、谁带池原样）是协议知识 → 模块里装配。
-        let mut events = admin_api::api_config_events(&api_snapshot_of(&cfg), &model);
+        let mut events = admin_api::api_config_events(&api_snapshot_of(&event_cfg), &model);
         // 会话级覆盖跟着一起发：Panel 要能显示"我这个会话实际走哪个 profile"。
         // 此前它自己用 localStorage 记、连上时重放——第二份真相。现在只有
         // Core 一家之言（路由依据与下发内容同源，不可能不一致）。
@@ -62,7 +112,7 @@ impl Agent {
         // 缺省 team_id 在 Panel 侧等于"全进程"，两侧语义由此对齐。
         events.push(BackendEvent::SessionApiOverrides {
             team_id: None,
-            overrides: self.all_session_api_overrides(),
+            overrides: self.all_session_api_overrides().await,
         });
         events
     }
@@ -73,9 +123,21 @@ impl Agent {
     /// 覆盖全部 LLM 出口，供余额/用量图表）+ 脱敏（`llm::wrap_redacting`——
     /// LLM 请求出口卡口）；同时把快照中的密钥登记进脱敏器——热更新后新密钥
     /// 立即纳入全部出口的拦截范围（幂等）。
+    ///
+    /// ## 为什么必须经 [`resolve_effective_api`]
+    ///
+    /// 这里此前无条件 `apply_active_profile()`，于是**每次 API 管理面操作**
+    /// （保存 / 切换 / 删除 profile、切换 provider）都会把"引用了别的 profile"
+    /// 的 persona 顶回全局激活项：面板仍按 `teams.<id>.api_profile` 显示，
+    /// 实际路由却已换人——这就是"面板显示的 provider 与实际不一致"的主因
+    /// （2026-11 用户报障）。声明式解析在 `apply_persona_api`，命令式重建走
+    /// 这里，两条路径必须同口径。
+    ///
+    /// 生效模型一并写回 `active_model`：provider 是其 profile 构建的，请求
+    /// 模型必须与它同源，否则覆盖端点会报 `model_not_found`。
     pub(crate) async fn rebuild_provider(&self, cfg: &AgentConfig) -> bool {
-        let mut resolved = cfg.clone();
-        resolved.apply_active_profile();
+        let reference = self.model.persona_api.read().await.clone();
+        let (mut resolved, metering_key) = resolve_effective_api(cfg.clone(), reference.as_deref());
         resolved.api_key = resolved.effective_api_key();
         resolved.base_url = resolved.effective_base_url();
         self.register_config_secrets(&resolved);
@@ -83,9 +145,7 @@ impl Agent {
             Ok(p) => {
                 let provider: Arc<dyn LlmProvider> = Arc::from(p);
                 let provider = match self.metrics() {
-                    Some(store) => {
-                        crate::llm::wrap_metering(provider, store, cfg.active_api.clone())
-                    }
+                    Some(store) => crate::llm::wrap_metering(provider, store, metering_key),
                     None => provider,
                 };
                 let provider = match self.redactor() {
@@ -93,6 +153,7 @@ impl Agent {
                     None => provider,
                 };
                 *self.model.provider.write().await = provider;
+                self.set_model(resolved.model.clone()).await;
                 true
             }
             Err(e) => {
@@ -279,9 +340,10 @@ impl Agent {
         for effect in effects {
             match effect {
                 pool::PoolEffect::RebuildProvider => {
-                    if self.rebuild_provider(&cfg_snapshot).await {
-                        self.set_model(model.clone()).await;
-                    }
+                    // 生效模型由 `rebuild_provider` 与 provider 一并写回（同源）；
+                    // 这里不再用入参 `model`——persona 引用了别的 profile 时，
+                    // 入参属于"全局激活项"，拿它覆盖会把 persona 的模型换掉。
+                    self.rebuild_provider(&cfg_snapshot).await;
                 }
                 pool::PoolEffect::BroadcastApiConfig => {}
                 pool::PoolEffect::Notice(_)
@@ -339,17 +401,13 @@ impl Agent {
             }
         };
         let cfg_snapshot = config.clone();
-        let mut resolved = cfg_snapshot.clone();
-        resolved.apply_active_profile();
-        let model = resolved.model.clone();
         drop(config);
 
         for effect in effects {
             match effect {
                 pool::PoolEffect::RebuildProvider => {
-                    if self.rebuild_provider(&cfg_snapshot).await {
-                        self.set_model(model.clone()).await;
-                    }
+                    // 生效模型由 `rebuild_provider` 同源写回（它尊重 persona 引用）。
+                    self.rebuild_provider(&cfg_snapshot).await;
                 }
                 pool::PoolEffect::Notice(message) => {
                     self.emit(BackendEvent::Error {
@@ -405,9 +463,7 @@ impl Agent {
             }
             return;
         }
-        if self.rebuild_provider(&cfg_snapshot).await {
-            self.set_model(cfg_snapshot.model.clone()).await;
-        }
+        self.rebuild_provider(&cfg_snapshot).await;
         // Session overrides pointing at the deleted profile must be dropped.
         self.drop_session_providers_of(name).await;
         for effect in effects {

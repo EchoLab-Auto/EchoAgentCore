@@ -6198,3 +6198,112 @@ async fn corrupt_session_load_rejects_recorded_message_bypass() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// **persona API 引用必须在命令式重建后依然生效**（2026-11 用户报障守护）。
+///
+/// 缺陷形态：`rebuild_provider` 无条件 `apply_active_profile()`，而管理面每次
+/// 保存 / 切换 / 删除 profile 都会调它——于是"引用了别的 profile"的 persona
+/// 被顶回全局激活项：面板仍按 `teams.<id>.api_profile` 显示，实际路由已经
+/// 换人（"面板显示的 provider 与实际使用的不一致"）。
+#[tokio::test]
+async fn rebuild_provider_respects_persona_reference() {
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    }));
+    {
+        let mut cfg = agent.model.config.write().await;
+        cfg.api_profiles = vec![
+            crate::config::ApiProfile::new("kimi", "openai", "kimi-k3"),
+            crate::config::ApiProfile::new("ds", "deepseek", "deepseek-v4-flash"),
+        ];
+        cfg.api_profiles[0].api_key = "sk-kimi".into();
+        cfg.api_profiles[0].base_url = "http://kimi.test".into();
+        cfg.api_profiles[1].api_key = "sk-ds".into();
+        cfg.api_profiles[1].base_url = "http://ds.test".into();
+        // 现场形态：全局激活项 ≠ persona 引用。
+        cfg.active_api = "ds".into();
+    }
+    agent.set_persona_api(Some("kimi".into())).await;
+    let global = agent.model.config.read().await.clone();
+    assert!(agent.apply_persona_api(&global).await);
+
+    // 管理面的一次无关 API 变更（保存 / 切换 / 删除）都会走这条。
+    let cfg = agent.model.config.read().await.clone();
+    assert!(agent.rebuild_provider(&cfg).await);
+
+    assert_eq!(
+        agent.model.provider.read().await.default_model(),
+        "kimi-k3",
+        "重建必须尊重 persona 引用，不能被全局 active_api 顶掉"
+    );
+    assert_eq!(
+        agent.active_model().await,
+        "kimi-k3",
+        "生效模型必须与 provider 同源"
+    );
+}
+
+/// 无 persona 引用时重建仍跟随全局激活项（不要修出新偏差）。
+#[tokio::test]
+async fn rebuild_provider_follows_global_without_persona_reference() {
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    }));
+    {
+        let mut cfg = agent.model.config.write().await;
+        cfg.api_profiles = vec![crate::config::ApiProfile::new("kimi", "openai", "kimi-k3")];
+        cfg.api_profiles[0].api_key = "sk-kimi".into();
+        cfg.api_profiles[0].base_url = "http://kimi.test".into();
+        cfg.active_api = "kimi".into();
+    }
+    let cfg = agent.model.config.read().await.clone();
+    assert!(agent.rebuild_provider(&cfg).await);
+    assert_eq!(agent.model.provider.read().await.default_model(), "kimi-k3");
+    assert_eq!(agent.active_model().await, "kimi-k3");
+}
+
+/// `ApiConfigUpdated` 里的 provider 与 model 必须来自**同一次解析**。
+///
+/// 旧实现：provider 由模块侧 `apply_active_profile` 算出（全局激活），model
+/// 取 `active_model()`（persona 的值）——persona 引用与全局激活不一致时，
+/// 同一事件里两半属于不同 profile，面板据此显示的就是一个不存在的组合。
+#[tokio::test]
+async fn api_config_events_keep_provider_and_model_in_sync() {
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    }));
+    {
+        let mut cfg = agent.model.config.write().await;
+        cfg.api_profiles = vec![
+            crate::config::ApiProfile::new("kimi", "openai", "k3"),
+            crate::config::ApiProfile::new("ds", "deepseek", "deepseek-v4-flash"),
+        ];
+        cfg.api_profiles[0].api_key = "sk-kimi".into();
+        cfg.api_profiles[0].base_url = "http://kimi.test".into();
+        cfg.api_profiles[1].api_key = "sk-ds".into();
+        cfg.api_profiles[1].base_url = "http://ds.test".into();
+        cfg.active_api = "ds".into();
+    }
+    agent.set_persona_api(Some("kimi".into())).await;
+    let global = agent.model.config.read().await.clone();
+    assert!(agent.apply_persona_api(&global).await);
+
+    let events = agent.api_config_events().await;
+    let updated = events
+        .iter()
+        .find_map(|event| match event {
+            BackendEvent::ApiConfigUpdated {
+                provider, model, ..
+            } => Some((provider.clone(), model.clone())),
+            _ => None,
+        })
+        .expect("必须发 ApiConfigUpdated");
+    assert_eq!(
+        updated,
+        ("openai".to_string(), "k3".to_string()),
+        "provider 与 model 必须同源（persona 引用的那个 profile）"
+    );
+}

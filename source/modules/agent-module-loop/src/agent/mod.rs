@@ -1610,30 +1610,69 @@ impl Agent {
         self.model.session_api.snapshot()
     }
 
-    /// **全进程**的会话级覆盖：本 agent + 全部运行中人格。
+    /// **全进程**的会话级覆盖：本 agent + 全部在案人格（含未运行）。
     ///
     /// `SessionApiOverrides` 事件在 Panel 侧是「整体替换」语义（某会话不再出现
     /// = 它已经没有覆盖），所以载荷必须是**全量**的。只发自己那一份时，处理
     /// `RequestState` 的 agent 若碰巧没有任何覆盖，面板刷新就会把整张表替成空
     /// ——「换完会话模型一刷新就变回去」（2026-11 用户报障）。
     ///
-    /// 枚举口径与 `state_snapshot` / 改名传播一致（`registry().all()`，含自己）。
-    pub fn all_session_api_overrides(
+    /// ## 为什么未运行的人格也要读盘
+    ///
+    /// 只枚举 `registry().all()`（运行中）时，一个人格退休后它的覆盖就从事件里
+    /// 消失，而**持久化文件还在**（`echo-session-api-{persona}.json`，下次该会话
+    /// 被唤醒时 Core 会照它路由）。结果是"面板显示跟随 persona、实际走覆盖"
+    /// ——又一处显示与路由不一致（2026-11 用户报障的形态之一）。这里对有配置
+    /// 但没在跑的人格直接读旁路文件，与路由的持久化同源。
+    ///
+    /// 只读**在案**人格（`infos()`）：已删除人格残留的文件不参与，否则死会话
+    /// 的覆盖会被永久下发。
+    pub async fn all_session_api_overrides(
         &self,
     ) -> Vec<agent_module_management::protocol::SessionApiOverrideEntry> {
         let mut slices = vec![(
-            self.team_id().unwrap_or_default(),
+            self.team_id().unwrap_or_else(|| "__core".into()),
             self.session_api_overrides(),
         )];
-        if let Some(mgr) = self.registry() {
-            for running in mgr.all() {
-                if running.agent.team_id() == self.team_id() {
-                    continue; // 已由上面覆盖
+        let Some(mgr) = self.registry() else {
+            return crate::agent::session_api_store::merge_overrides(slices);
+        };
+        let running = mgr.all();
+        for entry in &running {
+            if entry.agent.team_id() == self.team_id() {
+                continue; // 已由上面覆盖
+            }
+            slices.push((entry.id.clone(), entry.agent.session_api_overrides()));
+        }
+        if let Some(dir) = self.session_api_dir().await {
+            for info in mgr.infos() {
+                if running.iter().any(|entry| entry.id == info.id) {
+                    continue; // 运行中：内存表是本次进程的最新决定
                 }
-                slices.push((running.id.clone(), running.agent.session_api_overrides()));
+                let file = dir.join(format!("echo-session-api-{}.json", info.id));
+                slices.push((
+                    info.id.clone(),
+                    crate::agent::session_api_store::read_override_file(&file),
+                ));
             }
         }
         crate::agent::session_api_store::merge_overrides(slices)
+    }
+
+    /// 会话级覆盖旁路文件所在目录（与 `echo-session-api-{persona}.json` 同目录）。
+    ///
+    /// 首选共享配置目录（`core.toml` 的父目录）——组合根就是这么派生的；读不到
+    /// 时退回本 agent 自己挂的路径。都没有（测试 / 纯内存）→ `None`。
+    async fn session_api_dir(&self) -> Option<std::path::PathBuf> {
+        if let Some(store) = self.model.config_store.lock().await.clone() {
+            if let Some(dir) = store.path().parent() {
+                return Some(dir.to_path_buf());
+            }
+        }
+        self.model
+            .session_api
+            .path()
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
     }
 
     /// 装配期注入覆盖的持久化文件（不注入 = 纯内存）。
@@ -1690,6 +1729,11 @@ impl Agent {
         for sid in sids {
             self.model.session_providers.remove(&sid);
             self.model.session_provider_locks.remove(&sid);
+            // 持久化表也要清：只清内存会让旁路文件继续引用这个已经不存在的
+            // profile——重启后惰性恢复解析失败、丢弃，面板则在本进程内一直显示
+            // 一个悬空覆盖（`profileMissing` 兜底提示"回落顶层默认"，但仍会
+            // 出现在选择器里）。
+            self.model.session_api.clear(&sid);
             self.persist_session_api_profile(&sid, None);
             dropped += 1;
             tracing::info!(session = %sid, %profile, "session API override dropped after profile delete");

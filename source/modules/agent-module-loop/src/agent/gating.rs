@@ -219,33 +219,24 @@ impl Agent {
     /// 返回是否成功重建；失败时保留旧 provider 并 emit Error。
     pub async fn apply_persona_api(&self, global: &AgentConfig) -> bool {
         let reference = self.model.persona_api.read().await.clone();
-        let mut resolved = global.clone();
-        let ok = match reference.as_deref().filter(|n| !n.is_empty()) {
-            Some(name) => resolved.apply_named_profile(name),
-            None => {
-                resolved.apply_active_profile();
-                true
-            }
-        };
-        if !ok {
+        let name = reference.as_deref().filter(|n| !n.is_empty());
+        // 引用悬空（profile 已删/改名）要说明白，否则用户只看到"切了没反应"。
+        if let Some(missing) = name.filter(|n| !global.api_profiles.iter().any(|p| p.name == *n)) {
             self.emit(BackendEvent::Error {
                 session_id: None,
                 message: format!(
-                    "persona API profile not found in pool: {} — falling back to global default",
-                    reference.as_deref().unwrap_or_default()
+                    "persona API profile not found in pool: {missing} — falling back to global default"
                 ),
             });
-            resolved.apply_active_profile();
         }
-        // 计量归属：persona 引用命中 → 该 profile 名；否则跟随全局默认
-        // （与 `QueryApiMetrics` / 面板 profile 卡片的命名空间一致）。
-        let profile_key = match reference.as_deref().filter(|n| !n.is_empty()) {
-            Some(name) if ok => name.to_string(),
-            _ => global.active_api.clone(),
-        };
+        // 解析口径与命令式重建共用一处（`resolve_effective_api`）：persona 引用
+        // 命中就用它，悬空/无引用则回落全局激活项。
+        let (mut resolved, profile_key) =
+            crate::agent::api_admin::resolve_effective_api(global.clone(), name);
         resolved.api_key = resolved.effective_api_key();
         resolved.base_url = resolved.effective_base_url();
         // 本 persona 的 config 只更新 API 相关字段（保留权限、预算等其余项）。
+        // 它描述的是"本 agent 现在用的那套值"，`api_config()` / TUI 设置面读它。
         {
             let mut cfg = self.model.config.write().await;
             cfg.provider = resolved.provider.clone();

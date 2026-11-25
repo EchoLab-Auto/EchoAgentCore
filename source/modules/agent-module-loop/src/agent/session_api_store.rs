@@ -260,6 +260,49 @@ impl SessionApiStore {
     }
 }
 
+/// 读某人格的旁路覆盖文件（`{ session_id: profile }`）——**只读**。
+///
+/// `SessionApiOverrides` 需要下发全进程的覆盖，而事件是由**某一个** agent 组装
+/// 的。其它人格若未运行（退休 / 启动失败 / 从未被唤醒），内存表不存在，但文件
+/// 还在，且 Core 在该会话下次被唤醒时会照着它路由。只发运行中人格的切片会让
+/// 这些会话在面板上"回落成 persona 值"——显示与路由又不一致（2026-11 用户
+/// 报障的形态之一）。
+///
+/// 判据与 [`SessionApiStore::open`] 一致：文件不存在 / 内容损坏 / 读不到都返回
+/// 空表并记 warn——覆盖是偏好，不是数据；一份坏文件不该让事件组装失败。
+pub fn read_override_file(path: &std::path::Path) -> Vec<SessionApiOverrideEntry> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "读不到会话级 API 覆盖文件，该人格的覆盖本次不下发"
+            );
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str::<Entries>(&text) {
+        Ok(entries) => entries
+            .into_iter()
+            .map(|(session_id, profile)| SessionApiOverrideEntry {
+                session_id,
+                profile,
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "会话级 API 覆盖文件内容损坏，该人格的覆盖本次不下发"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// 把多个人格的覆盖合并成**一份进程级快照**（`SessionApiOverrides` 的载荷）。
 /// 把多个人格的覆盖合并成**一份进程级快照**（`SessionApiOverrides` 的载荷）。
 ///
 /// # 为什么必须合并
@@ -491,5 +534,32 @@ mod tests {
         assert_eq!(store.get("s").as_deref(), Some("new"));
         assert_eq!(store.get("only-on-disk").as_deref(), Some("kimi"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// 旁路只读：未运行的人格靠它把覆盖下发给面板（缺了这条，面板会在人格
+    /// 退休后把该会话的覆盖当成"没有"，而 Core 仍按文件路由）。
+    #[test]
+    fn read_override_file_reads_another_personas_entries() {
+        let path = temp_path("read-file");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, r#"{"local:tui::u":"opencode go"}"#).unwrap();
+        let entries = read_override_file(&path);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].session_id, "local:tui::u");
+        assert_eq!(entries[0].profile, "opencode go");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 文件不存在 / 内容损坏都退化成空表：覆盖是偏好，不是数据。
+    #[test]
+    fn read_override_file_tolerates_missing_and_broken() {
+        let missing = temp_path("read-missing");
+        let _ = std::fs::remove_file(&missing);
+        assert!(read_override_file(&missing).is_empty());
+
+        let broken = temp_path("read-broken");
+        std::fs::write(&broken, "{not json").unwrap();
+        assert!(read_override_file(&broken).is_empty());
+        let _ = std::fs::remove_file(&broken);
     }
 }

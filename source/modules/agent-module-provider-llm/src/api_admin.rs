@@ -205,12 +205,21 @@ pub fn patch_agent_table(
     Ok(())
 }
 
-/// `ApiConfigUpdated` / `ApiProfilesUpdated` 两条事件（面板重连的全量快照用）。
+/// 供应商池快照 → 两条事件（`ApiConfigUpdated` / `ApiProfilesUpdated`）。
 ///
-/// 参数 `model` 是**生效模型名**（宿主解析：可能是会话级覆盖），模块不猜。
+/// ## `provider` 与 `model` 由调用方解析好，这里不再二次解析
+///
+/// 这里曾经自己调 `apply_active_profile()` 把 `active_api` 合进顶层字段，
+/// 而 `model` 参数却是调用方另算的——两者不同源时事件会自相矛盾
+/// （2026-11 用户报障："面板显示的 provider 与实际使用的不一致"）：persona
+/// 引用了 `kimi`、全局激活是 `deepseek` 时，provider 被解析成 deepseek，
+/// model 却是 persona 的 `kimi-k3`。
+///
+/// 生效 API 只有一处解析口径（宿主 `resolve_effective_api`：persona 引用
+/// 优先，否则全局激活），调用方把解析结果放进 `snapshot` 的顶层字段后传进来，
+/// 本函数只做投影。`active_api` / `profiles` 保持池原样（面板据此画"全局激活"
+/// 与下拉项），不会被解析结果覆盖。
 pub fn api_config_events(snapshot: &ApiSnapshot, model: &str) -> Vec<BackendEvent> {
-    let mut resolved = snapshot.clone();
-    resolved.apply_active_profile();
     let profiles: Vec<ApiProfileInfo> = snapshot
         .api_profiles
         .iter()
@@ -226,12 +235,12 @@ pub fn api_config_events(snapshot: &ApiSnapshot, model: &str) -> Vec<BackendEven
         .collect();
     vec![
         BackendEvent::ApiConfigUpdated {
-            provider: resolved.provider.clone(),
+            provider: snapshot.provider.clone(),
             model: model.to_string(),
-            base_url: resolved.effective_base_url(),
-            api_key_set: !resolved.effective_api_key().is_empty(),
-            thinking: resolved.thinking,
-            reasoning_effort: resolved.reasoning_effort,
+            base_url: snapshot.effective_base_url(),
+            api_key_set: !snapshot.effective_api_key().is_empty(),
+            thinking: snapshot.thinking,
+            reasoning_effort: snapshot.reasoning_effort,
             system_prompt: snapshot.system_prompt.clone(),
             active_api: snapshot.active_api.clone(),
             profiles: profiles.clone(),
@@ -420,13 +429,20 @@ mod tests {
         assert!(message.contains("请求失败"));
     }
 
-    /// 事件装配：`ApiConfigUpdated` 报的是**生效值**（激活 profile 已合入），
-    /// `ApiProfilesUpdated` 报的是**池原样**（面板按它渲染下拉）。
+    /// 事件装配：`provider` / `model` 由调用方解析好（**同一处口径**），本函数
+    /// 只做投影——不再自己合入 `active_api`，否则会和调用方给的 `model` 分叉。
+    ///
+    /// 2026-11 用户报障（"面板显示的 provider 与实际使用的不一致"）的根就是
+    /// 这里二次解析：persona 引用 kimi、全局激活 deepseek 时，事件里 provider
+    /// 属于 deepseek 而 model 属于 kimi。
     #[test]
-    fn api_config_events_report_effective_and_raw() {
+    fn api_config_events_projects_caller_resolution() {
+        // 调用方已把 persona 引用解析进顶层字段（provider=deepseek 来自 p1）。
         let mut snapshot = snapshot();
+        snapshot.provider = "deepseek".into();
+        snapshot.model = "m1".into();
         snapshot.active_api = "p1".into();
-        let events = api_config_events(&snapshot, "eff-model");
+        let events = api_config_events(&snapshot, "m1");
         match &events[0] {
             BackendEvent::ApiConfigUpdated {
                 provider,
@@ -435,7 +451,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(provider, "deepseek");
-                assert_eq!(model, "eff-model");
+                assert_eq!(model, "m1");
+                // 池原样照发：面板据此画"全局激活"与下拉项。
                 assert_eq!(active_api, "p1");
             }
             other => panic!("期望 ApiConfigUpdated，得到 {other:?}"),
@@ -446,6 +463,23 @@ mod tests {
                 assert_eq!(profiles[0].provider, "deepseek");
             }
             other => panic!("期望 ApiProfilesUpdated，得到 {other:?}"),
+        }
+    }
+
+    /// `active_api` 指向激活项时**不**再被本函数改写：顶层字段是调用方的解析
+    /// 结果，二次合入会把它从 persona 引用换成全局激活（本缺陷回归守护）。
+    #[test]
+    fn api_config_events_does_not_reapply_active_profile() {
+        let mut snapshot = snapshot();
+        snapshot.provider = "moonshot".into();
+        snapshot.model = "k3".into();
+        snapshot.active_api = "p1".into();
+        let events = api_config_events(&snapshot, "k3");
+        match &events[0] {
+            BackendEvent::ApiConfigUpdated { provider, .. } => {
+                assert_eq!(provider, "moonshot", "provider 必须保持调用方的解析结果");
+            }
+            other => panic!("期望 ApiConfigUpdated，得到 {other:?}"),
         }
     }
 }
