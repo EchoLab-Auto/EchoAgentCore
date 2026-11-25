@@ -3,8 +3,8 @@ prodoc: true
 id: index
 title: "EchoAgent 文档总览"
 group: 总览
-x: 160
-y: 80
+x: 6552
+y: 48
 link: ["architecture | 架构总览", "core | Core 后端 | r>l", "panel | Panel 前端 | r>l", "protocol | 协议与数据流 | r>l", "deploy | 部署与自更新 | r>l", "guide | 开发指南 | r>l"]
 ---
 

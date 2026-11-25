@@ -3,8 +3,8 @@ prodoc: true
 id: guide
 title: "开发指南"
 group: 工程
-x: 960
-y: 3760
+x: 7728
+y: 216
 link: ["testing | 测试策略", "documentation-guide | 文档规范"]
 ---
 

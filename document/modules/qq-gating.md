@@ -3,8 +3,8 @@ prodoc: true
 id: qq-gating
 title: "QQ 实例门控"
 group: Core
-x: 4008
-y: 216
+x: 6648
+y: 552
 ---
 
 # QQ 实例门控设计

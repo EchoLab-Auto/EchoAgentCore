@@ -3,8 +3,8 @@ prodoc: true
 id: chat-tools
 title: "工具卡与图标行"
 group: 前端
-x: 5168
-y: 888
+x: 10283
+y: 1056
 ---
 
 # 工具卡与图标行

@@ -3,8 +3,8 @@ prodoc: true
 id: shell
 title: "Shell 会话模块"
 group: Core
-x: 648
-y: 216
+x: 2448
+y: 552
 ---
 
 # Shell 会话模块

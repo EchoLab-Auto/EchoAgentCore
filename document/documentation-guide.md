@@ -3,8 +3,8 @@ prodoc: true
 id: documentation-guide
 title: "文档规范"
 group: 工程
-x: 1600
-y: 4040
+x: 7878
+y: 384
 ---
 
 # 文档规范

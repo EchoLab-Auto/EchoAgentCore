@@ -3,8 +3,8 @@ prodoc: true
 id: chat-entry
 title: "入口行（功能条）"
 group: 前端
-x: 4404
-y: 552
+x: 13175
+y: 720
 ---
 
 # 入口行（功能条）

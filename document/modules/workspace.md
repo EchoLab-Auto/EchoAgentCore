@@ -3,8 +3,8 @@ prodoc: true
 id: workspace
 title: "工作区会话模块"
 group: Core
-x: 948
-y: 216
+x: 2748
+y: 552
 ---
 
 # 工作区会话模块

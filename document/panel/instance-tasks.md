@@ -3,8 +3,8 @@ prodoc: true
 id: instance-tasks
 title: "Panel 实例管理 · 任务 · Shell"
 group: 前端
-x: 1452
-y: 384
+x: 14164
+y: 552
 ---
 
 # Panel 实例管理 · 任务 · Shell

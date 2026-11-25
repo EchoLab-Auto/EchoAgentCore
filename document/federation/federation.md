@@ -3,8 +3,8 @@ prodoc: true
 id: federation
 title: "联邦（多机去中心化）"
 group: Core
-x: 7040
-y: 1200
+x: 6048
+y: 552
 link: []
 ---
 

@@ -3,8 +3,8 @@ prodoc: true
 id: chatgpt-subscription
 title: "ChatGPT 订阅接入"
 group: Core
-x: 648
-y: 560
+x: 5952
+y: 48
 ---
 
 # ChatGPT 订阅接入（`openai-chatgpt`）

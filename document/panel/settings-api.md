@@ -3,8 +3,8 @@ prodoc: true
 id: settings-api
 title: "设置 · API"
 group: 前端
-x: 1328
-y: 552
+x: 8478
+y: 720
 ---
 
 # 设置 · API

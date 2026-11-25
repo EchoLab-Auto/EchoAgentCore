@@ -3,8 +3,8 @@ prodoc: true
 id: chat
 title: "Panel 会话视图"
 group: 前端
-x: 2328
-y: 384
+x: 12560
+y: 552
 link: ["chat-messages | 消息区", "chat-input | 输入区", "chat-entry | 入口行", "chat-rail | 双侧边栏"]
 ---
 

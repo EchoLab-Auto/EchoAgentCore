@@ -3,8 +3,8 @@ prodoc: true
 id: chat-messages
 title: "会话消息区"
 group: 前端
-x: 3664
-y: 552
+x: 10713
+y: 720
 link: ["chat-list | 列表与滚动", "chat-history | 历史与实时窗口", "chat-timeline | 时序与动画", "chat-work | 工作行"]
 ---
 

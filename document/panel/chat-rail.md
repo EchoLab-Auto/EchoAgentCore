@@ -3,8 +3,8 @@ prodoc: true
 id: chat-rail
 title: "双侧边栏（chat-rail）"
 group: 前端
-x: 4704
-y: 552
+x: 13475
+y: 720
 ---
 
 # 双侧边栏（chat-rail）

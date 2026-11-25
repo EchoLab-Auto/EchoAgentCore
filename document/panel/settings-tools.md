@@ -3,8 +3,8 @@ prodoc: true
 id: settings-tools
 title: "设置 · 工具"
 group: 前端
-x: 1928
-y: 552
+x: 9078
+y: 720
 ---
 
 # 设置 · 工具

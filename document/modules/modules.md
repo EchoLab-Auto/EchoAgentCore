@@ -3,8 +3,8 @@ prodoc: true
 id: modules
 title: "模块化设计"
 group: Core
-x: 2448
-y: 48
+x: 4398
+y: 384
 link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "workspace | 工作区", "prodoc | 文档群", "subagent | Subagent", "skills | 技能目录", "provider-llm | LLM Provider", "loop | 循环", "sanitize | 脱敏", "session | 会话", "transcript | 显示层", "management-panel | 管理面", "panel-service | 面板服务", "federation | 联邦", "selfupdate | 自更新", "qq-gating | QQ 实例", "module-authoring | 模块开发"]
 ---
 

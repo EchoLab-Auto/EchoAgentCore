@@ -4,7 +4,7 @@ id: config-persistence
 title: "配置持久化"
 group: Core
 x: 948
-y: 384
+y: 552
 ---
 
 # 配置持久化

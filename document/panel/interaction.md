@@ -3,8 +3,8 @@ prodoc: true
 id: interaction
 title: "Panel 交互定义"
 group: 前端
-x: 1768
-y: 216
+x: 12641
+y: 384
 link: ["settings | 设置视图", "instance-tasks | 实例管理·任务·Shell", "system | 系统反馈", "chat | 会话视图"]
 ---
 

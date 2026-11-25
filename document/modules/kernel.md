@@ -3,8 +3,8 @@ prodoc: true
 id: kernel
 title: "运行地基（kernel 模块）"
 group: Core
-x: 48
-y: 216
+x: 2148
+y: 552
 link: []
 ---
 

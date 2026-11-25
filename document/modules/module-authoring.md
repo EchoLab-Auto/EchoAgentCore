@@ -3,8 +3,8 @@ prodoc: true
 id: module-authoring
 title: "模块开发指南"
 group: Core
-x: 4308
-y: 216
+x: 6948
+y: 552
 ---
 
 # 模块开发指南（进程外 / 进程内）

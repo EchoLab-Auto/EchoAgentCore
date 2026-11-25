@@ -3,8 +3,8 @@ prodoc: true
 id: prodoc
 title: "ProDoc 文档群模块"
 group: Core
-x: 1008
-y: 384
+x: 3048
+y: 552
 ---
 
 # ProDoc 文档群模块
@@ -73,7 +73,7 @@ CLI 是一次性页面加载，超量顶多慢；本模块走 WS 推送，一个
 |---|---|---|
 | `RequestProDocBundle` | 扫描文档根并推快照 | 是 |
 | `BrowseProDocDirs` | 目录选择器逐层浏览（只列子目录） | 是 |
-| `ProDocRoots` | 可打开的根列表 + 生效的上限 | 是 |
+| `ProDocRoots` | **发现的**文档群列表（+ 生效上限） | 是 |
 | `ReadProDocFile` | 读单文件原文（冲突对照 / 合并基准） | 是 |
 | `SaveProDocFile` | 保存单文件（带 `base` 冲突检测，原子写） | 否 |
 | `DeleteProDocFile` | 删除单文件（`base` 不匹配则取消） | 否 |
@@ -81,18 +81,48 @@ CLI 是一次性页面加载，超量顶多慢；本模块走 WS 推送，一个
 
 `ReadProDocFile` / `ProDocCheck` 在 `PANEL_READONLY_COMMANDS` 里，`Save`/`Delete` **不在**——只读面板能看不能改。
 
+## 文档群怎么被识别（2026-11）
+
+判据是**参数区里的 `prodoc: true`**，不是"目录里有 `.md`"：
+
+```yaml
+---
+prodoc: true
+id: project
+title: 项目总览
+---
+```
+
+不用"含 `.md`"的原因很直接：任何仓库根都有 `README.md`，用它判会把每个仓库都画成一张散点图。也不用复用 `package`——那个字段在 `SKILL.md` 里已被占用（"这个 skill 属于哪个模块"），prodoc 自己的 skills 目录里就有一篇 `package: echo-agent.prodoc`，以它为判据会误判。
+
+标记与检查器的 `no-frame` 判定共用 `check::parse_frame`，两侧不会出现"一个认为有参数区、另一个认为没有"的错位。值只认 `true`（含引号、大小写不敏感），`false` / 空值 / 其它字符串都不算。
+
 ## 配置
 
 ```toml
 [module.config]
-# 允许打开的文档根（绝对路径）。空 = 只允许 HOME。
+# 发现范围（绝对路径）。模块在这些树下递归找带 `prodoc: true` 的目录。
 roots = ["/home/me/docs", "/srv/wiki"]
+# 是否要求标记才能打开（默认 true）。关掉即恢复"任何含 .md 的目录都能打开"。
+require_marker = true
+# 发现时的递归层数上限（默认 4）。
+discover_depth = 4
 max_file_bytes = 1048576
 max_files = 2000
 max_total_bytes = 33554432
 ```
 
-`roots` **刻意不用"任意绝对路径"**：那等于给面板开了一个读全盘 `.md` 的口子。配置为空时回退 HOME——刚装上还没配时，面板至少能让人从家目录往下走。
+`roots` 同时是**沙箱边界**：两者必须是同一份列表——范围比沙箱宽会列出点不开的项，沙箱比范围宽又能用别的路径绕开识别。`roots` 刻意不用"任意绝对路径"，那等于给面板开一个读全盘 `.md` 的口子。
+
+### 发现的三条规则
+
+- **命中即止**：一个目录自己带标记就不再下探。文档群是嵌套的（`<repo>/document/{core,modules,...}`），不剪枝会把同一个群报成十几个根。
+- **realpath 去重 + 深度上限**：符号链接成环或两个 root 互相包含都不重复报；深挖只在大仓库上白跑。
+- **探头只读前 8 KB、最多 50 篇**：参数区总在文件最前面，为一个布尔判断读完整篇没有意义。
+
+### 未声明即拒绝
+
+`RequestProDocBundle` 与 `ProDocCheck` 都过标记校验。只加在打开路径上不够——`ProDocCheck` 同样读整棵目录，不加它就是一个"读任意 `.md`"的旁路。`require_marker = false` 是迁移期的逃生口。
 
 ## 写盘：冲突合并为什么在前端
 

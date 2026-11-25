@@ -4,7 +4,7 @@ id: multimodal
 title: "多模态输入"
 group: Core
 x: 648
-y: 384
+y: 552
 ---
 
 # 多模态输入（图片）

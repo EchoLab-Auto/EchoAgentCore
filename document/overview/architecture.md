@@ -3,8 +3,8 @@ prodoc: true
 id: architecture
 title: "架构总览"
 group: 总览
-x: 160
-y: 360
+x: 2298
+y: 216
 ---
 
 # 架构总览

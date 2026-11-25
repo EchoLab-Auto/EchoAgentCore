@@ -3,8 +3,8 @@ prodoc: true
 id: icons
 title: "Panel 图标体系"
 group: 前端
-x: 648
-y: 216
+x: 8178
+y: 384
 ---
 
 # 图标体系

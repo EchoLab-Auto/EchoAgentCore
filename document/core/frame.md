@@ -3,8 +3,8 @@ prodoc: true
 id: frame
 title: "框架（内核）"
 group: Core
-x: 48
-y: 216
+x: 798
+y: 384
 link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | 多模态输入", "config-persistence | 配置持久化", "logging | 日志与可观测性", "security-redaction | 敏感信息隔离"]
 ---
 

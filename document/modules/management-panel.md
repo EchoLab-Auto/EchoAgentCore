@@ -3,8 +3,8 @@ prodoc: true
 id: management-panel
 title: "管理面模块"
 group: Core
-x: 3348
-y: 216
+x: 5448
+y: 552
 ---
 
 # 管理面模块

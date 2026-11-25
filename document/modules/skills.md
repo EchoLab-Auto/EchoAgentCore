@@ -3,8 +3,8 @@ prodoc: true
 id: skills
 title: "技能系统"
 group: Core
-x: 1548
-y: 216
+x: 3648
+y: 552
 ---
 
 # 技能系统

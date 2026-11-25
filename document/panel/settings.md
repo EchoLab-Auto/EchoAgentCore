@@ -3,8 +3,8 @@ prodoc: true
 id: settings
 title: "Panel 设置视图"
 group: 前端
-x: 964
-y: 384
+x: 9378
+y: 552
 link: ["settings-api | API 设置", "settings-skills | 技能", "settings-tools | 工具", "settings-modules | 模块", "settings-agents | 智能体", "settings-cores | Core 与联邦", "settings-logs | 日志与系统"]
 ---
 

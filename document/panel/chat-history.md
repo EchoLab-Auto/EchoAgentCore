@@ -3,8 +3,8 @@ prodoc: true
 id: chat-history
 title: "历史快照与实时窗口"
 group: 前端
-x: 4508
-y: 720
+x: 10994
+y: 888
 ---
 
 # 历史快照与实时窗口

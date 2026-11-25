@@ -3,8 +3,8 @@ prodoc: true
 id: chat-timeline
 title: "主时间线时序与动画"
 group: 前端
-x: 4808
-y: 720
+x: 11294
+y: 888
 ---
 
 # 主时间线时序与动画

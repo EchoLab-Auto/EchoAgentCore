@@ -3,8 +3,8 @@ prodoc: true
 id: settings-cores
 title: "设置 · Core 与联邦"
 group: 前端
-x: 2828
-y: 552
+x: 9978
+y: 720
 ---
 
 # 设置 · Core 与联邦

@@ -3,8 +3,8 @@ prodoc: true
 id: chat-work
 title: "工作行（工具 / 推理 / 子代理）"
 group: 前端
-x: 5136
-y: 720
+x: 10433
+y: 888
 link: ["chat-tools | 工具卡与图标行", "chat-reasoning | 推理块"]
 ---
 

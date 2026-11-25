@@ -3,8 +3,8 @@ prodoc: true
 id: settings-agents
 title: "设置 · 智能体"
 group: 前端
-x: 2528
-y: 552
+x: 9678
+y: 720
 ---
 
 # 设置 · 智能体

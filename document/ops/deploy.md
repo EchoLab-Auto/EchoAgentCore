@@ -3,8 +3,8 @@ prodoc: true
 id: deploy
 title: "部署与自更新"
 group: 工程
-x: 960
-y: 3600
+x: 7428
+y: 216
 ---
 
 # 部署与自更新

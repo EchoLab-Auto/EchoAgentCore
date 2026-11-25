@@ -3,8 +3,8 @@ prodoc: true
 id: chat-input
 title: "输入区（ChatComposer）"
 group: 前端
-x: 4104
-y: 552
+x: 12875
+y: 720
 ---
 
 # 输入区（ChatComposer）

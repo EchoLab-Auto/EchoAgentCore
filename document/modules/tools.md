@@ -3,8 +3,8 @@ prodoc: true
 id: tools
 title: "工具系统"
 group: Core
-x: 348
-y: 216
+x: 1848
+y: 552
 link: ["tool-catalog | 内置工具目录"]
 ---
 

@@ -3,8 +3,8 @@ prodoc: true
 id: sanitize
 title: "脱敏（安全不变量）"
 group: Core
-x: 2448
-y: 216
+x: 4548
+y: 552
 link: []
 ---
 

@@ -3,8 +3,8 @@ prodoc: true
 id: testing
 title: "测试策略"
 group: 工程
-x: 1280
-y: 4040
+x: 7578
+y: 384
 ---
 
 # 测试策略

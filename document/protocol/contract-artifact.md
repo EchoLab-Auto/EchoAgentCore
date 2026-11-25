@@ -4,6 +4,8 @@ id: protocol-contract-artifact
 title: "管理面契约归档"
 group: 工程
 link: [protocol]
+x: 9832
+y: 48
 ---
 
 # 管理面契约归档

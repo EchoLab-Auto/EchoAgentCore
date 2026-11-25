@@ -3,8 +3,8 @@ prodoc: true
 id: settings-modules
 title: "设置 · 模块"
 group: 前端
-x: 2228
-y: 552
+x: 9378
+y: 720
 ---
 
 # 设置 · 模块

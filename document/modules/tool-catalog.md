@@ -3,6 +3,8 @@ prodoc: true
 id: tool-catalog
 title: "内置工具目录"
 group: Core
+x: 2155
+y: 720
 ---
 
 <!-- 自动生成，请勿手改：`echo-agent::tool::builtin::build_registry`） -->

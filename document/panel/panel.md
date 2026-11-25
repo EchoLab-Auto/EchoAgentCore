@@ -3,8 +3,8 @@ prodoc: true
 id: panel
 title: "Panel 前端"
 group: 前端
-x: 48
-y: 48
+x: 9430
+y: 216
 link: ["desktop-layout | 桌面端布局", "mobile-layout | 移动端布局", "icons | 图标体系", "constants | 常量与边界", "interaction | 交互定义"]
 ---
 

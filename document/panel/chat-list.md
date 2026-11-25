@@ -3,8 +3,8 @@ prodoc: true
 id: chat-list
 title: "消息列表与滚动"
 group: 前端
-x: 4208
-y: 720
+x: 10133
+y: 888
 ---
 
 # 消息列表与滚动

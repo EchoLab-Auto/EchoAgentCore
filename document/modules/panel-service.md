@@ -3,8 +3,8 @@ prodoc: true
 id: panel-service
 title: "面板服务"
 group: Core
-x: 2448
-y: 384
+x: 5748
+y: 552
 ---
 
 # 面板服务（Panel Service）

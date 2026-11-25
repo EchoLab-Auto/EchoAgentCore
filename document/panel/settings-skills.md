@@ -3,8 +3,8 @@ prodoc: true
 id: settings-skills
 title: "设置 · 技能"
 group: 前端
-x: 1628
-y: 552
+x: 8778
+y: 720
 ---
 
 # 设置 · 技能

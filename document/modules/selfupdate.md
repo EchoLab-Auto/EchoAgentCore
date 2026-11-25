@@ -3,8 +3,8 @@ prodoc: true
 id: selfupdate
 title: "自更新模块"
 group: Core
-x: 3708
-y: 216
+x: 6348
+y: 552
 ---
 
 # 自更新模块
