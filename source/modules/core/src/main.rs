@@ -1215,6 +1215,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 装配所需的共享件预先 clone 好，闭包按需再 clone（Fn 语义）。
     let factory_provider = provider_arc.clone();
     let factory_skills = skills.clone();
+    // 技能目录清单：`read_skill` 按需从磁盘读长技能正文（见该工具文档）。
+    let factory_skill_dirs = skill_dirs.clone();
     let factory_instances = instances.clone();
     let factory_default_instances: Vec<Arc<dyn echo_defs::module_instance::ModuleInstance>> =
         qq_instance.iter().cloned().collect();
@@ -1377,6 +1379,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 t.set_package(
                     agent_module_loop::agent::prodoc_tool::TOOL_NAME,
                     agent_module_prodoc::MODULE_ID,
+                );
+                // 技能正文按需读取（2026-11 用量修复）：长技能不再全文内联进
+                // 系统提示（那会被每一步重发），提示里只留索引 + 开头预览，
+                // 完整正文由 `read_skill` 在此按需取。
+                t.register(std::sync::Arc::new(
+                    agent_module_skills::read_skill::ReadSkillTool::new(
+                        factory_skill_dirs.clone(),
+                    ),
+                ));
+                t.set_package(
+                    agent_module_skills::read_skill::TOOL_NAME,
+                    agent_module_skills::MODULE_ID,
                 );
                 // Subagent 委派（subagent 模块）：**注册归模块接线**（2026-11 S7）。
                 //

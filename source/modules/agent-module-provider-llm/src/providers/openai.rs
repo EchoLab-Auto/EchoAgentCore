@@ -23,6 +23,14 @@ pub struct OpenAiProvider {
     client: reqwest::Client,
     thinking: Option<echo_defs::ThinkingMode>,
     reasoning_effort: echo_defs::ReasoningEffort,
+    /// 是否发送 DeepSeek 专有的 `thinking` 字段。
+    ///
+    /// `thinking`（`{"type":"enabled"}`）不是 OpenAI 契约的一部分：发给
+    /// DeepSeek 是必须的，发给 api.openai.com 会 400。旧实现靠
+    /// "provider 名 == deepseek" 决定要不要传 `with_reasoning`，于是
+    /// `provider = "openai"` 的 `reasoning_effort` 被整段丢弃（配置存在但
+    /// 不生效）。现在拆成两件事：**发不发 thinking** 与 **发不发 effort**。
+    deepseek_thinking: bool,
     /// 逐请求附加的 HTTP 头（`with_header`）。用作网关的**路由/身份**约定，
     /// 例如 OpenCode Go 要求的 `x-opencode-session` 与客户端自报 UA。
     extra_headers: reqwest::header::HeaderMap,
@@ -56,6 +64,7 @@ impl OpenAiProvider {
             model: model.to_string(),
             thinking: None,
             reasoning_effort: echo_defs::ReasoningEffort::default(),
+            deepseek_thinking: false,
             extra_headers: reqwest::header::HeaderMap::new(),
             // 保留连接超时防止上游挂死；不设总超时——思考模式 + 大
             // completion 预算下单次响应可能合法地跑数分钟。
@@ -72,6 +81,7 @@ impl OpenAiProvider {
         }
     }
 
+    /// DeepSeek 口径：同时启用 `thinking` 字段与 `reasoning_effort`。
     pub fn with_reasoning(
         mut self,
         thinking: echo_defs::ThinkingMode,
@@ -79,6 +89,19 @@ impl OpenAiProvider {
     ) -> Self {
         self.thinking = Some(thinking);
         self.reasoning_effort = effort;
+        self.deepseek_thinking = true;
+        self
+    }
+
+    /// OpenAI 口径：只发标准字段 `reasoning_effort`，不发 DeepSeek 的
+    /// `thinking`（后者会被 api.openai.com 判为未知字段而 400）。
+    ///
+    /// 这是 `provider = "openai"` 的档位传入口——此前该配置项在
+    /// `create_provider` 里被丢弃，"可配置"只是名义上的。
+    pub fn with_effort_only(mut self, effort: echo_defs::ReasoningEffort) -> Self {
+        self.thinking = Some(echo_defs::ThinkingMode::Enabled);
+        self.reasoning_effort = effort;
+        self.deepseek_thinking = false;
         self
     }
 
@@ -115,7 +138,13 @@ impl LlmProvider for OpenAiProvider {
 
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
         let body =
-            build_request_body_with_reasoning(request, false, self.thinking, self.reasoning_effort);
+            build_request_body_with_reasoning_full(
+                request,
+                false,
+                self.thinking,
+                self.reasoning_effort,
+                self.deepseek_thinking,
+            );
         let endpoint = format!("{}/chat/completions", self.base_url);
         let send = || {
             self.client
@@ -193,7 +222,13 @@ impl LlmProvider for OpenAiProvider {
         tx: mpsc::UnboundedSender<ChatChunk>,
     ) -> Result<ChatResponse, LlmError> {
         let body =
-            build_request_body_with_reasoning(request, true, self.thinking, self.reasoning_effort);
+            build_request_body_with_reasoning_full(
+                request,
+                true,
+                self.thinking,
+                self.reasoning_effort,
+                self.deepseek_thinking,
+            );
         let endpoint = format!("{}/chat/completions", self.base_url);
         let send = |body: &serde_json::Value| {
             self.client
@@ -444,11 +479,23 @@ fn build_request_body(request: &ChatRequest, stream: bool) -> serde_json::Value 
     build_request_body_with_reasoning(request, stream, None, echo_defs::ReasoningEffort::default())
 }
 
+#[cfg(test)]
 fn build_request_body_with_reasoning(
     request: &ChatRequest,
     stream: bool,
     thinking: Option<echo_defs::ThinkingMode>,
     reasoning_effort: echo_defs::ReasoningEffort,
+) -> serde_json::Value {
+    // 测试口径与 DeepSeek 一致（thinking + effort 都发）。
+    build_request_body_with_reasoning_full(request, stream, thinking, reasoning_effort, true)
+}
+
+fn build_request_body_with_reasoning_full(
+    request: &ChatRequest,
+    stream: bool,
+    thinking: Option<echo_defs::ThinkingMode>,
+    reasoning_effort: echo_defs::ReasoningEffort,
+    deepseek_thinking: bool,
 ) -> serde_json::Value {
     let messages: Vec<serde_json::Value> = request
         .messages
@@ -504,7 +551,12 @@ fn build_request_body_with_reasoning(
         body["max_tokens"] = json!(mt);
     }
     if let Some(mode) = thinking {
-        body["thinking"] = json!({"type": mode.as_str()});
+        // `thinking` 是 DeepSeek 专有字段：发给 OpenAI 官方会被判未知字段。
+        if deepseek_thinking {
+            body["thinking"] = json!({"type": mode.as_str()});
+        }
+        // `reasoning_effort` 是 OpenAI 标准字段（o 系列 / gpt-5 系），
+        // DeepSeek 也接受——所以它跟着 thinking 档位走，与端点无关。
         if mode == echo_defs::ThinkingMode::Enabled {
             body["reasoning_effort"] = json!(reasoning_effort.as_str());
         }

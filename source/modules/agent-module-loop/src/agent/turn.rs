@@ -115,7 +115,7 @@ impl Agent {
             let base = self.model.config.read().await.system_prompt.clone();
             // 按**本次 turn 的会话**收集模块文本块（2026-10 多窗口修复）：
             // 上下文里带着 session_id，模块据此决定给自己那一份内容。
-            self.refresh_prompt_contributions(&session_id, content);
+            self.refresh_prompt_contributions(&session_id, content).await;
             let module_blocks = self.collect_module_text_blocks(&session_id, content).await;
             (base, module_blocks)
         };

@@ -1003,6 +1003,7 @@ pub(crate) async fn fetch_balance(probe: &AgentConfig) -> Result<BalanceFetch, S
         api_key: probe.effective_api_key(),
         thinking: probe.thinking,
         reasoning_effort: probe.reasoning_effort,
+        prompt_cache: probe.prompt_cache,
     };
     agent_module_provider_llm::balance::fetch_balance(&projection).await
 }

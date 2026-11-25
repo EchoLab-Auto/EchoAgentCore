@@ -37,6 +37,7 @@ fn project(cfg: &AgentConfig) -> ProviderConfig {
         api_key: cfg.api_key.clone(),
         thinking: cfg.thinking,
         reasoning_effort: cfg.reasoning_effort,
+        prompt_cache: cfg.prompt_cache,
     }
 }
 
@@ -131,7 +132,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let store: Arc<dyn UsageRecorder> = Arc::new(MetricsStore::new(&dir));
-        store.record_usage("profile-a", "model-a", 10, 5, 2);
+        store.record_usage("profile-a", "model-a", 10, 5, 2, true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

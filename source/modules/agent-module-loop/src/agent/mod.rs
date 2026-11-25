@@ -974,7 +974,7 @@ impl Agent {
     /// 进程级模块宿主（组合根注入；未注入时为该 agent 自带的空宿主，
     /// 便于单元测试）。
     /// 通用提示词刷新入口：本轮输入作为自由上下文交给 skills 模块。
-    pub(crate) fn refresh_prompt_contributions(&self, session_id: &str, content: &str) {
+    pub(crate) async fn refresh_prompt_contributions(&self, session_id: &str, content: &str) {
         let persona_system_skills = self
             .identity
             .capabilities
@@ -982,6 +982,9 @@ impl Agent {
             .ok()
             .and_then(|cap| cap.as_ref().map(|c| c.system_skills.clone()))
             .unwrap_or_default();
+        // 技能正文内联上限（2026-11 用量修复）：模块不知道宿主配置形状，
+        // 由这里把生效值塞进自由上下文。`0` = 全部全文（旧行为）。
+        let skill_inline_max_chars = self.model.config.read().await.skill_inline_max_chars;
         let refresher = self
             .prompt
             .refresher
@@ -992,6 +995,7 @@ impl Agent {
             refresher.refresh(&serde_json::json!({
                 "session_id": session_id, "content": content,
                 "persona_system_skills": persona_system_skills,
+                "skill_inline_max_chars": skill_inline_max_chars,
             }));
         }
     }
@@ -1806,6 +1810,8 @@ impl Agent {
                     "persona_system_skills": self.identity.capabilities.lock().ok()
                         .and_then(|cap| cap.as_ref().map(|c| c.system_skills.clone()))
                         .unwrap_or_default(),
+                    // 与 prompt store 路径同源：模块据此决定内联还是索引。
+                    "skill_inline_max_chars": self.model.config.read().await.skill_inline_max_chars,
                 }),
                 |module_id| match &capabilities {
                     Some(cap) => crate::modules::profile_allows_module(cap, module_id),
@@ -1897,7 +1903,7 @@ impl Agent {
     #[cfg(test)]
     async fn build_system_prompt(&self, content: &str) -> String {
         let base = self.model.config.read().await.system_prompt.clone();
-        self.refresh_prompt_contributions("", content);
+        self.refresh_prompt_contributions("", content).await;
         let module_blocks = self.collect_module_text_blocks("", content).await;
         let blocks = crate::agent::prompt::build_prompt_blocks(
             &base,

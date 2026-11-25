@@ -224,16 +224,37 @@ fn merge_consecutive_assistant_messages(messages: &mut Vec<ChatMessage>) {
 ///
 /// Non-destructive with respect to the log: it only mutates the projected
 /// copy. Keeps at least the newest message (truncating it in place if needed).
+///
+/// # 为什么"一次裁到低水位"而不是"超一条丢一条"（2026-11 缓存修复）
+///
+/// 旧实现每次只丢最老的一条。对**钱包**的伤害不在裁剪本身，而在它让
+/// **每一步的请求前缀都不同**：prompt cache（Anthropic 的 `cache_control`
+/// 断点、OpenAI/DeepSeek 的前缀缓存）以"从请求开头开始的公共前缀"计费，
+/// 前缀一变就整段按未命中重算。于是历史一旦触到预算，那之后每个 step
+/// 都是 100% 未命中——这才是"每步全量重发"最贵的形态。
+///
+/// 现在改成阶梯裁剪：触发时一次裁到 `budget` 的 60%，之后几十步都只在尾部
+/// 追加、前缀逐字节不变（缓存全命中），直到再次涨破 100% 才裁下一次。
+/// 代价是偶尔多丢 40% 的预算余量，换来的是整段期间 0.1× 的缓存价——
+/// 净省。
 pub fn trim_to_budget(messages: &mut Vec<ChatMessage>, token_budget: usize) {
-    let mut total = estimate_history_tokens(messages);
-    let mut head = 0usize;
-    while messages.len() - head > 1 && total > token_budget {
-        total = total.saturating_sub(estimate_message_tokens(&messages[head]));
-        head += 1;
+    let total = estimate_history_tokens(messages);
+    if total > token_budget {
+        // 低水位：阶梯裁剪的目标。裁到 60% 而不是刚好等于 budget，
+        // 是为了让下一次裁剪尽可能晚发生（每次裁剪都打断缓存前缀）。
+        let low_water = token_budget.saturating_mul(3) / 5;
+        let mut remaining = total;
+        let mut head = 0usize;
+        while messages.len() - head > 1 && remaining > low_water {
+            remaining = remaining.saturating_sub(estimate_message_tokens(&messages[head]));
+            head += 1;
+        }
+        if head > 0 {
+            messages.drain(..head);
+        }
     }
-    if head > 0 {
-        messages.drain(..head);
-    }
+    // 单条就超预算时仍就地截断：阶梯裁剪只按条数丢整条，管不了
+    // "最后一条自己就装不下"的情形（例如一次贴了超长文档）。
     if let Some(last) = messages.last_mut() {
         if estimate_message_tokens(last) > token_budget {
             echo_defs::token::truncate_message_to_tokens(last, token_budget);
@@ -595,6 +616,34 @@ mod tests {
         let remaining = &messages[0].content;
         assert!(remaining.starts_with("<qq_message_hook>"));
         assert!(remaining.contains("\"message_sequence\":42"));
+    }
+
+    /// 阶梯裁剪：一旦超预算就一次裁到低水位（60%），而不是"超一条丢一条"。
+    ///
+    /// 这条性质是 prompt cache 能命中**整个 turn 期间**的前提：裁剪后到下次
+    /// 涨破预算之间，请求前缀逐字节不变（只在尾部追加）。若退回逐条裁剪，
+    /// 前缀每步都变，缓存命中率归零。
+    #[test]
+    fn trim_cuts_down_to_low_water_instead_of_one_by_one() {
+        // 20 条 × 100 token ≈ 2000 token 的历史，预算 500。
+        let mut messages: Vec<ChatMessage> = (0..20)
+            .map(|i| ChatMessage::user(format!("消息{i}：{}", "x".repeat(100))))
+            .collect();
+        let before = messages.len();
+        trim_to_budget(&mut messages, 500);
+
+        let after = echo_defs::token::estimate_history_tokens(&messages);
+        assert!(after <= 500, "must fit the budget, got {after}");
+        // 关键：不是"刚好卡在 500"，而是一次性裁到低水位（≤ 60% × 500 = 300）。
+        assert!(
+            after <= 300,
+            "ladder trim must cut to the low water mark (≤300), got {after}"
+        );
+        // 至少保留最新若干条（不能一次全丢）。
+        assert!(!messages.is_empty());
+        assert!(messages.len() < before, "must have trimmed something");
+        // 保留的必须是最新的尾部，顺序不变。
+        assert!(messages.last().unwrap().content.starts_with("消息19"));
     }
 
     #[test]

@@ -20,6 +20,17 @@ pub struct AnthropicProvider {
     client: reqwest::Client,
     thinking: Option<echo_defs::ThinkingMode>,
     reasoning_effort: echo_defs::ReasoningEffort,
+    /// 是否在请求里打 prompt cache 断点（`cache_control`）。
+    ///
+    /// Anthropic Messages API 的缓存是**显式**的：不发断点就一个 token 都不
+    /// 缓存。而本仓的 agent 循环每步都把 `system`（技能全文）+ 全部工具
+    /// schema + 全量历史重新发一遍，没有断点时这部分按未命中计价、每次
+    /// 全额收费——这是用完量最容易被忽视的一处放大器。
+    ///
+    /// 断点打在两个**完全稳定**的前缀上（tools 末尾 + system 末尾），
+    /// 不随轮次变化，因此每步都能命中；历史不动（它每步都在变，打在那儿
+    /// 只会产生大量写缓存费用）。
+    prompt_cache: bool,
 }
 
 /// 读空闲超时（2026-10 巡检 P1）：上游连接建立后慢速滴流（每秒 1 字节）
@@ -50,6 +61,7 @@ impl AnthropicProvider {
             model: model.to_string(),
             thinking: None,
             reasoning_effort: echo_defs::ReasoningEffort::default(),
+            prompt_cache: true,
             client: match reqwest::Client::builder()
                 // 不设总超时：思考模式 + 大 completion 预算下，一次响应可以
                 // 合法地跑好几分钟；总超时会把长生成拦腰砍断。保留连接超时，
@@ -77,6 +89,14 @@ impl AnthropicProvider {
         self.reasoning_effort = effort;
         self
     }
+
+    /// 关闭 / 开启 prompt cache 断点（见字段文档）。默认开启。
+    ///
+    /// 只在该端点不认 `cache_control`（非标准 Anthropic 兼容网关）时才需要关。
+    pub fn with_prompt_cache(mut self, enabled: bool) -> Self {
+        self.prompt_cache = enabled;
+        self
+    }
 }
 
 #[async_trait]
@@ -91,7 +111,13 @@ impl LlmProvider for AnthropicProvider {
 
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
         let body =
-            build_request_body_with_reasoning(request, false, self.thinking, self.reasoning_effort);
+            build_request_body_with_options(
+                request,
+                false,
+                self.thinking,
+                self.reasoning_effort,
+                self.prompt_cache,
+            );
         let req = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
@@ -169,7 +195,13 @@ impl LlmProvider for AnthropicProvider {
         tx: mpsc::UnboundedSender<ChatChunk>,
     ) -> Result<ChatResponse, LlmError> {
         let body =
-            build_request_body_with_reasoning(request, true, self.thinking, self.reasoning_effort);
+            build_request_body_with_options(
+                request,
+                true,
+                self.thinking,
+                self.reasoning_effort,
+                self.prompt_cache,
+            );
         let req = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
@@ -424,14 +456,39 @@ fn html_endpoint_hint(body: &str) -> &'static str {
 
 #[cfg(test)]
 fn build_request_body(request: &ChatRequest, stream: bool) -> serde_json::Value {
-    build_request_body_with_reasoning(request, stream, None, echo_defs::ReasoningEffort::default())
+    build_request_body_with_options(
+        request,
+        stream,
+        None,
+        echo_defs::ReasoningEffort::default(),
+        false,
+    )
 }
 
+#[cfg(test)]
 fn build_request_body_with_reasoning(
     request: &ChatRequest,
     stream: bool,
     thinking: Option<echo_defs::ThinkingMode>,
     reasoning_effort: echo_defs::ReasoningEffort,
+) -> serde_json::Value {
+    build_request_body_with_options(request, stream, thinking, reasoning_effort, false)
+}
+
+/// `prompt_cache = true` 时在两个**稳定前缀**上打 `cache_control` 断点：
+///
+/// 1. `tools` 数组最后一个工具（工具 schema 每步都一样）；
+/// 2. `system`（技能正文 + 人格提示，每步都一样，通常也是最大一块）。
+///
+/// 断点必须落在稳定前缀上才有意义：Anthropic 的缓存以"从请求开头到断点"
+/// 为单位，位置一变动就得重新写缓存（1.25× 计价），反而更贵。历史消息
+/// 每条之间都在增长，**不打**断点。
+fn build_request_body_with_options(
+    request: &ChatRequest,
+    stream: bool,
+    thinking: Option<echo_defs::ThinkingMode>,
+    reasoning_effort: echo_defs::ReasoningEffort,
+    prompt_cache: bool,
 ) -> serde_json::Value {
     let system = request
         .messages
@@ -540,14 +597,37 @@ fn build_request_body_with_reasoning(
         "stream": stream,
     });
     if !system.is_empty() {
-        body["system"] = json!(system);
+        if prompt_cache {
+            // 断点 2/2：system 末尾。技能正文、人格提示、工作区上下文都在
+            // 这里，且整段每步逐字节相同——它是整条请求里最值得缓存的一块。
+            body["system"] = json!([{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }]);
+        } else {
+            body["system"] = json!(system);
+        }
     }
     if let Some(tools) = &request.tools {
-        body["tools"] = json!(tools.iter().map(|t| json!({
-            "name": t.name,
-            "description": t.description,
-            "input_schema": t.parameters.clone().unwrap_or_else(|| json!({"type": "object", "properties": {}})),
-        })).collect::<Vec<_>>());
+        let mut items: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters.clone().unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+                })
+            })
+            .collect();
+        if prompt_cache {
+            // 断点 1/2：tools 末尾。工具schema 只在装配变化时变，
+            // 一个 turn 内（乃至跨 turn）完全稳定。
+            if let Some(last) = items.last_mut() {
+                last["cache_control"] = json!({"type": "ephemeral"});
+            }
+        }
+        body["tools"] = json!(items);
     }
     if let Some(t) = request.temperature {
         body["temperature"] = json!(t);

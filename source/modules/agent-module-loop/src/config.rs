@@ -35,6 +35,20 @@ fn default_balance_snapshot_secs() -> u64 {
     DEFAULT_BALANCE_SNAPSHOT_SECS
 }
 
+/// prompt cache 缺省**开**：漏配时落到省钱的一侧（见 `AgentConfig::prompt_cache`）。
+fn default_prompt_cache() -> bool {
+    true
+}
+
+/// 技能正文内联上限缺省 4000 字符（见 `AgentConfig::skill_inline_max_chars`）。
+///
+/// 取值依据：人格与对话风格类技能通常 < 3 KB，全文内联值得；编程规范、
+/// 长任务效率这类 10–20 KB 的清单式技能索引化——它们真正被用到时模型
+/// 会调 `read_skill`，而不是每步都重发一遍。
+fn default_skill_inline_max_chars() -> usize {
+    4000
+}
+
 /// 流式输出缺省开：出问题时可在配置中关闭（重启生效）快速回退整段路径。
 fn default_stream_output() -> bool {
     true
@@ -140,6 +154,20 @@ pub struct AgentConfig {
     pub thinking: ThinkingMode,
     /// DeepSeek reasoning effort (max by default).
     pub reasoning_effort: ReasoningEffort,
+    /// 技能正文内联上限（字符）。超过的技能只在系统提示里留索引 +
+    /// 开头预览，完整正文由 `read_skill` 工具按需读取。
+    ///
+    /// 为什么：系统提示每一步模型往返都重发一次，长技能正文会被重复计费
+    /// 几十次。`0` = 回到旧行为（全部全文内联，排障用）。
+    #[serde(default = "default_skill_inline_max_chars")]
+    pub skill_inline_max_chars: usize,
+    /// Anthropic 风格端点的 prompt cache 断点开关（默认开）。
+    ///
+    /// 关掉的唯一理由是某个非标准 Anthropic 兼容网关不认 `cache_control`。
+    /// 打开时请求会在 `tools` 末尾与 `system` 末尾各打一个断点——这两段
+    /// 每步逐字节相同，是"每步全量重发"里唯一能被打折的部分。
+    #[serde(default = "default_prompt_cache")]
+    pub prompt_cache: bool,
     /// 多 API 配置列表。
     pub api_profiles: Vec<ApiProfile>,
     /// 当前激活的 profile 名；为空使用顶层字段。
@@ -264,6 +292,8 @@ impl Default for AgentConfig {
             api_key: String::new(),
             thinking: ThinkingMode::default(),
             reasoning_effort: ReasoningEffort::default(),
+            skill_inline_max_chars: default_skill_inline_max_chars(),
+            prompt_cache: true,
             api_profiles: Vec::new(),
             active_api: String::new(),
             system_prompt: "You are a helpful assistant. Respond concisely and clearly.".into(),

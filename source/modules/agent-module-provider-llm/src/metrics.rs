@@ -108,6 +108,14 @@ struct UsageRecord {
     /// 缓存命中 tokens（prompt 内子集；旧行缺省 0）。
     #[serde(default)]
     cache_hit_tokens: u64,
+    /// 调用是否成功返回。缺省 `true`：修复前的旧行都是成功记录，
+    /// 若缺省成 `false` 会把历史数据整体染成失败。
+    #[serde(default = "default_true")]
+    ok: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 剪枝扫描用的最小行（只取时间戳）。
@@ -254,8 +262,10 @@ impl MetricsStore {
             Err(error) => tracing::warn!(%error, "metrics: serialize balance failed"),
         }
     }
-
     /// 记录一次 LLM 调用的 token 用量（计量装饰器调用）。
+    ///
+    /// `ok = false` 表示这次调用失败 / 超时 / 被取消：`prompt_tokens` 是
+    /// 本地估算值、`completion_tokens` 恒为 0（见 `metering` 模块文档）。
     pub fn record_usage(
         &self,
         name: &str,
@@ -263,6 +273,7 @@ impl MetricsStore {
         prompt_tokens: u32,
         completion_tokens: u32,
         cache_hit_tokens: u32,
+        ok: bool,
     ) {
         let record = UsageRecord {
             ts_ms: now_ms(),
@@ -271,6 +282,7 @@ impl MetricsStore {
             prompt_tokens: u64::from(prompt_tokens),
             completion_tokens: u64::from(completion_tokens),
             cache_hit_tokens: u64::from(cache_hit_tokens),
+            ok,
         };
         match serde_json::to_string(&record) {
             Ok(line) => Self::lock(&self.usage).append_line(&line),
@@ -425,7 +437,6 @@ pub fn estimate_cost(
             .unwrap_or(miss_input)
     };
     // 钳制：归一后命中数不应超过 prompt 总量（记录/聚合侧已归一；
-    // 这里保留钳制防御异常数据产生负 miss）。
     let hit = cache_hit_tokens.min(prompt_tokens);
     let miss = prompt_tokens.saturating_sub(hit);
     let cost = hit as f64 / 1_000_000.0 * hit_input
@@ -447,8 +458,9 @@ impl crate::UsageRecorder for MetricsStore {
         prompt: u32,
         completion: u32,
         cache_hit: u32,
+        ok: bool,
     ) {
-        MetricsStore::record_usage(self, profile, model, prompt, completion, cache_hit);
+        MetricsStore::record_usage(self, profile, model, prompt, completion, cache_hit, ok);
     }
 }
 
@@ -503,10 +515,10 @@ mod tests {
     fn usage_aggregates_by_hour_and_model() {
         let dir = temp_dir("usage");
         let store = MetricsStore::new(&dir);
-        store.record_usage("deepseek", "deepseek-flash", 1000, 100, 0);
-        store.record_usage("deepseek", "deepseek-flash", 500, 50, 0);
-        store.record_usage("deepseek", "deepseek-v4-pro", 700, 70, 0);
-        store.record_usage("kimi", "k3", 999, 99, 0);
+        store.record_usage("deepseek", "deepseek-flash", 1000, 100, 0, true);
+        store.record_usage("deepseek", "deepseek-flash", 500, 50, 0, true);
+        store.record_usage("deepseek", "deepseek-v4-pro", 700, 70, 0, true);
+        store.record_usage("kimi", "k3", 999, 99, 0, true);
 
         let slices = store.usage_slices("deepseek", 0);
         // 同一小时：flash 合并为 1 条、pro 1 条

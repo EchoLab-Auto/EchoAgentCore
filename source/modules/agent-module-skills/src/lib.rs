@@ -24,6 +24,8 @@ pub mod install;
 /// SKILL.md 解析/热重载加载器。
 pub mod loader;
 pub mod prompt;
+/// `read_skill` 工具：长技能按需读取（系统提示只留索引）。
+pub mod read_skill;
 pub mod runtime;
 
 use std::collections::{BTreeMap, HashMap};

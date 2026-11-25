@@ -88,7 +88,7 @@ pub const LOOP_SERVICE_KEY: &str = "loop";
 ///
 /// 与宿主 `AgentConfig` 的同名子集一一对应，但**不含**任何业务字段
 /// （无 pricing / profiles / teams）——本 crate 不认识配置文件的形状。
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderConfig {
     /// provider 种类：`openai` / `deepseek` / `third-party` / `anthropic` /
     /// `claude` / `kimi` / `moonshot-coding` / `opencode-go` / `ollama`。
@@ -103,6 +103,25 @@ pub struct ProviderConfig {
     pub thinking: ThinkingMode,
     /// 推理强度（词汇归定义层 `echo-defs`）。
     pub reasoning_effort: ReasoningEffort,
+    /// Anthropic 风格端点的 prompt cache 断点开关（默认开，见
+    /// [`providers::anthropic::AnthropicProvider::with_prompt_cache`]）。
+    pub prompt_cache: bool,
+}
+
+/// `prompt_cache` 默认 **true**：漏配时应落到"省钱"的一侧（缓存断点只在
+/// Anthropic 风格端点生效，且非标准网关可用 `[agent] prompt_cache = false` 关掉）。
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+            thinking: ThinkingMode::default(),
+            reasoning_effort: ReasoningEffort::default(),
+            prompt_cache: true,
+        }
+    }
 }
 
 /// 构造模块：命令域（17 条 API / provider 命令）。
@@ -222,13 +241,15 @@ pub fn create_provider(cfg: &ProviderConfig) -> Result<Box<dyn LlmProvider>, Llm
             let base = kimi_base_url(&cfg.base_url);
             let provider =
                 providers::anthropic::AnthropicProvider::new(&base, &cfg.api_key, &cfg.model)
-                    .with_reasoning(cfg.thinking, cfg.reasoning_effort);
+                    .with_reasoning(cfg.thinking, cfg.reasoning_effort)
+                    .with_prompt_cache(cfg.prompt_cache);
             Ok(Box::new(provider))
         }
         "openai" | "deepseek" | "third-party" if anthropic_style => {
             // DeepSeek 的 /anthropic 端点只实现 Messages API（POST /v1/messages）
             let mut provider =
-                providers::anthropic::AnthropicProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model);
+                providers::anthropic::AnthropicProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model)
+                    .with_prompt_cache(cfg.prompt_cache);
             if let Some((thinking, effort)) = deepseek_reasoning {
                 provider = provider.with_reasoning(thinking, effort);
             }
@@ -237,16 +258,31 @@ pub fn create_provider(cfg: &ProviderConfig) -> Result<Box<dyn LlmProvider>, Llm
         "openai" | "deepseek" | "third-party" => {
             let mut provider =
                 providers::openai::OpenAiProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model);
-            if let Some((thinking, effort)) = deepseek_reasoning {
-                provider = provider.with_reasoning(thinking, effort);
+            match deepseek_reasoning {
+                // DeepSeek：`thinking` + `reasoning_effort`（前者是它的专有字段）
+                Some((thinking, effort)) => {
+                    provider = provider.with_reasoning(thinking, effort);
+                }
+                // 其它 OpenAI 兼容端点：只发标准 `reasoning_effort`。此前这里
+                // 整段跳过，`provider = "openai"` 的档位配置完全不生效。
+                None => {
+                    if cfg.thinking == echo_defs::ThinkingMode::Enabled {
+                        provider = provider.with_effort_only(cfg.reasoning_effort);
+                    }
+                }
             }
             Ok(Box::new(provider))
         }
-        "anthropic" | "claude" => Ok(Box::new(providers::anthropic::AnthropicProvider::new(
-            &cfg.base_url,
-            &cfg.api_key,
-            &cfg.model,
-        ))),
+        // 原生 Anthropic / Claude：`thinking` 与 `reasoning_effort` 过去在这里
+        // **被整段丢弃**（配置项存在但不生效），现在与 Kimi 分支同口径传递——
+        // 上游靠 `thinking` + `output_config.effort` 决定思考深度与计费档位。
+        "anthropic" | "claude" => {
+            let provider =
+                providers::anthropic::AnthropicProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model)
+                    .with_reasoning(cfg.thinking, cfg.reasoning_effort)
+                    .with_prompt_cache(cfg.prompt_cache);
+            Ok(Box::new(provider))
+        }
         // ChatGPT 订阅（Plus / Pro）：凭据**不是** api_key，而是 OAuth 登录态。
         // 详见 `chatgpt` 模块头（事实来源、风险、为什么必须换协议）。
         //
