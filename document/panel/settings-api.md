@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: settings-api
 title: "设置 · API"
 group: 前端

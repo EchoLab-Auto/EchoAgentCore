@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-reasoning
 title: "推理块"
 group: 前端

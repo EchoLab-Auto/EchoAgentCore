@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: tools
 title: "工具系统"
 group: Core

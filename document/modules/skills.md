@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: skills
 title: "技能系统"
 group: Core

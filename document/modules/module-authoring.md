@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: module-authoring
 title: "模块开发指南"
 group: Core

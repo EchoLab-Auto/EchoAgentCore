@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: config-persistence
 title: "配置持久化"
 group: Core

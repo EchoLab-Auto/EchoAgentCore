@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-rail
 title: "双侧边栏（chat-rail）"
 group: 前端

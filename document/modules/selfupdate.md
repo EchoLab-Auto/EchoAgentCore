@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: selfupdate
 title: "自更新模块"
 group: Core

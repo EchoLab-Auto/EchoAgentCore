@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: settings-agents
 title: "设置 · 智能体"
 group: 前端

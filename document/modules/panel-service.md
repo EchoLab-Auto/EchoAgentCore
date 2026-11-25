@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: panel-service
 title: "面板服务"
 group: Core

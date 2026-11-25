@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: tool-catalog
 title: "内置工具目录"
 group: Core

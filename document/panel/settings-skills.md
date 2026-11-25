@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: settings-skills
 title: "设置 · 技能"
 group: 前端

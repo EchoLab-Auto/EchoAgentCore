@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: core
 title: "Core 后端"
 group: Core

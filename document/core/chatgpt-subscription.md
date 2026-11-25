@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chatgpt-subscription
 title: "ChatGPT 订阅接入"
 group: Core

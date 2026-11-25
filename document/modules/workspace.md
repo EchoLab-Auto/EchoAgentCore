@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: workspace
 title: "工作区会话模块"
 group: Core

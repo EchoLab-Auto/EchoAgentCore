@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: management-panel
 title: "管理面模块"
 group: Core

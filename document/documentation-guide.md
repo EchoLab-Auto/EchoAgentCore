@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: documentation-guide
 title: "文档规范"
 group: 工程

@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat
 title: "Panel 会话视图"
 group: 前端

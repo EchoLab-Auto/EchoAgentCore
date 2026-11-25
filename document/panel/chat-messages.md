@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-messages
 title: "会话消息区"
 group: 前端

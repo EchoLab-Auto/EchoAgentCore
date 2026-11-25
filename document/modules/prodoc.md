@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: prodoc
 title: "ProDoc 文档群模块"
 group: Core

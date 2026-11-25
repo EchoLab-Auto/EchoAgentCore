@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: shell
 title: "Shell 会话模块"
 group: Core

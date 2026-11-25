@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-tools
 title: "工具卡与图标行"
 group: 前端

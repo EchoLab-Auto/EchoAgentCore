@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-input
 title: "输入区（ChatComposer）"
 group: 前端

@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-list
 title: "消息列表与滚动"
 group: 前端

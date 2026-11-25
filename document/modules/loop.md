@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: loop
 title: "循环模块"
 group: Core

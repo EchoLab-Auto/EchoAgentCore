@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: architecture
 title: "架构总览"
 group: 总览

@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: instance-tasks
 title: "Panel 实例管理 · 任务 · Shell"
 group: 前端

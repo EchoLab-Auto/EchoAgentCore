@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: modules
 title: "模块化设计"
 group: Core

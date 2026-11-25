@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: agent-loop
 title: "Agent 循环"
 group: Core

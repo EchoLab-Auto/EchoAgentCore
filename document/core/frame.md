@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: frame
 title: "框架（内核）"
 group: Core

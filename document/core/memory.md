@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: memory
 title: "会话记忆"
 group: Core

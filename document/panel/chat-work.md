@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-work
 title: "工作行（工具 / 推理 / 子代理）"
 group: 前端

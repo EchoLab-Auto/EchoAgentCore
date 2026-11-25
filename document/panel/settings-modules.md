@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: settings-modules
 title: "设置 · 模块"
 group: 前端

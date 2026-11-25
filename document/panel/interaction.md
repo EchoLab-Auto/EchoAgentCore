@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: interaction
 title: "Panel 交互定义"
 group: 前端

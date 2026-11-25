@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: qq-gating
 title: "QQ 实例门控"
 group: Core

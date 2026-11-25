@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: agents
 title: "多 Agent 与会话"
 group: Core

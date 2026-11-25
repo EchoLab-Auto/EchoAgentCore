@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: settings-logs
 title: "设置 · 日志与系统"
 group: 前端

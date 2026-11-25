@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: session
 title: "会话模块"
 group: Core

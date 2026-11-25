@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: multimodal
 title: "多模态输入"
 group: Core

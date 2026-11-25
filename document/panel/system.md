@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: system
 title: "Panel 系统反馈"
 group: 前端

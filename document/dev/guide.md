@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: guide
 title: "开发指南"
 group: 工程

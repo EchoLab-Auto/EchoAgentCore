@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: mobile-overlays
 title: "移动端模态与覆盖层"
 group: 前端

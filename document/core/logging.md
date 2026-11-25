@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: logging
 title: "日志与可观测性"
 group: Core

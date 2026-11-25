@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: protocol-contract-artifact
 title: "管理面契约归档"
 group: 工程

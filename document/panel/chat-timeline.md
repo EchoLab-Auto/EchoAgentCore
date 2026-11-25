@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-timeline
 title: "主时间线时序与动画"
 group: 前端

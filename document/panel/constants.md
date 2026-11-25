@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: constants
 title: "关键常量与设计边界"
 group: 前端

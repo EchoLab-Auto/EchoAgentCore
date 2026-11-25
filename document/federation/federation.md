@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: federation
 title: "联邦（多机去中心化）"
 group: Core

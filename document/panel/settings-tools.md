@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: settings-tools
 title: "设置 · 工具"
 group: 前端

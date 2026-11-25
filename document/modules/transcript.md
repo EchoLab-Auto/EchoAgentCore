@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: transcript
 title: "显示层模块"
 group: Core

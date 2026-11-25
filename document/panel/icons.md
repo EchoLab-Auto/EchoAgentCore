@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: icons
 title: "Panel 图标体系"
 group: 前端

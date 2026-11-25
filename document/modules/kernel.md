@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: kernel
 title: "运行地基（kernel 模块）"
 group: Core

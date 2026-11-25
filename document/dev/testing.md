@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: testing
 title: "测试策略"
 group: 工程

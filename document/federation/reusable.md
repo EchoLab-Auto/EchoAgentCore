@@ -1,3 +1,7 @@
+---
+prodoc: true
+---
+
 # 将通用联邦连接模块用于其他软件
 
 `source/modules/agent-module-federation` 是独立、业务无关的 Rust crate。它只负责去中心化

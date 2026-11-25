@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: panel
 title: "Panel 前端"
 group: 前端

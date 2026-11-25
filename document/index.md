@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: index
 title: "EchoAgent 文档总览"
 group: 总览

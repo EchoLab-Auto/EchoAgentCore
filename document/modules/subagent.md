@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: subagent
 title: "Subagent 模块"
 group: Core

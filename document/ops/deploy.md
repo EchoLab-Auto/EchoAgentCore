@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: deploy
 title: "部署与自更新"
 group: 工程

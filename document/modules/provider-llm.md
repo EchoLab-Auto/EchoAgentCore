@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: provider-llm
 title: "LLM Provider 模块"
 group: Core

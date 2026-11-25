@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-entry
 title: "入口行（功能条）"
 group: 前端

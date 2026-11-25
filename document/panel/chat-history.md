@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: chat-history
 title: "历史快照与实时窗口"
 group: 前端

@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: sanitize
 title: "脱敏（安全不变量）"
 group: Core

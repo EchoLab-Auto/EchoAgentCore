@@ -1,4 +1,5 @@
 ---
+prodoc: true
 id: settings
 title: "Panel 设置视图"
 group: 前端
